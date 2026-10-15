@@ -6,14 +6,16 @@
  */
 interface Props {
   link?: { platform: string; number?: number; title: string; url: string; premium: boolean };
+  idPrefix?: string;
 }
-const { link } = Astro.props;
+const { link, idPrefix } = Astro.props;
+const headingId = idPrefix ? `${idPrefix}-practice-h` : "practice-h";
 ---
 
 {link && (
-  <aside class="practice-links" aria-labelledby="practice-h">
+  <aside class="practice-links" aria-labelledby={headingId}>
     <div class="practice-links__body">
-      <h2 id="practice-h" class="practice-links__eyebrow">
+      <h2 id={headingId} class="practice-links__eyebrow">
         Practise it yourself
       </h2>
       <p class="practice-links__text">

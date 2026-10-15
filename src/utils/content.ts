@@ -50,8 +50,19 @@ export function urlFor(collection: CollectionName, entry: CollectionEntry<Collec
   switch (collection) {
     case "articles":
       return `/${id}/`;
-    case "interview-questions":
-      return `/interview/${id}/`;
+    case "interview-questions": {
+      const [tech, slug] = id.split("/");
+      const consolidatedGuides = new Set([
+        "data-engineering",
+        "sql",
+        "databricks",
+        "dbt",
+        "python",
+        "pyspark",
+        "snowflake",
+      ]);
+      return consolidatedGuides.has(tech) ? `/interview/${tech}/#${slug}` : `/interview/${id}/`;
+    }
     case "company-guides":
       return `/interview/companies/${id}/`;
     case "roadmaps":

@@ -46,6 +46,21 @@ for (const p of pages) {
   const { html, url } = p;
   const is404 = url === "/404/";
   const noindex = /<meta name="robots" content="noindex/.test(html);
+  const redirect = html.match(/<meta http-equiv="refresh" content="0;url=([^"]+)"/i)?.[1];
+  if (redirect) {
+    const target = redirect.replace(/&amp;/g, "&");
+    if (!resolves(target)) errors.push(`${url}: redirect target does not resolve (${target})`);
+    const [targetPath, hash] = target.split("#");
+    if (
+      hash &&
+      byUrl.has(targetPath) &&
+      !ids(byUrl.get(targetPath).html).has(decodeURIComponent(hash))
+    )
+      errors.push(`${url}: redirect target has a broken anchor (${target})`);
+    p.js = 0;
+    p.css = 0;
+    continue;
+  }
   const h1s = (html.match(/<h1[\s>]/g) ?? []).length;
   if (h1s !== 1) errors.push(`${url}: expected exactly one <h1>, found ${h1s}`);
 

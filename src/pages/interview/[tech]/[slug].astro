@@ -20,18 +20,6 @@ export async function getStaticPaths() {
 
 const item = (await getByRef(Astro.props.ref)) as ItemOf<"interview-questions">;
 const d = item.entry.data;
-const consolidatedGuides = new Set([
-  "data-engineering",
-  "sql",
-  "databricks",
-  "dbt",
-  "python",
-  "pyspark",
-  "snowflake",
-]);
-if (consolidatedGuides.has(d.technology[0]!)) {
-  return Astro.redirect(`/interview/${d.technology[0]}/#${item.id.split("/")[1]}`, 301);
-}
 const { Content, headings } = await render(item.entry);
 const crumbs = await breadcrumbsFor(item);
 const { prerequisites } = await relatedGroups(item);

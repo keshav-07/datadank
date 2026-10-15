@@ -4,12 +4,8 @@ import ContentLayout from "../../../layouts/ContentLayout.astro";
 import IndexMeta from "../../../components/content/IndexMeta.astro";
 import Tile from "../../../components/content/Tile.astro";
 import QuestionTable from "../../../components/interview/QuestionTable.astro";
-import Callout from "../../../components/content/Callout.astro";
-import PracticeLinks from "../../../components/interview/PracticeLinks.astro";
 import { HOME } from "../../../utils/breadcrumbs";
 import { inLearningOrder, questionOrder } from "../../../utils/curriculum";
-import { articleSchema } from "../../../utils/seo";
-import { render } from "astro:content";
 
 export async function getStaticPaths() {
   const qs = await getItems("interview-questions");
@@ -30,9 +26,7 @@ const qs = inLearningOrder(
         a.title.localeCompare(b.title),
     ),
 );
-const questions = await Promise.all(
-  qs.map(async (item) => ({ item, Content: (await render(item.entry)).Content })),
-);
+// Topic column when the planner orders this course by topic (DSA).
 const order = questionOrder(tech!);
 const topicOf = order.size
   ? Object.fromEntries(qs.map((q) => [q.ref, order.get(q.ref)?.topic ?? "More"]))
@@ -41,86 +35,23 @@ const articles = (await getItems("articles")).filter(
   (a) => a.technology[0] === tech && a.entry.data.section === "learn",
 );
 const hub = await getHub(tech!);
-const title = `${label} interview questions and answers`;
-const description = `${qs.length} ${label} interview questions for Data Engineers, each with a short answer, a deeper explanation, common mistakes and follow-ups.`;
-const publishedDate = qs.reduce(
-  (earliest, q) => (q.entry.data.publishedDate < earliest ? q.entry.data.publishedDate : earliest),
-  qs[0]!.entry.data.publishedDate,
-);
-const updatedDate = qs.reduce(
-  (latest, q) => (q.entry.data.updatedDate > latest ? q.entry.data.updatedDate : latest),
-  qs[0]!.entry.data.updatedDate,
-);
-const schema = [
-  articleSchema({
-    headline: title,
-    description,
-    path: Astro.url.pathname,
-    site: Astro.site,
-    published: publishedDate,
-    modified: updatedDate,
-    author: "DataDank Editorial",
-  }),
-];
 ---
 
 <ContentLayout
-  title={title}
-  seoTitle={`${label} Interview Questions and Answers`}
-  {description}
+  title={`${label} interview questions${/data engineering/i.test(label) ? "" : " for Data Engineers"}`}
+  seoTitle={`${label} Interview Questions${/data engineering/i.test(label) ? " and Answers" : " for Data Engineers"}`}
+  description={`${qs.length} ${label} interview questions for Data Engineers, each with a short answer you can say out loud, a deeper explanation, common mistakes and follow-ups.`}
   crumbs={[HOME, { label: "Interview", href: "/interview/" }, { label }]}
   eyebrow="Interview preparation"
-  deck={`A complete, quality-led ${label} interview guide. Start with the question index, then read each answer, explanation and follow-up in this article.`}
+  deck="Every question starts with a direct answer you could say out loud, then explains why, when and what goes wrong. Tick questions off as you practise."
   indexable
-  ogType="article"
-  {schema}
-  width="reading"
 >
-  <IndexMeta type="Interview guide" technology={tech} />
+  <IndexMeta type="Interview hub" technology={tech} />
   <section class="section section--tight" aria-labelledby="qs-h">
     <h2 id="qs-h" class="group-title">
-      {label} question index
+      All {label} questions
     </h2>
-    <p class="muted">Choose a question to jump to its answer in this guide.</p>
     <QuestionTable questions={qs} topicOf={topicOf} caption={`${label} interview questions`} />
-  </section>
-
-  <section class="section section--tight interview-guide-answers" aria-labelledby="answers-h">
-    <h2 id="answers-h" class="group-title">
-      Questions and answers
-    </h2>
-    {questions.map(({ item, Content }, i) => {
-      const d = item.entry.data;
-      const slug = item.id.split("/")[1];
-      return (
-        <section class="section section--tight interview-guide-answer" aria-labelledby={slug}>
-          <h2 id={slug}>
-            <span class="muted">Question {i + 1}.</span> {item.title}
-          </h2>
-          <p class="eyebrow">
-            {d.difficulty} · {d.questionType.join(" / ")} · ~{d.estimatedMinutes} min
-          </p>
-          <div class="short-answer" aria-label="Short answer">
-            <h3>Short answer</h3>
-            <p>{d.shortAnswer}</p>
-          </div>
-          <PracticeLinks link={d.practice} idPrefix={slug} />
-          <div class="prose">
-            <Content components={{ Callout }} />
-          </div>
-          {d.followUps.length > 0 && (
-            <section class="related-block" aria-label="Interview follow-ups">
-              <h3>Interview follow-ups</h3>
-              <ol class="followups">
-                {d.followUps.map((followUp) => (
-                  <li>{followUp}</li>
-                ))}
-              </ol>
-            </section>
-          )}
-        </section>
-      );
-    })}
   </section>
 
   {articles.length > 0 && (

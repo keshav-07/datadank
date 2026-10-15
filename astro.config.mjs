@@ -7,8 +7,6 @@ import { join, relative } from "node:path";
 // Production origin. Canonical URLs, Open Graph URLs, JSON-LD, the sitemap and robots.txt are all built from it.
 // Override with SITE_URL only for a deliberate non-production build (see docs/DEPLOYMENT.md).
 const site = process.env.SITE_URL ?? "https://datadank.com";
-const CONSOLIDATED_INTERVIEW_TOPICS =
-  "data-engineering|sql|databricks|dbt|python|pyspark|snowflake";
 
 // URL → updatedDate for every content entry, so the sitemap's <lastmod> reflects real substantive updates
 // (hubs and other generated pages get none rather than a made-up date).
@@ -64,12 +62,7 @@ export default defineConfig({
     mdx(),
     sitemap({
       // Utility pages and the 404 page must never be in the sitemap.
-      filter: (page) =>
-        !page.endsWith("/404/") &&
-        !page.endsWith("/search/") &&
-        !new RegExp(`/interview/(?:${CONSOLIDATED_INTERVIEW_TOPICS})/[^/]+/$`).test(
-          new URL(page).pathname,
-        ),
+      filter: (page) => !page.endsWith("/404/") && !page.endsWith("/search/"),
       serialize: (item) => {
         const date = lastmod.get(new URL(item.url).pathname);
         return date ? { ...item, lastmod: date } : item;

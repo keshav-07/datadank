@@ -5,18 +5,3 @@
 /data-engineering/projects/ /projects/ 301
 /interview/dsa/maximum-average-subarray-i /interview/dsa/max-sum-subarray-of-size-k/ 301
 /interview/dsa/maximum-average-subarray-i/ /interview/dsa/max-sum-subarray-of-size-k/ 301
-# Consolidated interview guides: preserve existing detail links and jump to the matching answer.
-/interview/data-engineering/:slug /interview/data-engineering/#:slug 301
-/interview/data-engineering/:slug/ /interview/data-engineering/#:slug 301
-/interview/sql/:slug /interview/sql/#:slug 301
-/interview/sql/:slug/ /interview/sql/#:slug 301
-/interview/databricks/:slug /interview/databricks/#:slug 301
-/interview/databricks/:slug/ /interview/databricks/#:slug 301
-/interview/dbt/:slug /interview/dbt/#:slug 301
-/interview/dbt/:slug/ /interview/dbt/#:slug 301
-/interview/python/:slug /interview/python/#:slug 301
-/interview/python/:slug/ /interview/python/#:slug 301
-/interview/pyspark/:slug /interview/pyspark/#:slug 301
-/interview/pyspark/:slug/ /interview/pyspark/#:slug 301
-/interview/snowflake/:slug /interview/snowflake/#:slug 301
-/interview/snowflake/:slug/ /interview/snowflake/#:slug 301

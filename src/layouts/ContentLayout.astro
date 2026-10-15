@@ -14,7 +14,6 @@ interface Props {
   noindex?: boolean;
   indexable?: boolean;
   schema?: object[];
-  ogType?: "website" | "article";
   /** Width of the page body container */
   width?: "default" | "wide" | "reading";
 }
@@ -28,7 +27,6 @@ const {
   noindex,
   indexable,
   schema = [],
-  ogType = "website",
   width = "default",
 } = Astro.props;
 const containerClass =
@@ -43,7 +41,7 @@ const all = [
 ];
 ---
 
-<BaseLayout {title} {description} {seoTitle} {noindex} {indexable} {ogType} schema={all}>
+<BaseLayout {title} {description} {seoTitle} {noindex} {indexable} schema={all}>
   <div class="page-header">
     <div class={containerClass}>
       <Breadcrumb {crumbs} />

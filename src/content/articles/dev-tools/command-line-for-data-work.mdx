@@ -85,19 +85,18 @@ Every command has three streams: standard input (0), standard output (1) and sta
 Keeping errors separate from data matters in pipelines: a script that mixes an error message into its CSV output produces a corrupt file.
 
 ```bash
-ls landing/2026-10-01 /nope > listing.txt 2> errors.txt; echo "exit=$?"
+ls orders.csv /nope > listing.txt 2> errors.txt; echo "exit=$?"
 cat listing.txt
 cat errors.txt
 ```
 
 ```text
 exit=2
-landing/2026-10-01:
 orders.csv
 ls: cannot access '/nope': No such file or directory
 ```
 
-(`landing/` is created in the `find` section below; the order of `> file 2>&1` matters, `2>&1 > file` sends errors to the terminal.)
+The data went to one file and the error to the other. Order matters when you combine them: `> all.log 2>&1` sends both streams to the file, while `2>&1 > all.log` sends errors to the terminal, because redirections are applied left to right.
 
 ## Looking at a file: head, tail, wc, cut
 
@@ -194,7 +193,7 @@ sed 's/,cancelled,/,canceled,/' orders.csv | grep canceled
 
 ```bash
 awk -F, 'NR > 1 && $4 == "shipped" { total[$3] += $5 }
-         END { for (c in total) printf "%s %.2f\n", c, total[c] }' orders.csv | sort
+         END { for (country in total) printf "%s %.2f\n", country, total[country] }' orders.csv | sort
 ```
 
 ```text
@@ -203,7 +202,7 @@ IN 42.10
 US 450.49
 ```
 
-`for (c in total)` visits keys in no guaranteed order, so the output is piped to `sort`. awk does arithmetic in floating point, which is fine for a sanity check and wrong for financial reconciliation; use SQL `NUMERIC` or Python `Decimal` for that.
+`for (country in total)` visits keys in no guaranteed order, so the output is piped to `sort`. awk does arithmetic in floating point, which is fine for a sanity check and wrong for financial reconciliation; use SQL `NUMERIC` or Python `Decimal` for that.
 
 ## Finding files and running a command on each: find and xargs
 

@@ -1,0 +1,354 @@
+---
+publishedDate: "2026-10-16"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
+title: "Shell Scripting for Data Pipelines: Robust Bash, Retries, Traps and Cron"
+seoTitle: "Bash Scripting for Data Pipelines"
+description: "Bash scripting for data pipelines: a robust script with arguments, logging, traps, retries, locking and idempotent publish, plus cron and why orchestrators replace it."
+technology: ["dev-tools"]
+topic: ["bash", "shell-scripting", "cron"]
+difficulty: "Intermediate"
+learningObjectives:
+  - "Write a bash script that validates its arguments and fails loudly"
+  - "Log to stderr with timestamps and clean up temporary files with traps"
+  - "Retry flaky steps with exponential backoff and prevent overlapping runs with a lock"
+  - "Make a file load idempotent so a rerun replaces data instead of duplicating it"
+  - "Schedule a script with cron and explain what an orchestrator adds"
+prerequisites: ["articles:dev-tools/command-line-for-data-work"]
+related: ["articles:etl-elt/pipeline-reliability-and-retries", "articles:etl-elt/idempotency-in-data-pipelines", "articles:airflow/dags-scheduling-retries"]
+previous: "articles:dev-tools/git-for-data-engineers"
+next: "articles:dev-tools/python-environments-packaging"
+versionContext: "The script and every scenario below were run with GNU bash 5.2 and util-linux flock on Ubuntu 24.04 in a temporary directory; the output shown is the real output (timestamps are from that run). flock is Linux-specific; macOS does not ship it."
+sources:
+  - { label: "GNU Bash manual: The Set Builtin", url: "https://www.gnu.org/software/bash/manual/html_node/The-Set-Builtin.html" }
+  - { label: "GNU Bash manual: Bourne Shell Builtins (getopts, trap)", url: "https://www.gnu.org/software/bash/manual/html_node/Bourne-Shell-Builtins.html" }
+  - { label: "GNU Bash manual: Shell Parameter Expansion", url: "https://www.gnu.org/software/bash/manual/html_node/Shell-Parameter-Expansion.html" }
+  - { label: "crontab(5) manual page", url: "https://man7.org/linux/man-pages/man5/crontab.5.html" }
+  - { label: "flock(1) manual page", url: "https://man7.org/linux/man-pages/man1/flock.1.html" }
+---
+
+Shell scripts are where many pipelines start: download a file, check it, copy it into place, call `psql` or `spark-submit`. They are also where many pipelines fail quietly. The difference between a fragile script and a dependable one is a handful of habits: stop on errors, validate input, log what happened, clean up, retry what is flaky, and make reruns safe.
+
+This lesson builds one script, `load_orders.sh`, that loads a day of orders from a landing folder into a partitioned "warehouse" folder, and then runs it through every failure it is designed to handle. The fetch step is a local `cp` so you can run it anywhere; in a real job it would be `curl`, `aws s3 cp` or similar.
+
+## The complete script
+
+Read it once, then the sections below explain each part.
+
+```bash
+#!/usr/bin/env bash
+# Load one day of orders from the landing area into the warehouse staging folder.
+# Usage: load_orders.sh -d YYYY-MM-DD [-s SOURCE_DIR] [-t TARGET_DIR] [-r RETRIES]
+set -euo pipefail
+
+readonly SCRIPT_NAME=$(basename "$0")
+
+log() {
+  # Logs go to stderr so stdout stays clean for data.
+  printf '%s %s [%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SCRIPT_NAME" "$1" "$2" >&2
+}
+
+usage() {
+  echo "Usage: $SCRIPT_NAME -d YYYY-MM-DD [-s SOURCE_DIR] [-t TARGET_DIR] [-r RETRIES]" >&2
+  exit 2
+}
+
+run_date=""
+source_dir="${SOURCE_DIR:-./source}"
+target_dir="${TARGET_DIR:-./warehouse/orders}"
+retries=3
+
+while getopts ":d:s:t:r:h" opt; do
+  case "$opt" in
+    d) run_date="$OPTARG" ;;
+    s) source_dir="$OPTARG" ;;
+    t) target_dir="$OPTARG" ;;
+    r) retries="$OPTARG" ;;
+    h) usage ;;
+    :) log ERROR "option -$OPTARG needs a value"; usage ;;
+    *) log ERROR "unknown option -$OPTARG"; usage ;;
+  esac
+done
+
+[[ -n "$run_date" ]] || { log ERROR "-d is required"; usage; }
+[[ "$run_date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { log ERROR "bad date: $run_date"; exit 2; }
+
+work_dir=$(mktemp -d)
+cleanup() {
+  rm -rf "$work_dir"
+}
+trap cleanup EXIT
+trap 'log ERROR "failed at line $LINENO: $BASH_COMMAND"' ERR
+
+retry() {
+  # retry MAX_ATTEMPTS command [args...]: exponential backoff 1s, 2s, 4s, ...
+  local max=$1; shift
+  local attempt=1 delay=1
+  until "$@"; do
+    if (( attempt >= max )); then
+      log ERROR "giving up after $attempt attempts: $*"
+      return 1
+    fi
+    log WARN "attempt $attempt failed, retrying in ${delay}s: $*"
+    sleep "$delay"
+    attempt=$(( attempt + 1 ))
+    delay=$(( delay * 2 ))
+  done
+}
+
+fetch() {
+  # Stand-in for curl/aws s3 cp: copy the day's file into the work directory.
+  cp "$source_dir/$run_date/orders.csv" "$work_dir/orders.csv"
+}
+
+mkdir -p "$target_dir"
+# One run per target at a time: a second copy exits instead of interleaving writes.
+exec 9>"$target_dir/.lock"
+flock -n 9 || { log ERROR "another run holds $target_dir/.lock"; exit 1; }
+
+partition="$target_dir/dt=$run_date"
+log INFO "loading $run_date from $source_dir into $partition"
+
+retry "$retries" fetch
+
+rows=$(( $(wc -l < "$work_dir/orders.csv") - 1 ))
+if (( rows <= 0 )); then
+  log ERROR "no data rows in source file"
+  exit 1
+fi
+
+# Idempotent publish: build the new partition next to the old one, then swap it in.
+staged="$target_dir/.dt=$run_date.tmp"
+rm -rf "$staged"
+mkdir "$staged"
+cp "$work_dir/orders.csv" "$staged/orders.csv"
+rm -rf "$partition"
+mv "$staged" "$partition"
+
+log INFO "published $rows rows to $partition"
+```
+
+Save it as `load_orders.sh`, make it executable and create one day of source data:
+
+```bash
+chmod +x load_orders.sh
+mkdir -p source/2026-10-15
+printf 'order_id,customer_id,amount\n1001,C01,120.50\n1002,C02,35.00\n1003,C01,89.99\n' > source/2026-10-15/orders.csv
+```
+
+## Start every script the same way
+
+`#!/usr/bin/env bash` finds bash on the `PATH`, which works on Linux and macOS alike. Write bash explicitly rather than `sh`: on Debian and Ubuntu `/bin/sh` is dash, which does not support `[[ ]]` or arrays, and the dash 0.5.12 in Ubuntu 24.04 rejects `set -o pipefail`. `set -euo pipefail` makes the script exit on a failed command, an unset variable or a failure anywhere in a pipeline (the previous lesson shows each one failing).
+
+Quote every variable expansion: `"$work_dir"`, not `$work_dir`. Unquoted, a value with a space is split into two arguments and a value with `*` is expanded as a glob, which is how scripts end up deleting the wrong files.
+
+## Arguments: getopts, defaults and validation
+
+`getopts ":d:s:t:r:h"` parses short options; a letter followed by `:` takes a value, available in `$OPTARG`. The leading `:` turns on silent error handling, so a missing value arrives as `:` and an unknown option as `?` (matched by the `*` case), and the script prints its own message. Defaults come from the environment with `${SOURCE_DIR:-./source}`, so the same script works with flags in development and environment variables in a container or scheduler.
+
+Validate before doing any work. A run date is the most important argument in a batch job, and a wrong format such as `15/10/2026` would otherwise create a nonsense partition:
+
+```bash
+./load_orders.sh; echo "exit=$?"
+./load_orders.sh -d 15/10/2026; echo "exit=$?"
+```
+
+```text
+2026-10-16T21:55:15Z load_orders.sh [ERROR] -d is required
+Usage: load_orders.sh -d YYYY-MM-DD [-s SOURCE_DIR] [-t TARGET_DIR] [-r RETRIES]
+exit=2
+2026-10-16T21:55:15Z load_orders.sh [ERROR] bad date: 15/10/2026
+exit=2
+```
+
+Exit code 2 for usage errors and 1 for runtime failures is a common convention that lets a caller tell "you called me wrong" from "the load failed". Taking the run date as an argument, instead of computing "yesterday" inside the script, is what makes backfills possible: rerunning 1 March is `./load_orders.sh -d 2026-03-01`.
+
+## Logging
+
+`log` writes one line per event with a UTC timestamp, the script name and a level, to **stderr**. Logs on stderr never mix with data a script might write to stdout, and schedulers capture stderr into the task log. UTC timestamps avoid confusion when servers and people sit in different time zones. Log what you are about to do and what you did, including counts ("published 3 rows"), because a count in a log is often the first clue that a source sent a partial file.
+
+## Traps: cleanup and error context
+
+`trap cleanup EXIT` runs `cleanup` whenever the script exits, whether it succeeded, failed under `set -e` or called `exit`. That guarantees the temporary directory from `mktemp -d` is removed. A minimal demonstration:
+
+```bash
+cat > trap_demo.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+work_dir=$(mktemp -d)
+trap 'rm -rf "$work_dir"; echo "cleaned up $work_dir" >&2' EXIT
+echo "working in $work_dir"
+false    # simulate a failing step
+echo "never printed"
+EOF
+bash trap_demo.sh; echo "exit=$?"
+```
+
+```text
+working in /tmp/tmp.P5iFwFqI8k
+cleaned up /tmp/tmp.P5iFwFqI8k
+exit=1
+```
+
+The `ERR` trap logs the line number and the command that failed, which turns a bare non-zero exit into a useful log line. By default the `ERR` trap is not inherited by functions; `set -E` (errtrace) changes that, at the cost of possibly logging the same failure at several levels.
+
+Schedulers and container platforms stop jobs with `SIGTERM`. A trap on `TERM` lets the script stop cleanly; the `EXIT` trap then still runs:
+
+```bash
+cat > sig.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+trap 'echo "caught SIGTERM, stopping cleanly" >&2; exit 143' TERM
+echo "started as PID $$"
+sleep 30 &
+wait $!
+EOF
+bash sig.sh & sleep 0.5; kill -TERM $!; wait $!; echo "exit=$?"
+```
+
+```text
+started as PID 8614
+caught SIGTERM, stopping cleanly
+exit=143
+```
+
+Bash runs a trap only after the current foreground command finishes, which is why the long `sleep` runs in the background with `wait`: `wait` is interrupted by the signal immediately. Exit status 143 is the shell convention for "terminated by signal 15" (128 + 15).
+
+## Retries with exponential backoff
+
+Networks time out and files arrive late. `retry 3 fetch` runs `fetch` up to three times, waiting 1 s, then 2 s. Commands tested by `until` do not trigger `set -e`, so a failed attempt does not end the script; only the final `return 1` does. Here the file arrives 1.5 seconds after the run starts:
+
+```bash
+(sleep 1.5; mkdir -p source/2026-10-16; cp source/2026-10-15/orders.csv source/2026-10-16/) &
+./load_orders.sh -d 2026-10-16; echo "exit=$?"
+```
+
+```text
+2026-10-16T21:55:15Z load_orders.sh [INFO] loading 2026-10-16 from ./source into ./warehouse/orders/dt=2026-10-16
+cp: cannot stat './source/2026-10-16/orders.csv': No such file or directory
+2026-10-16T21:55:15Z load_orders.sh [WARN] attempt 1 failed, retrying in 1s: fetch
+cp: cannot stat './source/2026-10-16/orders.csv': No such file or directory
+2026-10-16T21:55:16Z load_orders.sh [WARN] attempt 2 failed, retrying in 2s: fetch
+2026-10-16T21:55:18Z load_orders.sh [INFO] published 3 rows to ./warehouse/orders/dt=2026-10-16
+exit=0
+```
+
+And when the file never arrives, the script gives up and exits non-zero, so the scheduler marks the run failed:
+
+```bash
+./load_orders.sh -d 2026-10-17; echo "exit=$?"
+```
+
+```text
+2026-10-16T21:55:18Z load_orders.sh [INFO] loading 2026-10-17 from ./source into ./warehouse/orders/dt=2026-10-17
+cp: cannot stat './source/2026-10-17/orders.csv': No such file or directory
+2026-10-16T21:55:18Z load_orders.sh [WARN] attempt 1 failed, retrying in 1s: fetch
+cp: cannot stat './source/2026-10-17/orders.csv': No such file or directory
+2026-10-16T21:55:19Z load_orders.sh [WARN] attempt 2 failed, retrying in 2s: fetch
+cp: cannot stat './source/2026-10-17/orders.csv': No such file or directory
+2026-10-16T21:55:21Z load_orders.sh [ERROR] giving up after 3 attempts: fetch
+2026-10-16T21:55:21Z load_orders.sh [ERROR] failed at line 74: return 1
+exit=1
+```
+
+Retry only steps that are safe to repeat (a download into a temporary directory is; a non-idempotent `INSERT` is not), cap the attempts, and in production add random jitter to the delay so many jobs do not retry at the same instant. `curl` has its own `--retry` and `--fail` options; use them for HTTP rather than wrapping curl in a loop.
+
+## Idempotency: a rerun replaces, never duplicates
+
+Pipelines are rerun all the time: after a failure, for a backfill, by a scheduler that retries a task. A load is **idempotent** if running it twice for the same date leaves the same result as running it once. The script gets there by treating the date partition `dt=2026-10-15` as the unit of work: it builds the complete new partition in a hidden staging directory, then removes the old partition and moves the new one into place. It never appends.
+
+```bash
+./load_orders.sh -d 2026-10-15; echo "exit=$?"
+./load_orders.sh -d 2026-10-15; echo "exit=$?"
+find warehouse -type f | sort
+wc -l warehouse/orders/dt=2026-10-15/orders.csv
+```
+
+```text
+2026-10-16T21:55:15Z load_orders.sh [INFO] loading 2026-10-15 from ./source into ./warehouse/orders/dt=2026-10-15
+2026-10-16T21:55:15Z load_orders.sh [INFO] published 3 rows to ./warehouse/orders/dt=2026-10-15
+exit=0
+2026-10-16T21:55:15Z load_orders.sh [INFO] loading 2026-10-15 from ./source into ./warehouse/orders/dt=2026-10-15
+2026-10-16T21:55:15Z load_orders.sh [INFO] published 3 rows to ./warehouse/orders/dt=2026-10-15
+exit=0
+warehouse/orders/.lock
+warehouse/orders/dt=2026-10-15/orders.csv
+4 warehouse/orders/dt=2026-10-15/orders.csv
+```
+
+Two runs, one header plus three rows. `mv` within one file system is a rename, which is atomic for a single file or directory, but the `rm` followed by `mv` leaves a moment with no partition, and readers could see it. Real warehouses close that gap with transactions (`DELETE` plus `INSERT` in one transaction, or `MERGE`), or with table formats such as Delta Lake that commit a new version atomically. The pattern is the same: replace the whole unit of work, never blindly append.
+
+## Locking: one run at a time
+
+If cron starts a run while the previous one is still going, two copies write to the same partition. `flock` takes an exclusive lock on a file; `exec 9>file` opens file descriptor 9 for the rest of the script, and `flock -n 9` fails immediately (`-n`, non-blocking) if another process holds the lock. The lock is released automatically when the script exits, even if it crashes. With another process holding the lock:
+
+```bash
+flock warehouse/orders/.lock sleep 3 &
+sleep 0.5; ./load_orders.sh -d 2026-10-15; echo "exit=$?"
+```
+
+```text
+2026-10-16T21:55:21Z load_orders.sh [ERROR] another run holds ./warehouse/orders/.lock
+exit=1
+```
+
+## Scheduling with cron
+
+cron runs commands on a schedule. Each line in a crontab (edit yours with `crontab -e`, list it with `crontab -l`) has five time fields and a command:
+
+```text
+# minute hour day-of-month month day-of-week  command
+  15     2    *            *     *            /opt/pipelines/run_daily.sh >> /var/log/pipelines/orders.log 2>&1
+  */10   *    *            *     1-5          /opt/pipelines/poll_inbox.sh
+```
+
+The first line runs at 02:15 every day; the second every ten minutes, Monday to Friday. The time zone is the machine's, unless your cron implementation supports a variable that overrides it. Common cron pitfalls:
+
+- **A minimal environment.** cron runs commands with `/bin/sh` and a short `PATH`, without your login profile, so a script that works in your terminal fails under cron. Use absolute paths and set what you need in the script.
+- **`%` is special.** In a crontab command, an unescaped `%` becomes a newline, so `date +%F` must be written `date +\%F`. A wrapper script avoids the problem.
+- **Output goes nowhere useful.** Without a redirect, output is mailed to the user (if mail is configured) or lost. Redirect to a log file.
+- **No dates passed in.** cron does not tell the job which date it is running for, so the wrapper has to compute it:
+
+{/* noexec */}
+```bash
+#!/usr/bin/env bash
+# noexec: example cron wrapper for a server; paths are illustrative
+set -euo pipefail
+cd /opt/pipelines
+./load_orders.sh -d "$(date -u -d 'yesterday' +%Y-%m-%d)"   # GNU date; macOS uses: date -u -v-1d +%Y-%m-%d
+```
+
+## Why orchestrators replace cron
+
+cron answers one question, "when should this start", and nothing else. As soon as a team has more than a handful of jobs, it needs what an orchestrator such as Airflow, Dagster or Prefect provides:
+
+| Need | cron | Orchestrator |
+|---|---|---|
+| Dependencies (run B after A succeeds) | no; people guess start times | task graph (DAG) |
+| Retries and timeouts | hand-written in each script | declared per task |
+| Run history and logs | log files on one machine | UI with every run, status and log |
+| Backfills for a date range | a hand-written loop | built in, each run knows its logical date |
+| Alerts on failure | only if the script sends them | built in |
+| Runs on more than one machine | no | workers and executors |
+| A missed run when the server was down | silently skipped | can catch up |
+
+The script's habits still matter inside an orchestrator: tasks should take their date as a parameter, fail with a non-zero exit, log to stderr, be safe to retry and be idempotent. An orchestrator retries a task that is not idempotent just as happily as cron does.
+
+## Common mistakes
+
+- Missing `set -euo pipefail`, so the job reports success after a failed step.
+- Unquoted variables, which break on spaces and globs, and `rm -rf "$DIR/"` with an unvalidated variable.
+- Computing "yesterday" inside the script, which makes backfills and reruns of a specific day impossible.
+- Appending to the target on every run, so retries duplicate data.
+- Retrying a step that is not safe to repeat, or retrying forever without a cap.
+- Temporary files left behind because there is no `EXIT` trap.
+- Relying on your interactive shell's `PATH` and environment in a cron job.
+- Overlapping runs because nothing prevents a second copy from starting.
+
+## In an interview
+
+Expect questions such as "how do you make a script safe to rerun", "the cron job said it succeeded but the table is empty, what happened", or "why would you move from cron to Airflow". Good answers are concrete: exit codes and `pipefail` for the false success, a partition overwrite or `MERGE` for idempotency, a capped retry with backoff for flaky sources, a lock against overlapping runs, and for orchestrators, dependencies, retries, backfills, history and alerting rather than "it is more modern". Saying that the run date should be a parameter shows you have done backfills.
+
+## Key takeaway
+
+A dependable pipeline script starts with `set -euo pipefail`, validates its arguments (especially the run date), logs to stderr with timestamps, cleans up with an `EXIT` trap, retries only safe steps with a cap and backoff, takes a lock, and publishes by replacing a whole unit of work. cron can start such a script; an orchestrator is what you need once jobs depend on each other. Next, make the Python side of the pipeline reproducible with [Python environments and packaging](/dev-tools/python-environments-packaging/).

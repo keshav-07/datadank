@@ -1,27 +1,33 @@
 ---
 seoTitle: "Python Iterators and Generators for Big Data"
 publishedDate: "2026-10-04"
-updatedDate: "2026-10-10"
-reviewedDate: "2026-10-10"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
 title: "Python Iterators, Generators and Memory-Efficient Processing"
 description: "Use Python iterators and generators to process files and API pages lazily, in batches, with flat memory use, and avoid the mistakes that silently exhaust them."
 inventoryId: "TECH-07"
 technology: ["python"]
 topic: ["generators", "memory"]
 difficulty: "Intermediate"
+learningObjectives:
+  - "Explain the iteration protocol: iter(), next() and StopIteration"
+  - "Write generator functions, generator expressions and yield from delegation"
+  - "Build a lazy pipeline over a large file and measure its memory against an eager version"
+  - "Use islice, chain, groupby and batched correctly, including the groupby sorting pitfall"
+  - "Avoid exhausted iterators, closed files and errors that surface late"
 prerequisites: ["articles:python/file-io-csv-json"]
-related: ["interview-questions:python/generators-large-datasets", "articles:python/idempotent-csv-loader"]
+related: ["interview-questions:python/generators-large-datasets", "interview-questions:python/process-large-csv-limited-memory", "articles:python/idempotent-csv-loader", "articles:python/python-interview-questions", "articles:python/working-with-apis"]
 previous: "articles:python/file-io-csv-json"
 next: "articles:python/error-handling-logging"
-sources: [{"label": "Python documentation: Generators (functional programming HOWTO)", "url": "https://docs.python.org/3/howto/functional.html#generators"}, {"label": "Python documentation: itertools", "url": "https://docs.python.org/3/library/itertools.html"}]
-versionContext: "Examples run on Python 3.11 and 3.12; itertools.batched exists from Python 3.12, and the fallback helper covers older versions"
+sources: [{"label": "Python documentation: Iterator types", "url": "https://docs.python.org/3/library/stdtypes.html#iterator-types"}, {"label": "Python documentation: Generators (functional programming HOWTO)", "url": "https://docs.python.org/3/howto/functional.html#generators"}, {"label": "Python documentation: itertools", "url": "https://docs.python.org/3/library/itertools.html"}, {"label": "Python documentation: tracemalloc", "url": "https://docs.python.org/3/library/tracemalloc.html"}, {"label": "PEP 380: Syntax for delegating to a subgenerator", "url": "https://peps.python.org/pep-0380/"}]
+versionContext: "Every example was run with CPython 3.11.15 (/usr/bin/python3) through scripts/verify-examples.py, so the batched example used the islice fallback; itertools.batched exists from Python 3.12. Memory figures in the text are from tracemalloc on that run."
 ---
 
 A list holds every element in memory at once. An **iterator** produces elements one at a time, on demand. For data that is large, unbounded or arrives in pages, that difference decides whether a job runs in a few megabytes or runs out of memory.
 
 ## Iterables, iterators and generators
 
-- An **iterable** is anything you can loop over (`list`, `dict`, file objects).
+- An **iterable** is anything you can loop over (`list`, `dict`, file objects). `iter(obj)` returns an iterator for it.
 - An **iterator** is the object that actually hands out the next value (`next(it)`), and remembers where it is.
 - A **generator** is the easiest way to write an iterator: a function that uses `yield`.
 
@@ -43,6 +49,136 @@ print(list(count_up_to(5)))
 ```
 
 Nothing runs until a value is requested, and only one value exists at a time.
+
+## The iteration protocol
+
+A `for` loop is a small amount of machinery. It calls `iter()` on the object once, then calls `next()` until the iterator raises `StopIteration`:
+
+```python
+items = ["a", "b"]
+it = iter(items)                 # list -> list_iterator
+print(next(it), next(it))
+try:
+    next(it)
+except StopIteration:
+    print("StopIteration: the loop ends here")
+
+# what `for x in items: print(x)` does
+it = iter(items)
+while True:
+    try:
+        x = next(it)
+    except StopIteration:
+        break
+    print(x)
+```
+
+```text
+a b
+StopIteration: the loop ends here
+a
+b
+```
+
+To be an iterator, an object needs `__next__` (hand out the next value or raise `StopIteration`) and `__iter__` returning itself. A class makes the two roles visible:
+
+```python
+class Countdown:
+    """An iterator written by hand. A generator does all of this for you."""
+    def __init__(self, start):
+        self.current = start
+
+    def __iter__(self):
+        return self              # an iterator is its own iterator
+
+    def __next__(self):
+        if self.current <= 0:
+            raise StopIteration
+        self.current -= 1
+        return self.current + 1
+
+c = Countdown(3)
+assert iter(c) is c
+print(list(c), list(c))          # the second list() finds it already exhausted
+```
+
+```text
+[3, 2, 1] []
+```
+
+That last line is the key difference between an **iterable** and an **iterator**. A list is an iterable: every `iter(my_list)` gives a fresh iterator starting at the beginning, so you can loop over a list many times. An iterator (a generator, a file object, a `csv.reader`, a database cursor, `map`, `filter`, `zip`) is single-pass: once it is exhausted, it stays exhausted.
+
+## Generator functions and generator expressions
+
+A function containing `yield` returns a generator object when called; the body runs only as values are pulled. A `return` inside a generator ends it, and code after the last `yield` (including `finally` blocks) runs when the consumer asks for one more value:
+
+```python
+def numbered(lines):
+    print("  [start]")
+    try:
+        for n, line in enumerate(lines, start=1):
+            yield n, line.rstrip("\n")
+    finally:
+        print("  [cleanup]")         # runs on exhaustion, on close(), or when garbage collected
+
+gen = numbered(["x\n", "y\n"])
+print("created, nothing printed yet")
+for pair in gen:
+    print(pair)
+```
+
+```text
+created, nothing printed yet
+  [start]
+(1, 'x')
+(2, 'y')
+  [cleanup]
+```
+
+A **generator expression** is the lazy version of a list comprehension: parentheses instead of square brackets. When it is the only argument to a function, the extra parentheses can be dropped.
+
+```python
+amounts = ["10", "20", "x", "30"]
+squares_list = [n * n for n in range(5)]          # built now, all in memory
+squares_gen = (n * n for n in range(5))           # built as you pull
+total = sum(int(a) for a in amounts if a.isdigit())
+print(squares_list, next(squares_gen), next(squares_gen), total)
+```
+
+```text
+[0, 1, 4, 9, 16] 0 1 60
+```
+
+Use a comprehension when you need the result more than once, need `len()`, or need to index into it. Use a generator expression when you feed the values straight into `sum`, `max`, `any`, `"".join`, a writer or another generator.
+
+## yield from: delegating to another iterable
+
+`yield from iterable` yields every item from another iterable, in order. It replaces `for x in it: yield x`, and with a sub-generator it also passes through the sub-generator's `return` value, which is a neat way to return a count alongside the stream:
+
+```python
+def read_file_lines(name, lines):
+    count = 0
+    for line in lines:
+        count += 1
+        yield f"{name}:{line}"
+    return count                              # becomes the value of `yield from`
+
+def read_all(files):
+    totals = {}
+    for name, lines in files.items():
+        totals[name] = yield from read_file_lines(name, lines)
+    print("lines per file:", totals)
+
+files = {"a.csv": ["1", "2"], "b.csv": ["3"]}
+print(list(read_all(files)))
+```
+
+```text
+lines per file: {'a.csv': 2, 'b.csv': 1}
+['a.csv:1', 'a.csv:2', 'b.csv:3']
+```
+
+`read_all` streams every line of every file as one sequence, and the caller does not know or care how many files there were.
 
 ## Streaming a file line by line
 
@@ -69,7 +205,7 @@ print(list(parse_amounts(fake_file)))
 [(1, 10.0), (3, 30.0)]
 ```
 
-With a real file you would write `with open(path) as f: for row in parse_amounts(f): ...`.
+With a real file you would write `with open(path) as f: for row in parse_amounts(f): ...`. For real CSV, use `csv.reader` or `csv.DictReader` over the file instead of `split(",")`, which breaks on quoted commas (see [file I/O](/python/file-io-csv-json/)); both readers are iterators too.
 
 ## Pipelines of generators
 
@@ -96,6 +232,128 @@ for record in to_cents(only_large(read(rows), 50)):
 {'id': 3, 'amount': 120.0, 'amount_cents': 12000}
 ```
 
+## Worked example: a lazy pipeline over a large file, measured
+
+Claims about memory are easy to make and easy to check. This example writes a 200,000-row CSV (about 4 MB), then computes total revenue per user two ways: by loading every row into a list first, and by streaming. `tracemalloc` reports the peak memory Python allocated during each run.
+
+```python
+import csv
+import os
+import tempfile
+import tracemalloc
+from collections import defaultdict
+
+path = os.path.join(tempfile.mkdtemp(), "events.csv")
+with open(path, "w", newline="") as f:
+    w = csv.writer(f)
+    w.writerow(["event_id", "user", "amount_cents"])
+    for i in range(200_000):
+        w.writerow([i, f"user{i % 1000}", i % 5000])
+
+def read_rows(p):
+    with open(p, newline="", encoding="utf-8") as f:
+        yield from csv.DictReader(f)              # file stays open only while we iterate
+
+def valid(rows):
+    for r in rows:
+        if r["amount_cents"].isdigit():
+            yield r["user"], int(r["amount_cents"])
+
+def revenue_eager(p):
+    with open(p, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))            # every row is a dict, all at once
+    totals = defaultdict(int)
+    for user, cents in valid(rows):
+        totals[user] += cents
+    return totals
+
+def revenue_lazy(p):
+    totals = defaultdict(int)
+    for user, cents in valid(read_rows(p)):       # one row in memory at a time
+        totals[user] += cents
+    return totals
+
+def peak_bytes(fn, *args):
+    tracemalloc.start()
+    result = fn(*args)
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    return result, peak
+
+eager, eager_peak = peak_bytes(revenue_eager, path)
+lazy, lazy_peak = peak_bytes(revenue_lazy, path)
+assert eager == lazy and len(lazy) == 1000
+assert eager_peak > 20 * lazy_peak               # the measured gap is far larger than 20x
+print(f"file size: {os.path.getsize(path) / 1e6:.1f} MB")
+print("same result:", eager == lazy, "| lazy uses far less memory:", lazy_peak * 20 < eager_peak)
+```
+
+```text
+file size: 4.0 MB
+same result: True | lazy uses far less memory: True
+```
+
+On the run recorded for this page, the eager version peaked at about 71 MB for a 4 MB file, because each row became a dict of three strings with per-object overhead. The streaming version peaked at about 160 KB: the `totals` dict for 1,000 users plus one row and the file buffer. Scale the file up 100 times and the eager version needs gigabytes while the lazy one does not change. Note what still grows: `totals` has one entry per user, so the memory of a streaming job is set by its **state** (here the number of distinct keys), not by the number of rows. Measure your own data the same way before deciding a job needs Spark.
+
+## itertools: the standard toolkit
+
+`itertools` functions take and return iterators, so they keep a pipeline lazy.
+
+```python
+from itertools import chain, islice
+
+def numbers():
+    n = 0
+    while True:                       # infinite: only safe because islice stops it
+        yield n
+        n += 1
+
+print(list(islice(numbers(), 5)))                       # first 5
+print(list(islice(numbers(), 10, 20, 3)))               # start, stop, step
+print(list(chain(["a", "b"], ("c",), "de")))           # one stream from several
+pages = [[1, 2], [3], []]
+print(list(chain.from_iterable(pages)))                 # flatten one level, lazily
+```
+
+```text
+[0, 1, 2, 3, 4]
+[10, 13, 16, 19]
+['a', 'b', 'c', 'd', 'e']
+[1, 2, 3]
+```
+
+`islice` is how you peek at the first rows of a huge file (`islice(f, 5)`) or skip a header block; unlike slicing a list, it cannot go backwards and does not support negative indexes. `chain.from_iterable` turns "a list of pages" or "a list of files" into a single stream.
+
+### groupby only groups consecutive items
+
+`itertools.groupby` starts a new group every time the key **changes**. On unsorted input, the same key appears in several groups. That is the most common `itertools` bug in interviews and in code review.
+
+```python
+from itertools import groupby
+from operator import itemgetter
+
+events = [("asha", 5), ("ben", 3), ("asha", 2)]
+
+unsorted = [(k, sum(v for _, v in grp)) for k, grp in groupby(events, key=itemgetter(0))]
+print(unsorted)                      # asha appears twice
+
+ordered = sorted(events, key=itemgetter(0))
+print([(k, sum(v for _, v in grp)) for k, grp in groupby(ordered, key=itemgetter(0))])
+
+# Second pitfall: each group is a view on the shared iterator. Advancing groupby empties earlier groups,
+# and once groupby is exhausted every saved group is empty.
+groups = {k: grp for k, grp in groupby(ordered, key=itemgetter(0))}
+print({k: list(g) for k, g in groups.items()})
+```
+
+```text
+[('asha', 5), ('ben', 3), ('asha', 2)]
+[('asha', 7), ('ben', 3)]
+{'asha': [], 'ben': []}
+```
+
+Use `groupby` when the input is already sorted by the key, for example a file exported with `ORDER BY customer_id`, because then it groups a stream of any size with O(1) memory per group. Consume each group (or `list()` it) before moving on. Sorting a large stream just to use `groupby` defeats the purpose; a `defaultdict` is simpler when the groups fit in memory.
+
 ## Batching for databases and APIs
 
 Writing one row at a time is slow; loading everything is memory-hungry. Batches are the middle ground. Python 3.12 adds `itertools.batched`; on older versions a three-line helper built on `itertools.islice` does the same, so this pattern works everywhere:
@@ -107,6 +365,8 @@ try:
     from itertools import batched          # Python 3.12+
 except ImportError:                        # Python 3.11 and older
     def batched(iterable, n):
+        if n < 1:
+            raise ValueError("n must be at least one")
         it = iter(iterable)
         while chunk := tuple(islice(it, n)):
             yield chunk
@@ -121,7 +381,7 @@ for batch in batched(range(1, 8), 3):
 (7,)
 ```
 
-Feed each batch to `executemany` or a bulk API call. Only one batch is in memory at a time, however long the input is.
+Feed each batch to `executemany` or a bulk API call. Only one batch is in memory at a time, however long the input is. The `iter(iterable)` line matters: without it, `islice` over a list would restart from the beginning every time and loop forever. The real `batched` returns tuples too, and from Python 3.13 it accepts `strict=True` to raise if the last batch is short.
 
 ## Paginated APIs
 
@@ -145,23 +405,115 @@ print(list(fetch_all(lambda p: fake_api.get(p, []))))
 ['a', 'b', 'c']
 ```
 
+The caller can stop early (`islice(fetch_all(...), 100)`) and no further pages are requested. The [working with APIs](/python/working-with-apis/) lesson builds the real version with a session, timeouts, cursors and retries.
+
+## Pitfalls
+
 <Callout tone="warning" title="A generator can only be consumed once">
 
 After you loop over a generator, it is exhausted. A second loop silently yields nothing. If you need the data twice, recreate the generator or materialise it with `list()` if it fits in memory.
 
 </Callout>
 
+These are the ways that rule bites in practice:
+
+```python
+# 1. Validating and then loading the same generator: the load sees nothing.
+rows = (r for r in [{"id": 1}, {"id": 2}])
+assert all("id" in r for r in rows)
+assert list(rows) == []                      # already consumed by all()
+
+# Fix: pass a function that creates a fresh iterator, or materialise if it fits.
+def make_rows():
+    return (r for r in [{"id": 1}, {"id": 2}])
+assert all("id" in r for r in make_rows()) and len(list(make_rows())) == 2
+
+# 2. `in` on an iterator consumes up to the match.
+it = iter([1, 2, 3, 4])
+assert 2 in it
+assert list(it) == [3, 4]
+
+# 3. zip stops at the shortest input and quietly drops the rest (strict=True raises instead).
+names, amounts = ["a", "b", "c"], [10, 20]
+assert list(zip(names, amounts)) == [("a", 10), ("b", 20)]
+try:
+    list(zip(names, amounts, strict=True))
+except ValueError as exc:
+    print("ValueError:", exc)
+
+# 4. Errors surface when the value is pulled, not where the generator was created.
+def parse(values):
+    for v in values:
+        yield int(v)
+
+parsed = parse(["1", "x"])                 # no error yet
+try:
+    print(next(parsed))
+    next(parsed)
+except ValueError as exc:
+    print("ValueError raised on the second next():", exc)
+```
+
+```text
+ValueError: zip() argument 2 is shorter than argument 1
+1
+ValueError raised on the second next(): invalid literal for int() with base 10: 'x'
+```
+
+A file closed too early is the other classic. A function that opens a file in a `with` block and **returns** a generator over it hands back a generator whose file is already closed:
+
+```python
+import os
+import tempfile
+
+p = os.path.join(tempfile.mkdtemp(), "tiny.txt")
+with open(p, "w") as f:
+    f.write("a\nb\n")
+
+def broken(path):
+    with open(path) as f:
+        return (line.strip() for line in f)      # with-block exits on return: file closed
+
+def works(path):
+    with open(path) as f:
+        yield from (line.strip() for line in f)  # with-block stays open while we iterate
+
+try:
+    list(broken(p))
+except ValueError as exc:
+    print("ValueError:", exc)
+print(list(works(p)))
+```
+
+```text
+ValueError: I/O operation on closed file.
+['a', 'b']
+```
+
+Putting the `with` inside a generator function keeps the file open exactly as long as the consumer is iterating, and the `finally` behaviour shown earlier closes it when the generator finishes or is closed.
+
 ## Common mistakes
 
-1. Calling `len()` on a generator (not supported) or converting to a list just to count, losing the memory benefit.
+1. Calling `len()` on a generator (not supported) or converting to a list just to count, losing the memory benefit. Count while you stream instead.
 2. Reusing an exhausted generator and getting an empty result with no error.
 3. Building a list comprehension `[...]` where a generator expression `(...)` would do.
-4. Holding a file open across a long-lived generator; keep the `with` block around the consumption.
+4. Holding a file open across a long-lived generator, or returning a generator from inside a `with` block so the file is already closed.
+5. Using `itertools.groupby` on unsorted data.
+6. Writing your own `batched` without `iter()`, which loops forever on a list.
+7. Assuming streaming makes memory constant. It removes the per-row cost; state such as a dict of totals or a set of seen keys still grows with the number of distinct keys.
+8. Catching an exception around the line that **creates** a generator and expecting it to catch errors raised during iteration.
 
-## Interview relevance
+## In an interview
 
-"What is a generator and why does it help with large data?" is a common Python interview question for data roles. See the [interview answer](/interview/python/generators-large-datasets/).
+"What is a generator and why does it help with large data?" is a common Python interview question for data roles. A strong answer covers four things:
+
+1. **Mechanism**: a function with `yield` returns an iterator; each `next()` runs the body to the next `yield`, so only the current item exists.
+2. **Why it matters**: memory depends on the work in flight, not the input size, so a 50 GB file is processed with the same memory as a 50 MB one.
+3. **Proof**: say how you would measure it (`tracemalloc` or the process's peak RSS) instead of asserting it.
+4. **Limits**: single pass, no `len()` or indexing, errors surface late, and state such as aggregates or dedupe sets still needs memory, which is when you reach for external sorting, a database or Spark.
+
+Follow-ups to expect: how `yield from` differs from a loop, why `groupby` needs sorted input, how to batch inserts, and how to process a file larger than RAM. See [generators for large datasets](/interview/python/generators-large-datasets/), [a 50 GB CSV with 8 GB of RAM](/interview/python/process-large-csv-limited-memory/) and the generator questions in the [top 50 Python interview questions](/python/python-interview-questions/).
 
 ## Key takeaway
 
-Process data as a stream: read lazily, transform with chained generators, and write in batches. Memory stays flat no matter how big the input is.
+Process data as a stream: read lazily, transform with chained generators, and write in batches. Memory then depends on the state you keep, not on the size of the input, and you can prove it with `tracemalloc`. Remember that iterators are single-pass.

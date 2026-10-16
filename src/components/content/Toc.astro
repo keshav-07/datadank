@@ -9,7 +9,9 @@ interface Props {
   variant: "desktop" | "mobile";
 }
 const { headings, variant } = Astro.props;
-const items = headings.filter((h) => h.depth === 2 || h.depth === 3);
+// Long pages (question banks with dozens of question headings) list only their sections.
+const deep = headings.filter((h) => h.depth === 3).length > 30;
+const items = headings.filter((h) => h.depth === 2 || (h.depth === 3 && !deep));
 ---
 
 {variant === "desktop" ? (

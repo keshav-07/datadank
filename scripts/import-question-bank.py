@@ -1,66 +1,85 @@
 #!/usr/bin/env python3
-"""Build the interview question-bank pages from docs/question-bank/data-engineering-interview-master.md.
+"""Build the interview question-bank articles from docs/question-bank/data-engineering-interview-master.md.
 
-The master file is the single source of truth: 468 questions in nine sections. This script writes one
-Markdown entry per section to src/content/question-banks/<slug>.md. Each question becomes an expandable
-<details> block whose id (q1 … q468) is the anchor used by the on-page index and by cross-references,
-so "see Q209" links to the right category page. Only presentation changes here; wording edits belong in
-the master file.
+The master file is the single source of truth: 468 questions in nine sections. Each section becomes one
+article in src/content/articles/ (rendered in the normal lesson layout). Every question is an <h3> with its
+short answer visible and the full answer in an expandable block. Questions are grouped by level and numbered
+1..N on each page; "see Q209" references become links to the referenced question's heading on its own page.
+Only presentation changes here; wording edits belong in the master file. Also writes
+src/data/question-banks.json, which the interview hubs and the interview overview use to link the pages.
 
 Usage: python3 scripts/import-question-bank.py
 """
-import html
 import json
 import re
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "docs/question-bank/data-engineering-interview-master.md"
-OUT = ROOT / "src/content/question-banks"
+ARTICLES = ROOT / "src/content/articles"
+DATA = ROOT / "src/data/question-banks.json"
 DATE = "2026-10-16"
 
-# Section number → page. `slug` is the /interview/<slug>/ URL; hubs that already exist get the bank added.
+# Section number -> article. `hub` is the /interview/<hub>/ practice page that links to it (if any).
 PAGES = {
-    1: dict(slug="data-engineering", label="Data Engineering",
-            title="Data Engineering interview questions and answers",
-            seoTitle="Data Engineering Interview Questions and Answers",
-            description="100 data engineering interview questions with answers: modeling, ETL vs ELT, CDC, Kafka, Airflow, file formats, data quality, governance and cost."),
-    2: dict(slug="sql", label="SQL",
-            title="SQL interview questions for Data Engineers",
-            seoTitle="SQL Interview Questions & Answers for Data Engineers",
-            description="50 SQL interview questions for data engineers with answers and runnable queries: joins, window functions, gaps and islands, deduplication and query tuning."),
-    3: dict(slug="snowflake", label="Snowflake",
-            title="Snowflake interview questions for Data Engineers",
-            seoTitle="Snowflake Interview Questions and Answers",
-            description="50 Snowflake interview questions with answers: virtual warehouses, micro-partitions, loading, streams and tasks, dynamic tables, Time Travel, RBAC and cost."),
-    4: dict(slug="databricks", label="Databricks",
-            title="Databricks interview questions for Data Engineers",
-            seoTitle="Databricks Interview Questions and Answers",
-            description="50 Databricks interview questions with answers: Delta Lake internals, Unity Catalog, Lakeflow pipelines and jobs, Auto Loader, compute choices and cost."),
-    5: dict(slug="pyspark", label="PySpark and Spark",
-            title="PySpark and Spark interview questions for Data Engineers",
-            seoTitle="PySpark and Spark Interview Questions and Answers",
-            description="50 PySpark and Apache Spark interview questions with answers: execution model, shuffles, joins, skew, caching, memory tuning and Structured Streaming."),
-    6: dict(slug="dbt", label="dbt",
-            title="dbt interview questions for Data Engineers",
-            seoTitle="dbt Interview Questions and Answers",
-            description="50 dbt interview questions with answers: models and materializations, incremental strategies, tests, snapshots, Jinja and macros, CI/CD and governance."),
-    7: dict(slug="python", label="Python",
-            title="Python interview questions for Data Engineers",
-            seoTitle="Python Interview Questions for Data Engineers",
-            description="50 Python interview questions for data engineers with answers: generators, concurrency, pandas, error handling, testing, API ingestion and pipeline code."),
-    8: dict(slug="scenario-based", label="Scenario-based and system design",
-            title="Scenario-based data engineering interview questions",
-            seoTitle="Scenario-Based Data Engineering Interview Questions",
-            description="50 scenario-based data engineering interview questions with strong sample answers: incidents, late data, duplicates, backfills, migrations and system design."),
-    9: dict(slug="behavioral", label="Behavioral",
-            title="Behavioral interview questions for Data Engineers",
+    1: dict(folder="career", slug="data-engineering-interview-questions", hub="data-engineering",
+            label="Data Engineering", noun="data engineering interview questions",
+            technology=["career", "data-engineering"], section="career",
+            title="Top 100 Data Engineering Interview Questions and Answers",
+            seoTitle="Top 100 Data Engineer Interview Questions & Answers",
+            description="Top 100 data engineering interview questions with answers: data modeling, ETL vs ELT, CDC, Kafka, Airflow, file formats, data quality and cost.",
+            covers="data modeling, ETL and ELT, batch and streaming, CDC, Kafka, Airflow, file and table formats, data quality, governance, cloud services and cost"),
+    2: dict(folder="sql", slug="sql-interview-questions", hub="sql", label="SQL", noun="SQL interview questions",
+            technology=["sql", "data-engineering"], section="learn",
+            title="Top 50 SQL Interview Questions and Answers for Data Engineers",
+            seoTitle="Top 50 SQL Interview Questions for Data Engineers",
+            description="Top 50 SQL interview questions for data engineers with answers and queries: joins, window functions, gaps and islands, deduplication and tuning.",
+            covers="joins, aggregation, window functions, gaps and islands, deduplication, CTEs, pivots, NULL handling, transactions and query optimisation"),
+    3: dict(folder="snowflake", slug="snowflake-interview-questions", hub="snowflake", label="Snowflake",
+            noun="Snowflake interview questions", technology=["snowflake", "data-engineering"], section="learn",
+            title="Top 50 Snowflake Interview Questions and Answers",
+            seoTitle="Top 50 Snowflake Interview Questions and Answers",
+            description="Top 50 Snowflake interview questions with answers: virtual warehouses, micro-partitions, loading, streams and tasks, Time Travel, RBAC and cost.",
+            covers="architecture, virtual warehouses, micro-partitions and performance, loading, streams and tasks, dynamic tables, Time Travel, security, sharing and cost"),
+    4: dict(folder="databricks", slug="databricks-interview-questions", hub="databricks", label="Databricks",
+            noun="Databricks interview questions", technology=["databricks", "delta-lake", "data-engineering"],
+            section="learn", title="Top 50 Databricks Interview Questions and Answers",
+            seoTitle="Top 50 Databricks Interview Questions and Answers",
+            description="Top 50 Databricks interview questions with answers: Delta Lake internals, Unity Catalog, Lakeflow pipelines and jobs, Auto Loader and compute.",
+            covers="Delta Lake internals and maintenance, Unity Catalog, Lakeflow Declarative Pipelines and Jobs, Auto Loader, compute choices, streaming and cost"),
+    5: dict(folder="pyspark", slug="pyspark-interview-questions", hub="pyspark", label="PySpark and Spark",
+            noun="PySpark and Spark interview questions", technology=["pyspark", "spark", "data-engineering"],
+            section="learn", title="Top 50 PySpark and Spark Interview Questions and Answers",
+            seoTitle="Top 50 PySpark Interview Questions and Answers",
+            description="Top 50 PySpark and Apache Spark interview questions with answers: execution model, shuffles, joins, skew, caching, memory and Structured Streaming.",
+            covers="the execution model, partitions and shuffles, join strategies, skew, caching, memory and resource tuning, AQE and Structured Streaming"),
+    6: dict(folder="etl-elt", slug="dbt-interview-questions", hub="dbt", label="dbt", noun="dbt interview questions",
+            technology=["etl-elt", "dbt", "data-engineering"], section="learn",
+            title="Top 50 dbt Interview Questions and Answers",
+            seoTitle="Top 50 dbt Interview Questions and Answers",
+            description="Top 50 dbt interview questions with answers: models and materializations, incremental models, tests, snapshots, Jinja and macros, and CI/CD.",
+            covers="models and materializations, incremental strategies, tests, snapshots, sources, Jinja and macros, project design, CI/CD and governance"),
+    7: dict(folder="python", slug="python-interview-questions", hub="python", label="Python",
+            noun="Python interview questions", technology=["python", "data-engineering"], section="learn",
+            title="Top 50 Python Interview Questions for Data Engineers",
+            seoTitle="Top 50 Python Interview Questions for Data Engineers",
+            description="Top 50 Python interview questions for data engineers with answers: data structures, generators, concurrency, pandas, testing and API ingestion.",
+            covers="data structures, iterators and generators, error handling, concurrency, pandas, file I/O, testing, API ingestion and coding patterns"),
+    8: dict(folder="career", slug="scenario-based-data-engineering-interview-questions", hub="scenario-based",
+            label="Scenario-based", noun="scenario-based questions", technology=["career", "data-engineering", "system-design"],
+            section="career", title="50 Scenario-Based Data Engineering Interview Questions and Answers",
+            seoTitle="50 Scenario-Based Data Engineer Interview Questions",
+            description="50 scenario-based data engineering interview questions with sample answers: failed pipelines, late data, duplicates, backfills, migrations and design.",
+            covers="incidents, late-arriving data, duplicates, backfills, cost spikes, migrations and system design scenarios with concrete numbers"),
+    9: dict(folder="career", slug="behavioral-interview-questions", hub="behavioral", label="Behavioral",
+            noun="behavioral questions", technology=["career", "data-engineering"], section="career",
+            title="18 Behavioral Interview Questions for Data Engineers (with STAR Answers)",
             seoTitle="Behavioral Interview Questions for Data Engineers",
-            description="18 behavioral interview questions for data engineers with STAR-style answers: project walkthroughs, incidents, mistakes, stakeholders and leadership."),
+            description="18 behavioral interview questions for data engineers with STAR-style answers: project walkthroughs, incidents, mistakes, stakeholders and leadership.",
+            covers="project walkthroughs, incidents, mistakes, conflict, prioritisation, stakeholders, mentoring and leadership"),
 }
 
-# Bank questions that overlap an existing single-question page. The bank answer links to it, so the deeper page
-# stays the target for that specific query instead of the two competing (keyword cannibalisation).
 DEEP = {
     23: "data-engineering/etl-vs-elt-factors", 25: "data-engineering/design-incremental-load",
     31: "data-engineering/lake-warehouse-lakehouse", 36: "data-engineering/data-quality-checks",
@@ -87,6 +106,7 @@ DEEP = {
     374: "python/process-large-csv-limited-memory", 379: "python/api-retries-backoff",
     422: "kafka/consumer-lag-causes-fixes", 427: "airflow/slow-scheduler-stuck-tasks",
 }
+
 QDIR = ROOT / "src/content/interview-questions"
 
 
@@ -99,28 +119,21 @@ def deep_title(path: str) -> str:
 
 LABELS = {
     "Short Answer (2–3 lines):": "Short answer:",
-    "Detailed Explanation:": "Detailed explanation:",
-    "Example / Code:": "Example:",
-    "Real-World Use Case:": "Real-world use case:",
-    "Common Mistakes / Interviewer Red Flags:": "Common mistakes and red flags:",
-    "Follow-up Questions Interviewers Ask:": "Follow-up questions:",
-    "What the Interviewer Is Testing:": "What the interviewer is testing:",
-    "Step-by-Step Approach:": "Step-by-step approach:",
-    "Sample Strong Answer:": "Sample strong answer:",
-    "Architecture / Flow:": "Architecture and flow:",
-    "Alternatives & Trade-offs:": "Alternatives and trade-offs:",
-    "Follow-up Questions:": "Follow-up questions:",
+    "Detailed Explanation:": "Detailed explanation",
+    "Example / Code:": "Example",
+    "Real-World Use Case:": "Real-world use case",
+    "Common Mistakes / Interviewer Red Flags:": "Common mistakes and red flags",
+    "Follow-up Questions Interviewers Ask:": "Follow-up questions",
+    "What the Interviewer Is Testing:": "What the interviewer is testing",
+    "Step-by-Step Approach:": "Step-by-step approach",
+    "Sample Strong Answer:": "Sample strong answer",
+    "Architecture / Flow:": "Architecture and flow",
+    "Alternatives & Trade-offs:": "Alternatives and trade-offs",
+    "Follow-up Questions:": "Follow-up questions",
 }
 META = re.compile(r"^\*\*(ID|Topic|Level|Frequency|Tags):\*\*")
-
-
-def inline(text: str) -> str:
-    """Escape a question title for HTML and turn `code` spans into <code>."""
-    parts = re.split(r"(`[^`]+`)", text)
-    return "".join(
-        f"<code>{html.escape(p[1:-1])}</code>" if p.startswith("`") and p.endswith("`") else html.escape(p)
-        for p in parts
-    )
+LEVELS = ["Beginner", "Intermediate", "Advanced"]
+LEVEL_SUFFIX = {"Beginner": " (freshers)", "Intermediate": "", "Advanced": " (experienced)"}
 
 
 def parse():
@@ -142,7 +155,10 @@ def parse():
                 continue
             m = re.match(r"^### Q(\d+)\. (.*)$", line)
             if m and cur:
-                q = dict(num=int(m.group(1)), title=m.group(2).strip(), raw=[])
+                # Command-line flags in titles (--full-refresh, --defer) become code, so typography does not
+                # turn "--" into a dash.
+                title = re.sub(r"(?<![`\w-])(--[a-z][\w-]*)", r"`\1`", m.group(2).strip())
+                q = dict(num=int(m.group(1)), title=title, raw=[])
                 sections[cur].append(q)
                 continue
         if q is not None:
@@ -172,16 +188,32 @@ def parse():
     return sections
 
 
+def slugs(texts):
+    """Heading ids exactly as Astro generates them (github-slugger, one slugger per document)."""
+    js = "import S from 'github-slugger';const s=new S();const t=JSON.parse(require('fs').readFileSync(0,'utf8'));console.log(JSON.stringify(t.map(x=>s.slug(x))))"
+    js = js.replace("require('fs')", "(await import('fs'))")
+    out = subprocess.run(["node", "--input-type=module", "-e", js], input=json.dumps(texts), capture_output=True,
+                         text=True, cwd=ROOT, check=True)
+    return json.loads(out.stdout)
+
+
+def plain(title: str) -> str:
+    return title.replace("`", "")
+
+
 RUN = re.compile(r"Q\d{1,3}(?:\s*(?:,|–|/|and)\s*Q\d{1,3})*")
 
 
-def link_refs(text: str, page_of: dict) -> str:
-    """Link cross-references such as "(see Q31)", "see Q208, Q209", "covered in Q13" or "Q450 covers" to the
-    question's anchor. Other Q-numbers (quarters such as Q1 = 100 in an example) stay plain. Skips inline code."""
+def link_refs(text: str, target: dict, here: str) -> str:
+    """Turn cross-references ("(see Q31)", "see Q208, Q209", "covered in Q13", "Q450 covers") into links whose
+    text is the referenced question. Other Q-numbers (quarters such as Q1 = 100) stay plain. Skips inline code."""
 
     def one(m):
         n = int(m.group(1))
-        return f"[Q{n}](/interview/{page_of[n]}/#q{n})" if n in page_of else m.group(0)
+        if n not in target:
+            return m.group(0)
+        url, title = target[n]
+        return f"[{title}]({url.replace(here, '') if url.startswith(here + '#') else url})"
 
     def run(m):
         before = m.string[max(0, m.start() - 14) : m.start()]
@@ -190,15 +222,12 @@ def link_refs(text: str, page_of: dict) -> str:
             return re.sub(r"Q(\d{1,3})", one, m.group(0))
         return m.group(0)
 
-    out = []
-    for part in re.split(r"(`[^`]*`)", text):
-        out.append(part if part.startswith("`") else RUN.sub(run, part))
-    return "".join(out)
+    return "".join(p if p.startswith("`") else RUN.sub(run, p) for p in re.split(r"(`[^`]*`)", text))
 
 
-def render_body(body, page_of):
+def transform(lines, target, here):
     out, fence = [], False
-    for line in body:
+    for line in lines:
         if line.startswith("```"):
             fence = not fence
             out.append(line)
@@ -211,14 +240,22 @@ def render_body(body, page_of):
             if line.startswith(f"**{old}**"):
                 rest = line[len(old) + 4 :]
                 label_only = not rest.strip()
-                line = f"**{new.rstrip(':') if label_only else new}**" + rest
-        out.append(link_refs(line, page_of))
-        if label_only:
-            out.append("")  # a label on its own line is its own paragraph, not the start of the next one
-    return "\n".join(out)
+                line = f'<p class="qb-label">{new.rstrip(":")}</p>\n' if label_only else f"**{new}**" + rest
+        out.append(link_refs(line, target, here))
+    return "\n".join(out).strip()
 
 
-# Same rule as src/utils/validation.ts, applied to prose only: code such as seen[x] = i is legitimate.
+def split_visible(body):
+    """Visible part: the short answer (standard questions) or the scenario (Section 8). The rest expands."""
+    text = body
+    start = next((i for i, l in enumerate(text) if l.startswith("**Short Answer") or l.startswith("**Scenario:**")), None)
+    if start is None:
+        return [], text
+    end = next((i for i in range(start + 1, len(text)) if re.match(r"^\*\*[A-Z][^*]*:\*\*", text[i])), len(text))
+    visible = text[start:end]
+    return visible, text[:start] + text[end:]
+
+
 PLACEHOLDER = re.compile(
     r"lorem ipsum|\bTODO\b|\bTBD\b|\[(?:X|N)\s*%?\](?!\()|\[\d+\s*%\](?!\()|\[(?:company|your)[^\]]*\](?!\()", re.I
 )
@@ -231,50 +268,88 @@ def prose(body):
 
 def main():
     sections = parse()
-    bad = [f"Q{q['num']}" for qs in sections.values() for q in qs if PLACEHOLDER.search(prose(q["body"]) + q["title"])]
-    if bad:
-        raise SystemExit(f"Placeholder text in prose: {', '.join(bad)}")
     nums = [q["num"] for qs in sections.values() for q in qs]
     if nums != list(range(1, len(nums) + 1)):
         raise SystemExit("Question numbers are not sequential from Q1")
-    page_of = {q["num"]: PAGES[s]["slug"] for s, qs in sections.items() for q in qs}
-    OUT.mkdir(parents=True, exist_ok=True)
+    bad = [f"Q{q['num']}" for qs in sections.values() for q in qs if PLACEHOLDER.search(prose(q["body"]) + q["title"])]
+    if bad:
+        raise SystemExit(f"Placeholder text in prose: {', '.join(bad)}")
+
+    # Order each page by level (source order within a level), number 1..N, and compute heading anchors.
+    plan, target = {}, {}
     for s, qs in sections.items():
         page = PAGES[s]
-        levels = {lv: sum(q["level"] == lv for q in qs) for lv in ("Beginner", "Intermediate", "Advanced")}
+        url = f"/{page['folder']}/{page['slug']}/"
+        ordered = [q for lv in LEVELS for q in qs if q["level"] == lv]
+        assert len(ordered) == len(qs), f"section {s}: unknown level"
+        groups = [lv for lv in LEVELS if any(q["level"] == lv for q in ordered)]
+        h2 = ["Question list"] + [f"{lv} {page['noun']}{LEVEL_SUFFIX[lv]}" for lv in groups]
+        texts, k = [h2[0]], 0
+        for lv, heading in zip(groups, h2[1:]):
+            texts.append(heading)
+            for q in [q for q in ordered if q["level"] == lv]:
+                k += 1
+                q["n"] = k
+                texts.append(f"{k}. {plain(q['title'])}")
+        ids = slugs(texts)
+        anchor = dict(zip(texts, ids))
+        for q in ordered:
+            q["anchor"] = anchor[f"{q['n']}. {plain(q['title'])}"]
+            target[q["num"]] = (f"{url}#{q['anchor']}", q["title"])
+        plan[s] = dict(page=page, url=url, ordered=ordered, groups=groups, h2=h2, h2ids=[anchor[h] for h in h2])
+
+    index = []
+    for s, p in plan.items():
+        page, ordered = p["page"], p["ordered"]
+        levels = {lv: sum(q["level"] == lv for q in ordered) for lv in LEVELS}
+        related = [f"interview-questions:{DEEP[q['num']]}" for q in ordered if q["num"] in DEEP][:12]
         fm = {
             "title": page["title"],
             "seoTitle": page["seoTitle"],
             "description": page["description"],
-            "hub": page["slug"],
-            "label": page["label"],
-            "section": s,
+            "technology": page["technology"],
+            "topic": ["interview-questions"],
+            "difficulty": "Intermediate",
+            "section": page["section"],
             "publishedDate": DATE,
             "updatedDate": DATE,
-            "levels": levels,
-            "questions": [
-                {"num": q["num"], "id": q["id"], "title": q["title"], "topic": q["topic"],
-                 "level": q["level"], "frequency": q["frequency"]}
-                for q in qs
-            ],
+            "reviewedDate": DATE,
+            "related": related,
+            "versionContext": "Product names and defaults as of October 2026; code snippets state their dialect or runtime",
         }
-        parts = []
-        for q in qs:
-            meta = " · ".join(x for x in (q["level"], q["frequency"], q["topic"]) if x)
-            parts.append(
-                f'<details class="qb-item" id="q{q["num"]}" data-level="{q["level"]}">\n'
-                f'<summary><span class="qb-num">Q{q["num"]}</span><h3 class="qb-title">{inline(q["title"])}</h3>'
-                f'<span class="qb-meta">{html.escape(meta)}</span></summary>\n\n'
-                f'{render_body(q["body"], page_of)}\n\n'
-                + (f'**In depth:** [{deep_title(DEEP[q["num"]])}](/interview/{DEEP[q["num"]]}/)\n\n' if q["num"] in DEEP else "")
-                + 
-                f'<p class="qb-back"><a href="#qb-index">Back to the question list</a></p>\n\n'
-                "</details>\n"
-            )
-        text = "---\n" + "\n".join(f"{k}: {json.dumps(v, ensure_ascii=False)}" for k, v in fm.items()) + "\n---\n\n"
-        text += "\n".join(parts)
-        (OUT / f'{page["slug"]}.md').write_text(text, encoding="utf-8")
-        print(f'{page["slug"]}: {len(qs)} questions, {len(text) // 1024} KB')
+        n = len(ordered)
+        out = [
+            f"These {n} {page['noun']} cover {page['covers']}. They are grouped from beginner (freshers) to advanced "
+            "(experienced). Each one starts with the answer you would give in the first 20 seconds; open the full "
+            "answer for the detailed explanation, an example, how it shows up in real work, common mistakes and the "
+            "follow-up questions interviewers ask.",
+            "",
+            f"## {p['h2'][0]}",
+            "",
+            f'<details class="qb-index" open>\n<summary>All {n} questions</summary>\n',
+        ]
+        out += [f"{q['n']}. [{q['title']}](#{q['anchor']})" for q in ordered]
+        out += ["", "</details>", ""]
+        for lv, heading in zip(p["groups"], p["h2"][1:]):
+            out += [f"## {heading}", ""]
+            for q in [q for q in ordered if q["level"] == lv]:
+                meta = " · ".join(x for x in (q["level"], q["frequency"], q["topic"]) if x)
+                visible, more = split_visible(q["body"])
+                out += [f"### {q['n']}. {q['title']}", "", f'<p class="qb-meta">{meta}</p>', ""]
+                if visible:
+                    out += [transform(visible, target, p["url"]), ""]
+                summary = "Sample answer and approach" if s == 8 else "Full answer: explanation, example and follow-ups"
+                out += [f'<details class="qb-more">\n<summary>{summary}</summary>\n', transform(more, target, p["url"]), ""]
+                if q["num"] in DEEP:
+                    out += [f"**In depth:** [{deep_title(DEEP[q['num']])}](/interview/{DEEP[q['num']]}/)", ""]
+                out += ["</details>", ""]
+        path = ARTICLES / page["folder"] / f"{page['slug']}.md"
+        path.write_text("---\n" + "\n".join(f"{k}: {json.dumps(v, ensure_ascii=False)}" for k, v in fm.items())
+                        + "\n---\n\n" + "\n".join(out), encoding="utf-8")
+        index.append(dict(hub=page["hub"], label=page["label"], title=page["title"], url=p["url"],
+                          ref=f"articles:{page['folder']}/{page['slug']}", count=n, levels=levels))
+        print(f"{p['url']}: {n} questions, {path.stat().st_size // 1024} KB")
+    DATA.write_text(json.dumps(index, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

@@ -74,11 +74,22 @@ practice: { "platform": "LeetCode", "number": 1, "title": "Two Sum", "url": "htt
 ### Interview question banks
 
 `docs/question-bank/data-engineering-interview-master.md` holds 468 questions in nine sections. Edit the
-questions there, then run `python3 scripts/import-question-bank.py`; it regenerates
-`src/content/question-banks/<hub>.md` (never edit those by hand). Each section is shown on `/interview/<hub>/`
-with an anchor index (`#q<number>`), a level filter and expandable answers. "See Q209" style references become
-links, and the `DEEP` map in the script links a bank answer to the matching single-question page. The script
-fails on numbering gaps, placeholder text in prose, or a `DEEP` entry whose page no longer exists.
+questions there, then run `python3 scripts/import-question-bank.py`. It regenerates one lesson-format article per
+section (never edit those by hand):
+
+| Section | Article |
+|---|---|
+| Core Data Engineering (100) | `/career/data-engineering-interview-questions/` |
+| SQL, Snowflake, Databricks, PySpark, Python (50 each) | `/<course>/<course>-interview-questions/` |
+| dbt (50) | `/etl-elt/dbt-interview-questions/` |
+| Scenario-based (50), Behavioral (18) | `/career/…-interview-questions/` |
+
+Each question is an `<h3>` ("17. ROWS vs RANGE window frames") with its short answer (or scenario) visible and
+the rest in an expandable block. Questions are grouped by level (freshers → experienced) and numbered 1–N per
+page; "see Q209" references become links titled with the referenced question. The `DEEP` map links a bank
+answer to the matching single-question page, and the article's `related` list links back. The script also
+writes `src/data/question-banks.json`, which the `/interview/<topic>/` practice pages and the interview overview
+use. It fails on numbering gaps, placeholder text in prose, or a `DEEP` entry whose page no longer exists.
 
 ## MDX components
 

@@ -72,7 +72,9 @@ export function validateContent(items: Item[], technologyVocab: Set<string>): vo
       errors.push(`${item.ref}: updatedDate is before publishedDate`);
     }
 
-    if (PLACEHOLDER.test(item.body) || PLACEHOLDER.test(item.description)) {
+    // Code is exempt: `seen[x] = i` or `dp[n]` are not placeholders.
+    const prose = item.body.replace(/```[\s\S]*?```/g, "").replace(/`[^`\n]*`/g, "");
+    if (PLACEHOLDER.test(prose) || PLACEHOLDER.test(item.description)) {
       errors.push(`${item.ref}: contains placeholder text (TODO/TBD/lorem/[X%])`);
     }
 

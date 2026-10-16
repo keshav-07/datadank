@@ -1,0 +1,119 @@
+[
+  {
+    "hub": "data-engineering",
+    "label": "Data Engineering",
+    "title": "Top 100 Data Engineering Interview Questions and Answers",
+    "url": "/career/data-engineering-interview-questions/",
+    "ref": "articles:career/data-engineering-interview-questions",
+    "count": 100,
+    "levels": {
+      "Beginner": 30,
+      "Intermediate": 45,
+      "Advanced": 25
+    }
+  },
+  {
+    "hub": "sql",
+    "label": "SQL",
+    "title": "Top 50 SQL Interview Questions and Answers for Data Engineers",
+    "url": "/sql/sql-interview-questions/",
+    "ref": "articles:sql/sql-interview-questions",
+    "count": 50,
+    "levels": {
+      "Beginner": 15,
+      "Intermediate": 23,
+      "Advanced": 12
+    }
+  },
+  {
+    "hub": "snowflake",
+    "label": "Snowflake",
+    "title": "Top 50 Snowflake Interview Questions and Answers",
+    "url": "/snowflake/snowflake-interview-questions/",
+    "ref": "articles:snowflake/snowflake-interview-questions",
+    "count": 50,
+    "levels": {
+      "Beginner": 15,
+      "Intermediate": 22,
+      "Advanced": 13
+    }
+  },
+  {
+    "hub": "databricks",
+    "label": "Databricks",
+    "title": "Top 50 Databricks Interview Questions and Answers",
+    "url": "/databricks/databricks-interview-questions/",
+    "ref": "articles:databricks/databricks-interview-questions",
+    "count": 50,
+    "levels": {
+      "Beginner": 15,
+      "Intermediate": 23,
+      "Advanced": 12
+    }
+  },
+  {
+    "hub": "pyspark",
+    "label": "PySpark and Spark",
+    "title": "Top 50 PySpark and Spark Interview Questions and Answers",
+    "url": "/pyspark/pyspark-interview-questions/",
+    "ref": "articles:pyspark/pyspark-interview-questions",
+    "count": 50,
+    "levels": {
+      "Beginner": 15,
+      "Intermediate": 23,
+      "Advanced": 12
+    }
+  },
+  {
+    "hub": "dbt",
+    "label": "dbt",
+    "title": "Top 50 dbt Interview Questions and Answers",
+    "url": "/etl-elt/dbt-interview-questions/",
+    "ref": "articles:etl-elt/dbt-interview-questions",
+    "count": 50,
+    "levels": {
+      "Beginner": 14,
+      "Intermediate": 23,
+      "Advanced": 13
+    }
+  },
+  {
+    "hub": "python",
+    "label": "Python",
+    "title": "Top 50 Python Interview Questions for Data Engineers",
+    "url": "/python/python-interview-questions/",
+    "ref": "articles:python/python-interview-questions",
+    "count": 50,
+    "levels": {
+      "Beginner": 15,
+      "Intermediate": 23,
+      "Advanced": 12
+    }
+  },
+  {
+    "hub": "scenario-based",
+    "label": "Scenario-based",
+    "title": "50 Scenario-Based Data Engineering Interview Questions and Answers",
+    "url": "/career/scenario-based-data-engineering-interview-questions/",
+    "ref": "articles:career/scenario-based-data-engineering-interview-questions",
+    "count": 50,
+    "levels": {
+      "Beginner": 14,
+      "Intermediate": 23,
+      "Advanced": 13
+    }
+  },
+  {
+    "hub": "behavioral",
+    "label": "Behavioral",
+    "title": "18 Behavioral Interview Questions for Data Engineers (with STAR Answers)",
+    "url": "/career/behavioral-interview-questions/",
+    "ref": "articles:career/behavioral-interview-questions",
+    "count": 18,
+    "levels": {
+      "Beginner": 5,
+      "Intermediate": 8,
+      "Advanced": 5
+    }
+  }
+]

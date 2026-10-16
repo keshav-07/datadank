@@ -224,40 +224,7 @@ const technologies = defineCollection({
   }),
 });
 
-/**
- * Interview question banks: one page per category, generated from docs/question-bank/ by
- * scripts/import-question-bank.py. Each body holds every question of the category as an expandable block.
- */
-const questionBanks = defineCollection({
-  loader: glob({ pattern: "*.md", base: "./src/content/question-banks" }),
-  schema: z.object({
-    title: z.string().min(10).max(110),
-    seoTitle: z.string().max(52),
-    description: z.string().min(120).max(160),
-    /** /interview/<hub>/ — an existing interview hub, or a new one for categories without a hub. */
-    hub: z.string().regex(/^[a-z0-9-]+$/),
-    label: z.string(),
-    section: z.number().int(),
-    publishedDate: z.coerce.date(),
-    updatedDate: z.coerce.date(),
-    levels: z.object({ Beginner: z.number(), Intermediate: z.number(), Advanced: z.number() }),
-    questions: z
-      .array(
-        z.object({
-          num: z.number().int(),
-          id: z.string(),
-          title: z.string(),
-          topic: z.string().nullable(),
-          level: difficulty,
-          frequency: z.enum(["Very Common", "Common", "Occasional"]),
-        }),
-      )
-      .min(1),
-  }),
-});
-
 export const collections = {
-  "question-banks": questionBanks,
   articles,
   "interview-questions": interviewQuestions,
   "company-guides": companyGuides,

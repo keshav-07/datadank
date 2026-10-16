@@ -1,6 +1,6 @@
 ---
-import { getCollection } from "astro:content";
 import { plural } from "../../utils/dates";
+import banks from "../../data/question-banks.json";
 import { getItems, getHub, techLabel } from "../../utils/content";
 import ContentLayout from "../../layouts/ContentLayout.astro";
 import Tile from "../../components/content/Tile.astro";
@@ -24,8 +24,7 @@ const groups = await Promise.all(
   })),
 );
 groups.sort((a, b) => b.c.n - a.c.n || a.label.localeCompare(b.label));
-const banks = (await getCollection("question-banks")).sort((a, b) => a.data.section - b.data.section);
-const bankTotal = banks.reduce((n, b) => n + b.data.questions.length, 0);
+const bankTotal = banks.reduce((n, b) => n + b.count, 0);
 const companies = await getItems("company-guides");
 const designs = await getItems("system-designs");
 ---
@@ -68,13 +67,13 @@ const designs = await getItems("system-designs");
       {banks.map((b) => (
         <li>
           <Tile
-            href={`/interview/${b.data.hub}/`}
+            href={b.url}
             eyebrow="Question bank"
-            title={`${b.data.label} interview questions`}
+            title={b.title}
             meta={[
-              plural(b.data.questions.length, "question"),
+              plural(b.count, "question"),
               ...(["Beginner", "Intermediate", "Advanced"] as const).map(
-                (l) => b.data.levels[l] > 0 && `${b.data.levels[l]} ${l.toLowerCase()}`,
+                (l) => b.levels[l] > 0 && `${b.levels[l]} ${l.toLowerCase()}`,
               ),
             ]}
           />

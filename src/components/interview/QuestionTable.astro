@@ -1,26 +1,38 @@
 ---
 import type { ItemOf } from "../../utils/content";
+/** A question that lives inside a page rather than on its own page (question-bank articles). */
+export interface BankRow {
+  title: string;
+  url: string;
+  topic: string;
+  difficulty: "Easy" | "Medium" | "Hard";
+  type: string;
+}
 interface Props {
   questions: ItemOf<"interview-questions">[];
+  /** Questions inside question-bank articles, listed before the single-question pages. */
+  bank?: BankRow[];
   /** Show the topic column (used on the all-questions page). */
   topics?: Record<string, string>;
   /** Topic per question ref (DSA patterns); shows the topic column, with filter options in list order. */
   topicOf?: Record<string, string>;
   caption: string;
 }
-const { questions, topics: folderTopics, topicOf, caption } = Astro.props;
+const { questions, bank = [], topics: folderTopics, topicOf, caption } = Astro.props;
 // A topic key and label for each question: its pattern when given, otherwise its technology folder.
 const keyOf = (q: (typeof questions)[number]) =>
   topicOf ? (topicOf[q.ref] ?? "More") : q.id.split("/")[0];
 const topics = topicOf
   ? Object.fromEntries(questions.map((q) => [keyOf(q), keyOf(q)]))
   : folderTopics;
-const types = [...new Set(questions.flatMap((q) => q.entry.data.questionType))].sort();
-const topicIds = topics ? [...new Set(questions.map(keyOf))] : [];
+const types = [
+  ...new Set([...bank.map((b) => b.type), ...questions.flatMap((q) => q.entry.data.questionType)]),
+].sort();
+const topicIds = topics ? [...new Set([...bank.map((b) => b.topic), ...questions.map(keyOf)])] : [];
 // External practice column, only when at least one question in the list has a practice link.
 const hasPractice = questions.some((q) => q.entry.data.practice);
-const levels = ["Easy", "Medium", "Hard"].filter((l) =>
-  questions.some((q) => q.entry.data.difficulty === l),
+const levels = ["Easy", "Medium", "Hard"].filter(
+  (l) => questions.some((q) => q.entry.data.difficulty === l) || bank.some((b) => b.difficulty === l),
 );
 ---
 
@@ -111,6 +123,51 @@ const levels = ["Easy", "Medium", "Hard"].filter((l) =>
         </tr>
       </thead>
       <tbody>
+        {bank.map((b, i) => (
+          <tr
+            data-difficulty={b.difficulty}
+            data-types={b.type}
+            data-topic={b.topic}
+            data-url={b.url}
+            data-text={b.title.toLowerCase()}
+          >
+            <td class="q-num">{i + 1}</td>
+            <td class="q-title">
+              <a href={b.url} data-progress-url={b.url}>
+                {b.title}
+              </a>
+              <span
+                class={`diff diff--${b.difficulty.toLowerCase()} q-diff-inline`}
+                aria-hidden="true"
+              >
+                {b.difficulty}
+              </span>
+            </td>
+            {topics && <td class="q-topic">{topics[b.topic] ?? b.topic}</td>}
+            <td class="q-diff">
+              <span class={`diff diff--${b.difficulty.toLowerCase()}`}>{b.difficulty}</span>
+            </td>
+            <td class="q-type">{b.type}</td>
+            {hasPractice && (
+              <td class="q-practice">
+                <span class="muted" aria-label="No external practice link">
+                  —
+                </span>
+              </td>
+            )}
+            <td class="q-done">
+              <input
+                type="checkbox"
+                class="js-only"
+                data-done-url={b.url}
+                data-kind="question"
+                data-course={b.topic}
+                data-title={b.title}
+                aria-label={`Mark "${b.title}" as done`}
+              />
+            </td>
+          </tr>
+        ))}
         {questions.map((q, i) => {
           const topic = keyOf(q);
           return (
@@ -121,7 +178,7 @@ const levels = ["Easy", "Medium", "Hard"].filter((l) =>
               data-url={q.url}
               data-text={q.title.toLowerCase()}
             >
-              <td class="q-num">{i + 1}</td>
+              <td class="q-num">{bank.length + i + 1}</td>
               <td class="q-title">
                 <a href={q.url} data-progress-url={q.url}>
                   {q.title}

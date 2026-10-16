@@ -10,7 +10,609 @@
       "Beginner": 30,
       "Intermediate": 45,
       "Advanced": 25
-    }
+    },
+    "questions": [
+      {
+        "n": 1,
+        "title": "What does a data engineer do, and how is the role different from data scientist and analytics engineer?",
+        "anchor": "1-what-does-a-data-engineer-do-and-how-is-the-role-different-from-data-scientist-and-analytics-engineer",
+        "level": "Beginner"
+      },
+      {
+        "n": 2,
+        "title": "What is a data warehouse, and how is it different from an operational database?",
+        "anchor": "2-what-is-a-data-warehouse-and-how-is-it-different-from-an-operational-database",
+        "level": "Beginner"
+      },
+      {
+        "n": 3,
+        "title": "OLTP vs OLAP: what are the design differences?",
+        "anchor": "3-oltp-vs-olap-what-are-the-design-differences",
+        "level": "Beginner"
+      },
+      {
+        "n": 4,
+        "title": "Star schema vs snowflake schema: when would you pick each?",
+        "anchor": "4-star-schema-vs-snowflake-schema-when-would-you-pick-each",
+        "level": "Beginner"
+      },
+      {
+        "n": 5,
+        "title": "Surrogate keys vs natural keys",
+        "anchor": "5-surrogate-keys-vs-natural-keys",
+        "level": "Beginner"
+      },
+      {
+        "n": 6,
+        "title": "What are Slowly Changing Dimensions? Explain Types 0, 1, 2 and 3",
+        "anchor": "6-what-are-slowly-changing-dimensions-explain-types-0-1-2-and-3",
+        "level": "Beginner"
+      },
+      {
+        "n": 7,
+        "title": "Normalisation (1NF–3NF), and when to denormalise",
+        "anchor": "7-normalisation-1nf3nf-and-when-to-denormalise",
+        "level": "Beginner"
+      },
+      {
+        "n": 8,
+        "title": "Conceptual, logical and physical data models",
+        "anchor": "8-conceptual-logical-and-physical-data-models",
+        "level": "Beginner"
+      },
+      {
+        "n": 9,
+        "title": "ETL vs ELT",
+        "anchor": "9-etl-vs-elt",
+        "level": "Beginner"
+      },
+      {
+        "n": 10,
+        "title": "What are the components of a data pipeline?",
+        "anchor": "10-what-are-the-components-of-a-data-pipeline",
+        "level": "Beginner"
+      },
+      {
+        "n": 11,
+        "title": "Full load vs incremental load",
+        "anchor": "11-full-load-vs-incremental-load",
+        "level": "Beginner"
+      },
+      {
+        "n": 12,
+        "title": "Batch vs stream processing",
+        "anchor": "12-batch-vs-stream-processing",
+        "level": "Beginner"
+      },
+      {
+        "n": 13,
+        "title": "Data lake vs data warehouse vs lakehouse",
+        "anchor": "13-data-lake-vs-data-warehouse-vs-lakehouse",
+        "level": "Beginner"
+      },
+      {
+        "n": 14,
+        "title": "What is the medallion (bronze/silver/gold) architecture?",
+        "anchor": "14-what-is-the-medallion-bronzesilvergold-architecture",
+        "level": "Beginner"
+      },
+      {
+        "n": 15,
+        "title": "What are the dimensions of data quality?",
+        "anchor": "15-what-are-the-dimensions-of-data-quality",
+        "level": "Beginner"
+      },
+      {
+        "n": 16,
+        "title": "What is Apache Airflow? Explain DAGs, tasks and operators",
+        "anchor": "16-what-is-apache-airflow-explain-dags-tasks-and-operators",
+        "level": "Beginner"
+      },
+      {
+        "n": 17,
+        "title": "Row-oriented vs columnar file formats",
+        "anchor": "17-row-oriented-vs-columnar-file-formats",
+        "level": "Beginner"
+      },
+      {
+        "n": 18,
+        "title": "Parquet vs ORC vs Avro",
+        "anchor": "18-parquet-vs-orc-vs-avro",
+        "level": "Beginner"
+      },
+      {
+        "n": 19,
+        "title": "What is idempotency, and why is it critical in pipelines?",
+        "anchor": "19-what-is-idempotency-and-why-is-it-critical-in-pipelines",
+        "level": "Beginner"
+      },
+      {
+        "n": 20,
+        "title": "Horizontal vs vertical scaling",
+        "anchor": "20-horizontal-vs-vertical-scaling",
+        "level": "Beginner"
+      },
+      {
+        "n": 21,
+        "title": "Kafka core concepts: broker, topic, partition, offset, replication",
+        "anchor": "21-kafka-core-concepts-broker-topic-partition-offset-replication",
+        "level": "Beginner"
+      },
+      {
+        "n": 22,
+        "title": "Map the core AWS data services (S3, Glue, EMR, Redshift, Kinesis, Athena)",
+        "anchor": "22-map-the-core-aws-data-services-s3-glue-emr-redshift-kinesis-athena",
+        "level": "Beginner"
+      },
+      {
+        "n": 23,
+        "title": "Map the core Azure data services (ADLS Gen2, ADF, Synapse/Fabric, Event Hubs)",
+        "anchor": "23-map-the-core-azure-data-services-adls-gen2-adf-synapsefabric-event-hubs",
+        "level": "Beginner"
+      },
+      {
+        "n": 24,
+        "title": "Map the core GCP data services (GCS, BigQuery, Dataflow, Dataproc, Pub/Sub, Composer)",
+        "anchor": "24-map-the-core-gcp-data-services-gcs-bigquery-dataflow-dataproc-pubsub-composer",
+        "level": "Beginner"
+      },
+      {
+        "n": 25,
+        "title": "Object vs block vs file storage",
+        "anchor": "25-object-vs-block-vs-file-storage",
+        "level": "Beginner"
+      },
+      {
+        "n": 26,
+        "title": "What is data governance? Catalog, ownership, stewardship",
+        "anchor": "26-what-is-data-governance-catalog-ownership-stewardship",
+        "level": "Beginner"
+      },
+      {
+        "n": 27,
+        "title": "Encryption at rest and in transit, and key management",
+        "anchor": "27-encryption-at-rest-and-in-transit-and-key-management",
+        "level": "Beginner"
+      },
+      {
+        "n": 28,
+        "title": "How do you manage secrets in pipelines?",
+        "anchor": "28-how-do-you-manage-secrets-in-pipelines",
+        "level": "Beginner"
+      },
+      {
+        "n": 29,
+        "title": "What does CI/CD mean for data pipelines?",
+        "anchor": "29-what-does-cicd-mean-for-data-pipelines",
+        "level": "Beginner"
+      },
+      {
+        "n": 30,
+        "title": "Git branching strategies for data teams",
+        "anchor": "30-git-branching-strategies-for-data-teams",
+        "level": "Beginner"
+      },
+      {
+        "n": 31,
+        "title": "Kimball vs Inmon: compare the two warehouse methodologies",
+        "anchor": "31-kimball-vs-inmon-compare-the-two-warehouse-methodologies",
+        "level": "Intermediate"
+      },
+      {
+        "n": 32,
+        "title": "Explain transactional, periodic snapshot and accumulating snapshot fact tables",
+        "anchor": "32-explain-transactional-periodic-snapshot-and-accumulating-snapshot-fact-tables",
+        "level": "Intermediate"
+      },
+      {
+        "n": 33,
+        "title": "What are additive, semi-additive and non-additive measures?",
+        "anchor": "33-what-are-additive-semi-additive-and-non-additive-measures",
+        "level": "Intermediate"
+      },
+      {
+        "n": 34,
+        "title": "What is a conformed dimension, and why does it matter for an enterprise bus matrix?",
+        "anchor": "34-what-is-a-conformed-dimension-and-why-does-it-matter-for-an-enterprise-bus-matrix",
+        "level": "Intermediate"
+      },
+      {
+        "n": 35,
+        "title": "What is the grain of a fact table, and how do you declare it?",
+        "anchor": "35-what-is-the-grain-of-a-fact-table-and-how-do-you-declare-it",
+        "level": "Intermediate"
+      },
+      {
+        "n": 36,
+        "title": "How do you design and load an SCD Type 2 dimension?",
+        "anchor": "36-how-do-you-design-and-load-an-scd-type-2-dimension",
+        "level": "Intermediate"
+      },
+      {
+        "n": 37,
+        "title": "Junk, degenerate and role-playing dimensions",
+        "anchor": "37-junk-degenerate-and-role-playing-dimensions",
+        "level": "Intermediate"
+      },
+      {
+        "n": 38,
+        "title": "What is a factless fact table?",
+        "anchor": "38-what-is-a-factless-fact-table",
+        "level": "Intermediate"
+      },
+      {
+        "n": 39,
+        "title": "One Big Table (wide denormalised) vs dimensional model",
+        "anchor": "39-one-big-table-wide-denormalised-vs-dimensional-model",
+        "level": "Intermediate"
+      },
+      {
+        "n": 40,
+        "title": "How do you model event or clickstream data?",
+        "anchor": "40-how-do-you-model-event-or-clickstream-data",
+        "level": "Intermediate"
+      },
+      {
+        "n": 41,
+        "title": "High-watermark incremental loading and its pitfalls",
+        "anchor": "41-high-watermark-incremental-loading-and-its-pitfalls",
+        "level": "Intermediate"
+      },
+      {
+        "n": 42,
+        "title": "Event time vs processing time vs ingestion time",
+        "anchor": "42-event-time-vs-processing-time-vs-ingestion-time",
+        "level": "Intermediate"
+      },
+      {
+        "n": 43,
+        "title": "What is a data swamp, and how do you prevent one?",
+        "anchor": "43-what-is-a-data-swamp-and-how-do-you-prevent-one",
+        "level": "Intermediate"
+      },
+      {
+        "n": 44,
+        "title": "How do you build data quality checks into a pipeline?",
+        "anchor": "44-how-do-you-build-data-quality-checks-into-a-pipeline",
+        "level": "Intermediate"
+      },
+      {
+        "n": 45,
+        "title": "Data observability vs data quality testing",
+        "anchor": "45-data-observability-vs-data-quality-testing",
+        "level": "Intermediate"
+      },
+      {
+        "n": 46,
+        "title": "How do you handle bad records: quarantine tables and dead-letter queues",
+        "anchor": "46-how-do-you-handle-bad-records-quarantine-tables-and-dead-letter-queues",
+        "level": "Intermediate"
+      },
+      {
+        "n": 47,
+        "title": "Airflow architecture: scheduler, executor, workers, metadata DB, API server",
+        "anchor": "47-airflow-architecture-scheduler-executor-workers-metadata-db-api-server",
+        "level": "Intermediate"
+      },
+      {
+        "n": 48,
+        "title": "What are XComs, and what are their limits?",
+        "anchor": "48-what-are-xcoms-and-what-are-their-limits",
+        "level": "Intermediate"
+      },
+      {
+        "n": 49,
+        "title": "Airflow catchup, backfill, start_date and logical date",
+        "anchor": "49-airflow-catchup-backfill-start_date-and-logical-date",
+        "level": "Intermediate"
+      },
+      {
+        "n": 50,
+        "title": "How do you make Airflow tasks idempotent and safe to retry?",
+        "anchor": "50-how-do-you-make-airflow-tasks-idempotent-and-safe-to-retry",
+        "level": "Intermediate"
+      },
+      {
+        "n": 51,
+        "title": "Airflow vs Dagster vs Prefect vs cloud-native orchestrators",
+        "anchor": "51-airflow-vs-dagster-vs-prefect-vs-cloud-native-orchestrators",
+        "level": "Intermediate"
+      },
+      {
+        "n": 52,
+        "title": "What is Change Data Capture? Log-based vs query-based vs trigger-based",
+        "anchor": "52-what-is-change-data-capture-log-based-vs-query-based-vs-trigger-based",
+        "level": "Intermediate"
+      },
+      {
+        "n": 53,
+        "title": "How do you handle deletes in CDC: soft vs hard deletes",
+        "anchor": "53-how-do-you-handle-deletes-in-cdc-soft-vs-hard-deletes",
+        "level": "Intermediate"
+      },
+      {
+        "n": 54,
+        "title": "How do you choose a partition key, and what is over-partitioning?",
+        "anchor": "54-how-do-you-choose-a-partition-key-and-what-is-over-partitioning",
+        "level": "Intermediate"
+      },
+      {
+        "n": 55,
+        "title": "What is the small-files problem, and how do you fix it?",
+        "anchor": "55-what-is-the-small-files-problem-and-how-do-you-fix-it",
+        "level": "Intermediate"
+      },
+      {
+        "n": 56,
+        "title": "Compression codecs: Snappy vs ZSTD vs Gzip",
+        "anchor": "56-compression-codecs-snappy-vs-zstd-vs-gzip",
+        "level": "Intermediate"
+      },
+      {
+        "n": 57,
+        "title": "Explain the CAP theorem (and PACELC) for data engineers",
+        "anchor": "57-explain-the-cap-theorem-and-pacelc-for-data-engineers",
+        "level": "Intermediate"
+      },
+      {
+        "n": 58,
+        "title": "Kafka consumer groups and rebalancing",
+        "anchor": "58-kafka-consumer-groups-and-rebalancing",
+        "level": "Intermediate"
+      },
+      {
+        "n": 59,
+        "title": "What ordering guarantees does Kafka provide?",
+        "anchor": "59-what-ordering-guarantees-does-kafka-provide",
+        "level": "Intermediate"
+      },
+      {
+        "n": 60,
+        "title": "What is a schema registry, and what are compatibility modes?",
+        "anchor": "60-what-is-a-schema-registry-and-what-are-compatibility-modes",
+        "level": "Intermediate"
+      },
+      {
+        "n": 61,
+        "title": "Kafka vs Kinesis vs Pub/Sub vs Event Hubs",
+        "anchor": "61-kafka-vs-kinesis-vs-pubsub-vs-event-hubs",
+        "level": "Intermediate"
+      },
+      {
+        "n": 62,
+        "title": "Serverless vs provisioned compute for data workloads",
+        "anchor": "62-serverless-vs-provisioned-compute-for-data-workloads",
+        "level": "Intermediate"
+      },
+      {
+        "n": 63,
+        "title": "AWS Glue: crawlers, Data Catalog and Glue jobs",
+        "anchor": "63-aws-glue-crawlers-data-catalog-and-glue-jobs",
+        "level": "Intermediate"
+      },
+      {
+        "n": 64,
+        "title": "RBAC vs ABAC",
+        "anchor": "64-rbac-vs-abac",
+        "level": "Intermediate"
+      },
+      {
+        "n": 65,
+        "title": "How do you protect PII: masking, tokenisation, hashing, encryption",
+        "anchor": "65-how-do-you-protect-pii-masking-tokenisation-hashing-encryption",
+        "level": "Intermediate"
+      },
+      {
+        "n": 66,
+        "title": "What is data lineage, and how is it captured?",
+        "anchor": "66-what-is-data-lineage-and-how-is-it-captured",
+        "level": "Intermediate"
+      },
+      {
+        "n": 67,
+        "title": "The testing pyramid for data pipelines",
+        "anchor": "67-the-testing-pyramid-for-data-pipelines",
+        "level": "Intermediate"
+      },
+      {
+        "n": 68,
+        "title": "Dev/test/prod environments and promoting data code",
+        "anchor": "68-devtestprod-environments-and-promoting-data-code",
+        "level": "Intermediate"
+      },
+      {
+        "n": 69,
+        "title": "Infrastructure as Code (Terraform) for data platforms",
+        "anchor": "69-infrastructure-as-code-terraform-for-data-platforms",
+        "level": "Intermediate"
+      },
+      {
+        "n": 70,
+        "title": "General principles of cloud data cost optimisation",
+        "anchor": "70-general-principles-of-cloud-data-cost-optimisation",
+        "level": "Intermediate"
+      },
+      {
+        "n": 71,
+        "title": "Storage tiering and lifecycle policies",
+        "anchor": "71-storage-tiering-and-lifecycle-policies",
+        "level": "Intermediate"
+      },
+      {
+        "n": 72,
+        "title": "FinOps: tagging, chargeback and showback",
+        "anchor": "72-finops-tagging-chargeback-and-showback",
+        "level": "Intermediate"
+      },
+      {
+        "n": 73,
+        "title": "Spot/preemptible and reserved capacity for data workloads",
+        "anchor": "73-spotpreemptible-and-reserved-capacity-for-data-workloads",
+        "level": "Intermediate"
+      },
+      {
+        "n": 74,
+        "title": "What is reverse ETL?",
+        "anchor": "74-what-is-reverse-etl",
+        "level": "Intermediate"
+      },
+      {
+        "n": 75,
+        "title": "What is a semantic/metrics layer?",
+        "anchor": "75-what-is-a-semanticmetrics-layer",
+        "level": "Intermediate"
+      },
+      {
+        "n": 76,
+        "title": "SCD Types 4, 5 and 6 (hybrid): when are they used?",
+        "anchor": "76-scd-types-4-5-and-6-hybrid-when-are-they-used",
+        "level": "Advanced"
+      },
+      {
+        "n": 77,
+        "title": "How do you model many-to-many relationships with bridge tables?",
+        "anchor": "77-how-do-you-model-many-to-many-relationships-with-bridge-tables",
+        "level": "Advanced"
+      },
+      {
+        "n": 78,
+        "title": "Data Vault 2.0: hubs, links and satellites",
+        "anchor": "78-data-vault-20-hubs-links-and-satellites",
+        "level": "Advanced"
+      },
+      {
+        "n": 79,
+        "title": "Walk me through modelling a new business domain from raw requirements",
+        "anchor": "79-walk-me-through-modelling-a-new-business-domain-from-raw-requirements",
+        "level": "Advanced"
+      },
+      {
+        "n": 80,
+        "title": "Lambda vs Kappa architecture",
+        "anchor": "80-lambda-vs-kappa-architecture",
+        "level": "Advanced"
+      },
+      {
+        "n": 81,
+        "title": "Tumbling, sliding and session windows",
+        "anchor": "81-tumbling-sliding-and-session-windows",
+        "level": "Advanced"
+      },
+      {
+        "n": 82,
+        "title": "How do open table formats make ACID possible on object storage?",
+        "anchor": "82-how-do-open-table-formats-make-acid-possible-on-object-storage",
+        "level": "Advanced"
+      },
+      {
+        "n": 83,
+        "title": "What are data contracts, and how do you enforce them?",
+        "anchor": "83-what-are-data-contracts-and-how-do-you-enforce-them",
+        "level": "Advanced"
+      },
+      {
+        "n": 84,
+        "title": "Airflow executors: Local vs Celery vs Kubernetes",
+        "anchor": "84-airflow-executors-local-vs-celery-vs-kubernetes",
+        "level": "Advanced"
+      },
+      {
+        "n": 85,
+        "title": "Sensors vs deferrable operators",
+        "anchor": "85-sensors-vs-deferrable-operators",
+        "level": "Advanced"
+      },
+      {
+        "n": 86,
+        "title": "What changed in Airflow 3 (Assets, DAG versioning, Task SDK)?",
+        "anchor": "86-what-changed-in-airflow-3-assets-dag-versioning-task-sdk",
+        "level": "Advanced"
+      },
+      {
+        "n": 87,
+        "title": "Design a log-based CDC pipeline with Debezium and Kafka",
+        "anchor": "87-design-a-log-based-cdc-pipeline-with-debezium-and-kafka",
+        "level": "Advanced"
+      },
+      {
+        "n": 88,
+        "title": "Parquet internals: row groups, column chunks, pages and statistics",
+        "anchor": "88-parquet-internals-row-groups-column-chunks-pages-and-statistics",
+        "level": "Advanced"
+      },
+      {
+        "n": 89,
+        "title": "Delta Lake vs Apache Iceberg vs Apache Hudi",
+        "anchor": "89-delta-lake-vs-apache-iceberg-vs-apache-hudi",
+        "level": "Advanced"
+      },
+      {
+        "n": 90,
+        "title": "How does schema evolution work across Avro, Parquet and table formats?",
+        "anchor": "90-how-does-schema-evolution-work-across-avro-parquet-and-table-formats",
+        "level": "Advanced"
+      },
+      {
+        "n": 91,
+        "title": "At-most-once vs at-least-once vs exactly-once delivery",
+        "anchor": "91-at-most-once-vs-at-least-once-vs-exactly-once-delivery",
+        "level": "Advanced"
+      },
+      {
+        "n": 92,
+        "title": "Partitioning vs sharding vs replication",
+        "anchor": "92-partitioning-vs-sharding-vs-replication",
+        "level": "Advanced"
+      },
+      {
+        "n": 93,
+        "title": "What is consistent hashing?",
+        "anchor": "93-what-is-consistent-hashing",
+        "level": "Advanced"
+      },
+      {
+        "n": 94,
+        "title": "What is backpressure in streaming systems?",
+        "anchor": "94-what-is-backpressure-in-streaming-systems",
+        "level": "Advanced"
+      },
+      {
+        "n": 95,
+        "title": "Kafka idempotent producers and transactions",
+        "anchor": "95-kafka-idempotent-producers-and-transactions",
+        "level": "Advanced"
+      },
+      {
+        "n": 96,
+        "title": "Kafka retention vs log compaction",
+        "anchor": "96-kafka-retention-vs-log-compaction",
+        "level": "Advanced"
+      },
+      {
+        "n": 97,
+        "title": "How does GDPR \"right to erasure\" affect lake and warehouse design?",
+        "anchor": "97-how-does-gdpr-right-to-erasure-affect-lake-and-warehouse-design",
+        "level": "Advanced"
+      },
+      {
+        "n": 98,
+        "title": "Write-Audit-Publish and blue-green deployments for data",
+        "anchor": "98-write-audit-publish-and-blue-green-deployments-for-data",
+        "level": "Advanced"
+      },
+      {
+        "n": 99,
+        "title": "What is data mesh, and when does it fail?",
+        "anchor": "99-what-is-data-mesh-and-when-does-it-fail",
+        "level": "Advanced"
+      },
+      {
+        "n": 100,
+        "title": "Data engineering for ML and GenAI: feature stores, embeddings, vector stores",
+        "anchor": "100-data-engineering-for-ml-and-genai-feature-stores-embeddings-vector-stores",
+        "level": "Advanced"
+      }
+    ]
   },
   {
     "hub": "sql",
@@ -23,7 +625,309 @@
       "Beginner": 15,
       "Intermediate": 23,
       "Advanced": 12
-    }
+    },
+    "questions": [
+      {
+        "n": 1,
+        "title": "What is the logical order of SQL query execution?",
+        "anchor": "1-what-is-the-logical-order-of-sql-query-execution",
+        "level": "Beginner"
+      },
+      {
+        "n": 2,
+        "title": "WHERE vs HAVING",
+        "anchor": "2-where-vs-having",
+        "level": "Beginner"
+      },
+      {
+        "n": 3,
+        "title": "Explain INNER, LEFT, RIGHT, FULL and CROSS joins",
+        "anchor": "3-explain-inner-left-right-full-and-cross-joins",
+        "level": "Beginner"
+      },
+      {
+        "n": 4,
+        "title": "Self join: find employees and their managers",
+        "anchor": "4-self-join-find-employees-and-their-managers",
+        "level": "Beginner"
+      },
+      {
+        "n": 5,
+        "title": "UNION vs UNION ALL",
+        "anchor": "5-union-vs-union-all",
+        "level": "Beginner"
+      },
+      {
+        "n": 6,
+        "title": "Find the Nth highest salary (several approaches)",
+        "anchor": "6-find-the-nth-highest-salary-several-approaches",
+        "level": "Beginner"
+      },
+      {
+        "n": 7,
+        "title": "ROW_NUMBER vs RANK vs DENSE_RANK",
+        "anchor": "7-row_number-vs-rank-vs-dense_rank",
+        "level": "Beginner"
+      },
+      {
+        "n": 8,
+        "title": "Window functions: PARTITION BY, ORDER BY and frames",
+        "anchor": "8-window-functions-partition-by-order-by-and-frames",
+        "level": "Beginner"
+      },
+      {
+        "n": 9,
+        "title": "Find duplicate records",
+        "anchor": "9-find-duplicate-records",
+        "level": "Beginner"
+      },
+      {
+        "n": 10,
+        "title": "CTE vs subquery vs temporary table",
+        "anchor": "10-cte-vs-subquery-vs-temporary-table",
+        "level": "Beginner"
+      },
+      {
+        "n": 11,
+        "title": "COUNT(*) vs COUNT(col) vs COUNT(DISTINCT col)",
+        "anchor": "11-count-vs-countcol-vs-countdistinct-col",
+        "level": "Beginner"
+      },
+      {
+        "n": 12,
+        "title": "NULL handling: three-valued logic, COALESCE, NULLIF",
+        "anchor": "12-null-handling-three-valued-logic-coalesce-nullif",
+        "level": "Beginner"
+      },
+      {
+        "n": 13,
+        "title": "Conditional aggregation (SUM(CASE…) and FILTER)",
+        "anchor": "13-conditional-aggregation-sumcase-and-filter",
+        "level": "Beginner"
+      },
+      {
+        "n": 14,
+        "title": "DELETE vs TRUNCATE vs DROP",
+        "anchor": "14-delete-vs-truncate-vs-drop",
+        "level": "Beginner"
+      },
+      {
+        "n": 15,
+        "title": "ACID properties",
+        "anchor": "15-acid-properties",
+        "level": "Beginner"
+      },
+      {
+        "n": 16,
+        "title": "EXISTS vs IN vs NOT IN (and the NULL trap)",
+        "anchor": "16-exists-vs-in-vs-not-in-and-the-null-trap",
+        "level": "Intermediate"
+      },
+      {
+        "n": 17,
+        "title": "ROWS vs RANGE window frames",
+        "anchor": "17-rows-vs-range-window-frames",
+        "level": "Intermediate"
+      },
+      {
+        "n": 18,
+        "title": "Running totals and moving averages",
+        "anchor": "18-running-totals-and-moving-averages",
+        "level": "Intermediate"
+      },
+      {
+        "n": 19,
+        "title": "LAG/LEAD: day-over-day change",
+        "anchor": "19-laglead-day-over-day-change",
+        "level": "Intermediate"
+      },
+      {
+        "n": 20,
+        "title": "Why does LAST_VALUE return unexpected results? (default frame)",
+        "anchor": "20-why-does-last_value-return-unexpected-results-default-frame",
+        "level": "Intermediate"
+      },
+      {
+        "n": 21,
+        "title": "Top N rows per group",
+        "anchor": "21-top-n-rows-per-group",
+        "level": "Intermediate"
+      },
+      {
+        "n": 22,
+        "title": "Delete duplicates but keep one row",
+        "anchor": "22-delete-duplicates-but-keep-one-row",
+        "level": "Intermediate"
+      },
+      {
+        "n": 23,
+        "title": "Find missing IDs or dates in a sequence",
+        "anchor": "23-find-missing-ids-or-dates-in-a-sequence",
+        "level": "Intermediate"
+      },
+      {
+        "n": 24,
+        "title": "Generate a date spine with a recursive CTE or generator",
+        "anchor": "24-generate-a-date-spine-with-a-recursive-cte-or-generator",
+        "level": "Intermediate"
+      },
+      {
+        "n": 25,
+        "title": "Pivot rows to columns (CASE and PIVOT)",
+        "anchor": "25-pivot-rows-to-columns-case-and-pivot",
+        "level": "Intermediate"
+      },
+      {
+        "n": 26,
+        "title": "Unpivot columns to rows",
+        "anchor": "26-unpivot-columns-to-rows",
+        "level": "Intermediate"
+      },
+      {
+        "n": 27,
+        "title": "Correlated subqueries and their performance",
+        "anchor": "27-correlated-subqueries-and-their-performance",
+        "level": "Intermediate"
+      },
+      {
+        "n": 28,
+        "title": "Diagnose a join that multiplies rows (fan-out)",
+        "anchor": "28-diagnose-a-join-that-multiplies-rows-fan-out",
+        "level": "Intermediate"
+      },
+      {
+        "n": 29,
+        "title": "Compute median and percentiles",
+        "anchor": "29-compute-median-and-percentiles",
+        "level": "Intermediate"
+      },
+      {
+        "n": 30,
+        "title": "Month-over-month growth percentage",
+        "anchor": "30-month-over-month-growth-percentage",
+        "level": "Intermediate"
+      },
+      {
+        "n": 31,
+        "title": "Customers who bought product A but never product B",
+        "anchor": "31-customers-who-bought-product-a-but-never-product-b",
+        "level": "Intermediate"
+      },
+      {
+        "n": 32,
+        "title": "Year-to-date and same-period-last-year comparisons",
+        "anchor": "32-year-to-date-and-same-period-last-year-comparisons",
+        "level": "Intermediate"
+      },
+      {
+        "n": 33,
+        "title": "MERGE for upserts",
+        "anchor": "33-merge-for-upserts",
+        "level": "Intermediate"
+      },
+      {
+        "n": 34,
+        "title": "Views vs materialized views",
+        "anchor": "34-views-vs-materialized-views",
+        "level": "Intermediate"
+      },
+      {
+        "n": 35,
+        "title": "How do you read an execution plan?",
+        "anchor": "35-how-do-you-read-an-execution-plan",
+        "level": "Intermediate"
+      },
+      {
+        "n": 36,
+        "title": "A practical query optimisation checklist",
+        "anchor": "36-a-practical-query-optimisation-checklist",
+        "level": "Intermediate"
+      },
+      {
+        "n": 37,
+        "title": "Stored procedures vs user-defined functions",
+        "anchor": "37-stored-procedures-vs-user-defined-functions",
+        "level": "Intermediate"
+      },
+      {
+        "n": 38,
+        "title": "Data-type traps: integer division, FLOAT vs DECIMAL, time zones",
+        "anchor": "38-data-type-traps-integer-division-float-vs-decimal-time-zones",
+        "level": "Intermediate"
+      },
+      {
+        "n": 39,
+        "title": "Gaps and islands: longest streak of consecutive login days",
+        "anchor": "39-gaps-and-islands-longest-streak-of-consecutive-login-days",
+        "level": "Advanced"
+      },
+      {
+        "n": 40,
+        "title": "Recursive CTE: walk an org hierarchy",
+        "anchor": "40-recursive-cte-walk-an-org-hierarchy",
+        "level": "Advanced"
+      },
+      {
+        "n": 41,
+        "title": "New vs returning users and cumulative distinct counts",
+        "anchor": "41-new-vs-returning-users-and-cumulative-distinct-counts",
+        "level": "Advanced"
+      },
+      {
+        "n": 42,
+        "title": "Build a cohort retention table",
+        "anchor": "42-build-a-cohort-retention-table",
+        "level": "Advanced"
+      },
+      {
+        "n": 43,
+        "title": "Sessionise events with a 30-minute inactivity gap",
+        "anchor": "43-sessionise-events-with-a-30-minute-inactivity-gap",
+        "level": "Advanced"
+      },
+      {
+        "n": 44,
+        "title": "Merge overlapping date ranges",
+        "anchor": "44-merge-overlapping-date-ranges",
+        "level": "Advanced"
+      },
+      {
+        "n": 45,
+        "title": "Indexes (clustered/non-clustered) and why columnar warehouses differ",
+        "anchor": "45-indexes-clusterednon-clustered-and-why-columnar-warehouses-differ",
+        "level": "Advanced"
+      },
+      {
+        "n": 46,
+        "title": "What makes a predicate sargable?",
+        "anchor": "46-what-makes-a-predicate-sargable",
+        "level": "Advanced"
+      },
+      {
+        "n": 47,
+        "title": "Nested loop vs hash vs merge join algorithms",
+        "anchor": "47-nested-loop-vs-hash-vs-merge-join-algorithms",
+        "level": "Advanced"
+      },
+      {
+        "n": 48,
+        "title": "Window function vs GROUP BY + join: performance trade-offs",
+        "anchor": "48-window-function-vs-group-by--join-performance-trade-offs",
+        "level": "Advanced"
+      },
+      {
+        "n": 49,
+        "title": "Transaction isolation levels and anomalies",
+        "anchor": "49-transaction-isolation-levels-and-anomalies",
+        "level": "Advanced"
+      },
+      {
+        "n": 50,
+        "title": "Approximate aggregation (APPROX_COUNT_DISTINCT, HyperLogLog)",
+        "anchor": "50-approximate-aggregation-approx_count_distinct-hyperloglog",
+        "level": "Advanced"
+      }
+    ]
   },
   {
     "hub": "snowflake",
@@ -36,7 +940,309 @@
       "Beginner": 15,
       "Intermediate": 22,
       "Advanced": 13
-    }
+    },
+    "questions": [
+      {
+        "n": 1,
+        "title": "Explain Snowflake's three-layer architecture",
+        "anchor": "1-explain-snowflakes-three-layer-architecture",
+        "level": "Beginner"
+      },
+      {
+        "n": 2,
+        "title": "Virtual warehouses: sizes, credits, auto-suspend and auto-resume",
+        "anchor": "2-virtual-warehouses-sizes-credits-auto-suspend-and-auto-resume",
+        "level": "Beginner"
+      },
+      {
+        "n": 3,
+        "title": "Micro-partitions and partition pruning",
+        "anchor": "3-micro-partitions-and-partition-pruning",
+        "level": "Beginner"
+      },
+      {
+        "n": 4,
+        "title": "Time Travel: retention by edition and how to query history",
+        "anchor": "4-time-travel-retention-by-edition-and-how-to-query-history",
+        "level": "Beginner"
+      },
+      {
+        "n": 5,
+        "title": "Fail-safe and how it differs from Time Travel",
+        "anchor": "5-fail-safe-and-how-it-differs-from-time-travel",
+        "level": "Beginner"
+      },
+      {
+        "n": 6,
+        "title": "Permanent vs transient vs temporary tables",
+        "anchor": "6-permanent-vs-transient-vs-temporary-tables",
+        "level": "Beginner"
+      },
+      {
+        "n": 7,
+        "title": "Zero-copy cloning",
+        "anchor": "7-zero-copy-cloning",
+        "level": "Beginner"
+      },
+      {
+        "n": 8,
+        "title": "How do you recover a dropped or overwritten table?",
+        "anchor": "8-how-do-you-recover-a-dropped-or-overwritten-table",
+        "level": "Beginner"
+      },
+      {
+        "n": 9,
+        "title": "Stages: user, table, named internal and external",
+        "anchor": "9-stages-user-table-named-internal-and-external",
+        "level": "Beginner"
+      },
+      {
+        "n": 10,
+        "title": "Snowpipe auto-ingest",
+        "anchor": "10-snowpipe-auto-ingest",
+        "level": "Beginner"
+      },
+      {
+        "n": 11,
+        "title": "Tasks: schedules, task graphs and serverless tasks",
+        "anchor": "11-tasks-schedules-task-graphs-and-serverless-tasks",
+        "level": "Beginner"
+      },
+      {
+        "n": 12,
+        "title": "VARIANT and semi-structured data",
+        "anchor": "12-variant-and-semi-structured-data",
+        "level": "Beginner"
+      },
+      {
+        "n": 13,
+        "title": "Snowflake RBAC: system roles and role hierarchy",
+        "anchor": "13-snowflake-rbac-system-roles-and-role-hierarchy",
+        "level": "Beginner"
+      },
+      {
+        "n": 14,
+        "title": "Snowflake editions and what each adds",
+        "anchor": "14-snowflake-editions-and-what-each-adds",
+        "level": "Beginner"
+      },
+      {
+        "n": 15,
+        "title": "INFORMATION_SCHEMA vs ACCOUNT_USAGE (latency and retention)",
+        "anchor": "15-information_schema-vs-account_usage-latency-and-retention",
+        "level": "Beginner"
+      },
+      {
+        "n": 16,
+        "title": "Scale up vs scale out: multi-cluster warehouses and scaling policies",
+        "anchor": "16-scale-up-vs-scale-out-multi-cluster-warehouses-and-scaling-policies",
+        "level": "Intermediate"
+      },
+      {
+        "n": 17,
+        "title": "Clustering keys, clustering depth and Automatic Clustering",
+        "anchor": "17-clustering-keys-clustering-depth-and-automatic-clustering",
+        "level": "Intermediate"
+      },
+      {
+        "n": 18,
+        "title": "Snowflake caching layers: result, warehouse (local disk) and metadata",
+        "anchor": "18-snowflake-caching-layers-result-warehouse-local-disk-and-metadata",
+        "level": "Intermediate"
+      },
+      {
+        "n": 19,
+        "title": "COPY INTO options and load metadata",
+        "anchor": "19-copy-into-options-and-load-metadata",
+        "level": "Intermediate"
+      },
+      {
+        "n": 20,
+        "title": "File sizing and format best practices for bulk loading",
+        "anchor": "20-file-sizing-and-format-best-practices-for-bulk-loading",
+        "level": "Intermediate"
+      },
+      {
+        "n": 21,
+        "title": "Streams: standard, append-only, insert-only; offsets and staleness",
+        "anchor": "21-streams-standard-append-only-insert-only-offsets-and-staleness",
+        "level": "Intermediate"
+      },
+      {
+        "n": 22,
+        "title": "Dynamic Tables: target lag and refresh modes",
+        "anchor": "22-dynamic-tables-target-lag-and-refresh-modes",
+        "level": "Intermediate"
+      },
+      {
+        "n": 23,
+        "title": "Materialized views in Snowflake and their limitations",
+        "anchor": "23-materialized-views-in-snowflake-and-their-limitations",
+        "level": "Intermediate"
+      },
+      {
+        "n": 24,
+        "title": "LATERAL FLATTEN for nested JSON",
+        "anchor": "24-lateral-flatten-for-nested-json",
+        "level": "Intermediate"
+      },
+      {
+        "n": 25,
+        "title": "INFER_SCHEMA and table schema evolution",
+        "anchor": "25-infer_schema-and-table-schema-evolution",
+        "level": "Intermediate"
+      },
+      {
+        "n": 26,
+        "title": "Secure Data Sharing and reader accounts",
+        "anchor": "26-secure-data-sharing-and-reader-accounts",
+        "level": "Intermediate"
+      },
+      {
+        "n": 27,
+        "title": "Access-role vs functional-role design and future grants",
+        "anchor": "27-access-role-vs-functional-role-design-and-future-grants",
+        "level": "Intermediate"
+      },
+      {
+        "n": 28,
+        "title": "Dynamic data masking policies",
+        "anchor": "28-dynamic-data-masking-policies",
+        "level": "Intermediate"
+      },
+      {
+        "n": 29,
+        "title": "Row access policies",
+        "anchor": "29-row-access-policies",
+        "level": "Intermediate"
+      },
+      {
+        "n": 30,
+        "title": "Reading the Query Profile: spilling, exploding joins, poor pruning",
+        "anchor": "30-reading-the-query-profile-spilling-exploding-joins-poor-pruning",
+        "level": "Intermediate"
+      },
+      {
+        "n": 31,
+        "title": "Cost control: resource monitors and budgets",
+        "anchor": "31-cost-control-resource-monitors-and-budgets",
+        "level": "Intermediate"
+      },
+      {
+        "n": 32,
+        "title": "Snowpark: DataFrame API and pushdown",
+        "anchor": "32-snowpark-dataframe-api-and-pushdown",
+        "level": "Intermediate"
+      },
+      {
+        "n": 33,
+        "title": "UDFs, UDTFs and stored procedures (languages and use cases)",
+        "anchor": "33-udfs-udtfs-and-stored-procedures-languages-and-use-cases",
+        "level": "Intermediate"
+      },
+      {
+        "n": 34,
+        "title": "External tables vs Iceberg tables",
+        "anchor": "34-external-tables-vs-iceberg-tables",
+        "level": "Intermediate"
+      },
+      {
+        "n": 35,
+        "title": "MERGE in Snowflake and the nondeterministic-merge error",
+        "anchor": "35-merge-in-snowflake-and-the-nondeterministic-merge-error",
+        "level": "Intermediate"
+      },
+      {
+        "n": 36,
+        "title": "Gen2 and Snowpark-optimized warehouses",
+        "anchor": "36-gen2-and-snowpark-optimized-warehouses",
+        "level": "Intermediate"
+      },
+      {
+        "n": 37,
+        "title": "Cortex AI SQL functions (AI_COMPLETE, AI_CLASSIFY and others)",
+        "anchor": "37-cortex-ai-sql-functions-ai_complete-ai_classify-and-others",
+        "level": "Intermediate"
+      },
+      {
+        "n": 38,
+        "title": "Search Optimization Service vs clustering",
+        "anchor": "38-search-optimization-service-vs-clustering",
+        "level": "Advanced"
+      },
+      {
+        "n": 39,
+        "title": "Snowpipe vs Snowpipe Streaming vs COPY INTO",
+        "anchor": "39-snowpipe-vs-snowpipe-streaming-vs-copy-into",
+        "level": "Advanced"
+      },
+      {
+        "n": 40,
+        "title": "Build an incremental CDC pipeline with Streams and Tasks",
+        "anchor": "40-build-an-incremental-cdc-pipeline-with-streams-and-tasks",
+        "level": "Advanced"
+      },
+      {
+        "n": 41,
+        "title": "Dynamic Tables vs Streams & Tasks vs materialized views",
+        "anchor": "41-dynamic-tables-vs-streams--tasks-vs-materialized-views",
+        "level": "Advanced"
+      },
+      {
+        "n": 42,
+        "title": "Listings and cross-region/cross-cloud sharing",
+        "anchor": "42-listings-and-cross-regioncross-cloud-sharing",
+        "level": "Advanced"
+      },
+      {
+        "n": 43,
+        "title": "Tag-based masking and sensitive data classification",
+        "anchor": "43-tag-based-masking-and-sensitive-data-classification",
+        "level": "Advanced"
+      },
+      {
+        "n": 44,
+        "title": "Snowflake performance tuning checklist",
+        "anchor": "44-snowflake-performance-tuning-checklist",
+        "level": "Advanced"
+      },
+      {
+        "n": 45,
+        "title": "Query Acceleration Service",
+        "anchor": "45-query-acceleration-service",
+        "level": "Advanced"
+      },
+      {
+        "n": 46,
+        "title": "Analysing spend with ACCOUNT_USAGE views",
+        "anchor": "46-analysing-spend-with-account_usage-views",
+        "level": "Advanced"
+      },
+      {
+        "n": 47,
+        "title": "Iceberg tables: Snowflake-managed vs externally managed catalogs",
+        "anchor": "47-iceberg-tables-snowflake-managed-vs-externally-managed-catalogs",
+        "level": "Advanced"
+      },
+      {
+        "n": 48,
+        "title": "Transactions and locking behaviour in Snowflake",
+        "anchor": "48-transactions-and-locking-behaviour-in-snowflake",
+        "level": "Advanced"
+      },
+      {
+        "n": 49,
+        "title": "Replication and failover for business continuity",
+        "anchor": "49-replication-and-failover-for-business-continuity",
+        "level": "Advanced"
+      },
+      {
+        "n": 50,
+        "title": "Hybrid tables (Unistore)",
+        "anchor": "50-hybrid-tables-unistore",
+        "level": "Advanced"
+      }
+    ]
   },
   {
     "hub": "databricks",
@@ -49,7 +1255,309 @@
       "Beginner": 15,
       "Intermediate": 23,
       "Advanced": 12
-    }
+    },
+    "questions": [
+      {
+        "n": 1,
+        "title": "Databricks architecture: control plane vs compute plane (classic and serverless)",
+        "anchor": "1-databricks-architecture-control-plane-vs-compute-plane-classic-and-serverless",
+        "level": "Beginner"
+      },
+      {
+        "n": 2,
+        "title": "What is Delta Lake, and how is it different from plain Parquet?",
+        "anchor": "2-what-is-delta-lake-and-how-is-it-different-from-plain-parquet",
+        "level": "Beginner"
+      },
+      {
+        "n": 3,
+        "title": "Delta time travel and RESTORE",
+        "anchor": "3-delta-time-travel-and-restore",
+        "level": "Beginner"
+      },
+      {
+        "n": 4,
+        "title": "Schema enforcement vs schema evolution (mergeSchema)",
+        "anchor": "4-schema-enforcement-vs-schema-evolution-mergeschema",
+        "level": "Beginner"
+      },
+      {
+        "n": 5,
+        "title": "Unity Catalog: metastore and the three-level namespace",
+        "anchor": "5-unity-catalog-metastore-and-the-three-level-namespace",
+        "level": "Beginner"
+      },
+      {
+        "n": 6,
+        "title": "Managed vs external tables, and volumes",
+        "anchor": "6-managed-vs-external-tables-and-volumes",
+        "level": "Beginner"
+      },
+      {
+        "n": 7,
+        "title": "Lakeflow Spark Declarative Pipelines (formerly DLT): streaming tables vs materialized views",
+        "anchor": "7-lakeflow-spark-declarative-pipelines-formerly-dlt-streaming-tables-vs-materialized-views",
+        "level": "Beginner"
+      },
+      {
+        "n": 8,
+        "title": "Lakeflow Jobs (formerly Workflows): tasks, retries and repair runs",
+        "anchor": "8-lakeflow-jobs-formerly-workflows-tasks-retries-and-repair-runs",
+        "level": "Beginner"
+      },
+      {
+        "n": 9,
+        "title": "All-purpose vs job compute vs SQL warehouse vs serverless",
+        "anchor": "9-all-purpose-vs-job-compute-vs-sql-warehouse-vs-serverless",
+        "level": "Beginner"
+      },
+      {
+        "n": 10,
+        "title": "What is Photon?",
+        "anchor": "10-what-is-photon",
+        "level": "Beginner"
+      },
+      {
+        "n": 11,
+        "title": "Databricks Runtime versions and LTS",
+        "anchor": "11-databricks-runtime-versions-and-lts",
+        "level": "Beginner"
+      },
+      {
+        "n": 12,
+        "title": "Implementing medallion architecture on Databricks (See also Q32)",
+        "anchor": "12-implementing-medallion-architecture-on-databricks-see-also-q32",
+        "level": "Beginner"
+      },
+      {
+        "n": 13,
+        "title": "Notebooks, Git folders, dbutils and widgets",
+        "anchor": "13-notebooks-git-folders-dbutils-and-widgets",
+        "level": "Beginner"
+      },
+      {
+        "n": 14,
+        "title": "Secret scopes and secrets management",
+        "anchor": "14-secret-scopes-and-secrets-management",
+        "level": "Beginner"
+      },
+      {
+        "n": 15,
+        "title": "Delta Sharing",
+        "anchor": "15-delta-sharing",
+        "level": "Beginner"
+      },
+      {
+        "n": 16,
+        "title": "The Delta transaction log: JSON commits and checkpoints",
+        "anchor": "16-the-delta-transaction-log-json-commits-and-checkpoints",
+        "level": "Intermediate"
+      },
+      {
+        "n": 17,
+        "title": "VACUUM: default retention and the risks",
+        "anchor": "17-vacuum-default-retention-and-the-risks",
+        "level": "Intermediate"
+      },
+      {
+        "n": 18,
+        "title": "OPTIMIZE, optimized writes and auto compaction",
+        "anchor": "18-optimize-optimized-writes-and-auto-compaction",
+        "level": "Intermediate"
+      },
+      {
+        "n": 19,
+        "title": "Z-ORDER",
+        "anchor": "19-z-order",
+        "level": "Intermediate"
+      },
+      {
+        "n": 20,
+        "title": "Predictive optimization",
+        "anchor": "20-predictive-optimization",
+        "level": "Intermediate"
+      },
+      {
+        "n": 21,
+        "title": "MERGE INTO for upserts and its performance",
+        "anchor": "21-merge-into-for-upserts-and-its-performance",
+        "level": "Intermediate"
+      },
+      {
+        "n": 22,
+        "title": "Change Data Feed",
+        "anchor": "22-change-data-feed",
+        "level": "Intermediate"
+      },
+      {
+        "n": 23,
+        "title": "Unity Catalog securables, privileges and inheritance",
+        "anchor": "23-unity-catalog-securables-privileges-and-inheritance",
+        "level": "Intermediate"
+      },
+      {
+        "n": 24,
+        "title": "Lineage and system tables",
+        "anchor": "24-lineage-and-system-tables",
+        "level": "Intermediate"
+      },
+      {
+        "n": 25,
+        "title": "Pipeline expectations for data quality",
+        "anchor": "25-pipeline-expectations-for-data-quality",
+        "level": "Intermediate"
+      },
+      {
+        "n": 26,
+        "title": "Triggered vs continuous pipelines; development vs production mode",
+        "anchor": "26-triggered-vs-continuous-pipelines-development-vs-production-mode",
+        "level": "Intermediate"
+      },
+      {
+        "n": 27,
+        "title": "Auto Loader: directory listing vs file notification",
+        "anchor": "27-auto-loader-directory-listing-vs-file-notification",
+        "level": "Intermediate"
+      },
+      {
+        "n": 28,
+        "title": "COPY INTO vs Auto Loader",
+        "anchor": "28-copy-into-vs-auto-loader",
+        "level": "Intermediate"
+      },
+      {
+        "n": 29,
+        "title": "Job parameters, task values and conditional tasks",
+        "anchor": "29-job-parameters-task-values-and-conditional-tasks",
+        "level": "Intermediate"
+      },
+      {
+        "n": 30,
+        "title": "Cluster sizing, autoscaling and spot instances",
+        "anchor": "30-cluster-sizing-autoscaling-and-spot-instances",
+        "level": "Intermediate"
+      },
+      {
+        "n": 31,
+        "title": "Compute policies and instance pools",
+        "anchor": "31-compute-policies-and-instance-pools",
+        "level": "Intermediate"
+      },
+      {
+        "n": 32,
+        "title": "SQL warehouses: classic vs pro vs serverless",
+        "anchor": "32-sql-warehouses-classic-vs-pro-vs-serverless",
+        "level": "Intermediate"
+      },
+      {
+        "n": 33,
+        "title": "Structured Streaming with Delta as source and sink",
+        "anchor": "33-structured-streaming-with-delta-as-source-and-sink",
+        "level": "Intermediate"
+      },
+      {
+        "n": 34,
+        "title": "Declarative Automation Bundles (formerly Databricks Asset Bundles) for CI/CD",
+        "anchor": "34-declarative-automation-bundles-formerly-databricks-asset-bundles-for-cicd",
+        "level": "Intermediate"
+      },
+      {
+        "n": 35,
+        "title": "Controlling DBU cost on Databricks",
+        "anchor": "35-controlling-dbu-cost-on-databricks",
+        "level": "Intermediate"
+      },
+      {
+        "n": 36,
+        "title": "Shallow clone vs deep clone",
+        "anchor": "36-shallow-clone-vs-deep-clone",
+        "level": "Intermediate"
+      },
+      {
+        "n": 37,
+        "title": "Identity columns and constraints in Delta tables",
+        "anchor": "37-identity-columns-and-constraints-in-delta-tables",
+        "level": "Intermediate"
+      },
+      {
+        "n": 38,
+        "title": "Serverless compute for jobs and notebooks",
+        "anchor": "38-serverless-compute-for-jobs-and-notebooks",
+        "level": "Intermediate"
+      },
+      {
+        "n": 39,
+        "title": "Optimistic concurrency control and write conflicts in Delta",
+        "anchor": "39-optimistic-concurrency-control-and-write-conflicts-in-delta",
+        "level": "Advanced"
+      },
+      {
+        "n": 40,
+        "title": "Liquid Clustering vs partitioning vs Z-ORDER",
+        "anchor": "40-liquid-clustering-vs-partitioning-vs-z-order",
+        "level": "Advanced"
+      },
+      {
+        "n": 41,
+        "title": "Deletion vectors",
+        "anchor": "41-deletion-vectors",
+        "level": "Advanced"
+      },
+      {
+        "n": 42,
+        "title": "AUTO CDC (formerly APPLY CHANGES) for SCD Type 1/2 in pipelines",
+        "anchor": "42-auto-cdc-formerly-apply-changes-for-scd-type-12-in-pipelines",
+        "level": "Advanced"
+      },
+      {
+        "n": 43,
+        "title": "Row filters and column masks in Unity Catalog",
+        "anchor": "43-row-filters-and-column-masks-in-unity-catalog",
+        "level": "Advanced"
+      },
+      {
+        "n": 44,
+        "title": "Auto Loader schema inference, evolution and rescued data",
+        "anchor": "44-auto-loader-schema-inference-evolution-and-rescued-data",
+        "level": "Advanced"
+      },
+      {
+        "n": 45,
+        "title": "Monitoring spend with system.billing tables",
+        "anchor": "45-monitoring-spend-with-systembilling-tables",
+        "level": "Advanced"
+      },
+      {
+        "n": 46,
+        "title": "Lakehouse Federation",
+        "anchor": "46-lakehouse-federation",
+        "level": "Advanced"
+      },
+      {
+        "n": 47,
+        "title": "Preventing small files from streaming and frequent writes",
+        "anchor": "47-preventing-small-files-from-streaming-and-frequent-writes",
+        "level": "Advanced"
+      },
+      {
+        "n": 48,
+        "title": "Lakeflow Connect managed ingestion",
+        "anchor": "48-lakeflow-connect-managed-ingestion",
+        "level": "Advanced"
+      },
+      {
+        "n": 49,
+        "title": "Databricks vs Snowflake: how do you choose?",
+        "anchor": "49-databricks-vs-snowflake-how-do-you-choose",
+        "level": "Advanced"
+      },
+      {
+        "n": 50,
+        "title": "Troubleshooting a slow Databricks job end to end",
+        "anchor": "50-troubleshooting-a-slow-databricks-job-end-to-end",
+        "level": "Advanced"
+      }
+    ]
   },
   {
     "hub": "pyspark",
@@ -62,7 +1570,309 @@
       "Beginner": 15,
       "Intermediate": 23,
       "Advanced": 12
-    }
+    },
+    "questions": [
+      {
+        "n": 1,
+        "title": "Spark architecture: driver, executors and cluster manager",
+        "anchor": "1-spark-architecture-driver-executors-and-cluster-manager",
+        "level": "Beginner"
+      },
+      {
+        "n": 2,
+        "title": "Jobs, stages, tasks and the DAG",
+        "anchor": "2-jobs-stages-tasks-and-the-dag",
+        "level": "Beginner"
+      },
+      {
+        "n": 3,
+        "title": "Lazy evaluation",
+        "anchor": "3-lazy-evaluation",
+        "level": "Beginner"
+      },
+      {
+        "n": 4,
+        "title": "Transformations vs actions",
+        "anchor": "4-transformations-vs-actions",
+        "level": "Beginner"
+      },
+      {
+        "n": 5,
+        "title": "Narrow vs wide transformations",
+        "anchor": "5-narrow-vs-wide-transformations",
+        "level": "Beginner"
+      },
+      {
+        "n": 6,
+        "title": "RDD vs DataFrame vs Dataset",
+        "anchor": "6-rdd-vs-dataframe-vs-dataset",
+        "level": "Beginner"
+      },
+      {
+        "n": 7,
+        "title": "repartition vs coalesce",
+        "anchor": "7-repartition-vs-coalesce",
+        "level": "Beginner"
+      },
+      {
+        "n": 8,
+        "title": "cache() vs persist() and storage levels",
+        "anchor": "8-cache-vs-persist-and-storage-levels",
+        "level": "Beginner"
+      },
+      {
+        "n": 9,
+        "title": "Handling nulls in PySpark",
+        "anchor": "9-handling-nulls-in-pyspark",
+        "level": "Beginner"
+      },
+      {
+        "n": 10,
+        "title": "Reading and writing with an explicit schema",
+        "anchor": "10-reading-and-writing-with-an-explicit-schema",
+        "level": "Beginner"
+      },
+      {
+        "n": 11,
+        "title": "Broadcast variables and accumulators",
+        "anchor": "11-broadcast-variables-and-accumulators",
+        "level": "Beginner"
+      },
+      {
+        "n": 12,
+        "title": "Output modes: append, update, complete",
+        "anchor": "12-output-modes-append-update-complete",
+        "level": "Beginner"
+      },
+      {
+        "n": 13,
+        "title": "Coding: deduplicate to keep the latest record per key",
+        "anchor": "13-coding-deduplicate-to-keep-the-latest-record-per-key",
+        "level": "Beginner"
+      },
+      {
+        "n": 14,
+        "title": "Coding: word count / frequency count",
+        "anchor": "14-coding-word-count--frequency-count",
+        "level": "Beginner"
+      },
+      {
+        "n": 15,
+        "title": "Spark Connect (client-server)",
+        "anchor": "15-spark-connect-client-server",
+        "level": "Beginner"
+      },
+      {
+        "n": 16,
+        "title": "What happens during a shuffle, and why is it expensive?",
+        "anchor": "16-what-happens-during-a-shuffle-and-why-is-it-expensive",
+        "level": "Intermediate"
+      },
+      {
+        "n": 17,
+        "title": "spark.sql.shuffle.partitions: default and tuning",
+        "anchor": "17-sparksqlshufflepartitions-default-and-tuning",
+        "level": "Intermediate"
+      },
+      {
+        "n": 18,
+        "title": "How Spark decides the number of input partitions",
+        "anchor": "18-how-spark-decides-the-number-of-input-partitions",
+        "level": "Intermediate"
+      },
+      {
+        "n": 19,
+        "title": "Join strategies: broadcast hash, shuffle hash, sort-merge",
+        "anchor": "19-join-strategies-broadcast-hash-shuffle-hash-sort-merge",
+        "level": "Intermediate"
+      },
+      {
+        "n": 20,
+        "title": "Broadcast joins: threshold, hints and limits",
+        "anchor": "20-broadcast-joins-threshold-hints-and-limits",
+        "level": "Intermediate"
+      },
+      {
+        "n": 21,
+        "title": "How do you detect data skew?",
+        "anchor": "21-how-do-you-detect-data-skew",
+        "level": "Intermediate"
+      },
+      {
+        "n": 22,
+        "title": "Adaptive Query Execution: what does it do?",
+        "anchor": "22-adaptive-query-execution-what-does-it-do",
+        "level": "Intermediate"
+      },
+      {
+        "n": 23,
+        "title": "When caching hurts, and how to unpersist",
+        "anchor": "23-when-caching-hurts-and-how-to-unpersist",
+        "level": "Intermediate"
+      },
+      {
+        "n": 24,
+        "title": "Python UDF vs pandas UDF vs built-in functions",
+        "anchor": "24-python-udf-vs-pandas-udf-vs-built-in-functions",
+        "level": "Intermediate"
+      },
+      {
+        "n": 25,
+        "title": "Dynamic allocation",
+        "anchor": "25-dynamic-allocation",
+        "level": "Intermediate"
+      },
+      {
+        "n": 26,
+        "title": "Reading the Spark UI",
+        "anchor": "26-reading-the-spark-ui",
+        "level": "Intermediate"
+      },
+      {
+        "n": 27,
+        "title": "Using explain() to read physical plans",
+        "anchor": "27-using-explain-to-read-physical-plans",
+        "level": "Intermediate"
+      },
+      {
+        "n": 28,
+        "title": "Predicate pushdown and partition pruning",
+        "anchor": "28-predicate-pushdown-and-partition-pruning",
+        "level": "Intermediate"
+      },
+      {
+        "n": 29,
+        "title": "partitionBy vs bucketBy when writing",
+        "anchor": "29-partitionby-vs-bucketby-when-writing",
+        "level": "Intermediate"
+      },
+      {
+        "n": 30,
+        "title": "Save modes and dynamic partition overwrite",
+        "anchor": "30-save-modes-and-dynamic-partition-overwrite",
+        "level": "Intermediate"
+      },
+      {
+        "n": 31,
+        "title": "Window functions in PySpark",
+        "anchor": "31-window-functions-in-pyspark",
+        "level": "Intermediate"
+      },
+      {
+        "n": 32,
+        "title": "explode, flattening nested JSON and arrays",
+        "anchor": "32-explode-flattening-nested-json-and-arrays",
+        "level": "Intermediate"
+      },
+      {
+        "n": 33,
+        "title": "groupByKey vs reduceByKey (RDD API)",
+        "anchor": "33-groupbykey-vs-reducebykey-rdd-api",
+        "level": "Intermediate"
+      },
+      {
+        "n": 34,
+        "title": "Structured Streaming programming model",
+        "anchor": "34-structured-streaming-programming-model",
+        "level": "Intermediate"
+      },
+      {
+        "n": 35,
+        "title": "Triggers: processingTime, availableNow, once, continuous",
+        "anchor": "35-triggers-processingtime-availablenow-once-continuous",
+        "level": "Intermediate"
+      },
+      {
+        "n": 36,
+        "title": "foreachBatch for upserts and multiple sinks",
+        "anchor": "36-foreachbatch-for-upserts-and-multiple-sinks",
+        "level": "Intermediate"
+      },
+      {
+        "n": 37,
+        "title": "Coding: top-N per group and running totals",
+        "anchor": "37-coding-top-n-per-group-and-running-totals",
+        "level": "Intermediate"
+      },
+      {
+        "n": 38,
+        "title": "Spark vs pandas vs Polars: when to use each",
+        "anchor": "38-spark-vs-pandas-vs-polars-when-to-use-each",
+        "level": "Intermediate"
+      },
+      {
+        "n": 39,
+        "title": "Fix skew with salting (with code)",
+        "anchor": "39-fix-skew-with-salting-with-code",
+        "level": "Advanced"
+      },
+      {
+        "n": 40,
+        "title": "Catalyst optimizer phases",
+        "anchor": "40-catalyst-optimizer-phases",
+        "level": "Advanced"
+      },
+      {
+        "n": 41,
+        "title": "Project Tungsten and whole-stage code generation",
+        "anchor": "41-project-tungsten-and-whole-stage-code-generation",
+        "level": "Advanced"
+      },
+      {
+        "n": 42,
+        "title": "Executor memory model: unified, execution, storage, overhead",
+        "anchor": "42-executor-memory-model-unified-execution-storage-overhead",
+        "level": "Advanced"
+      },
+      {
+        "n": 43,
+        "title": "Driver OOM vs executor OOM: causes and fixes",
+        "anchor": "43-driver-oom-vs-executor-oom-causes-and-fixes",
+        "level": "Advanced"
+      },
+      {
+        "n": 44,
+        "title": "How do you size executors (cores and memory)?",
+        "anchor": "44-how-do-you-size-executors-cores-and-memory",
+        "level": "Advanced"
+      },
+      {
+        "n": 45,
+        "title": "Dynamic partition pruning",
+        "anchor": "45-dynamic-partition-pruning",
+        "level": "Advanced"
+      },
+      {
+        "n": 46,
+        "title": "Checkpointing vs caching (lineage truncation)",
+        "anchor": "46-checkpointing-vs-caching-lineage-truncation",
+        "level": "Advanced"
+      },
+      {
+        "n": 47,
+        "title": "Watermarks and late data in Structured Streaming",
+        "anchor": "47-watermarks-and-late-data-in-structured-streaming",
+        "level": "Advanced"
+      },
+      {
+        "n": 48,
+        "title": "Checkpoints and exactly-once in Structured Streaming",
+        "anchor": "48-checkpoints-and-exactly-once-in-structured-streaming",
+        "level": "Advanced"
+      },
+      {
+        "n": 49,
+        "title": "Stream-stream joins",
+        "anchor": "49-stream-stream-joins",
+        "level": "Advanced"
+      },
+      {
+        "n": 50,
+        "title": "What's new in Spark 4.0 for data engineers?",
+        "anchor": "50-whats-new-in-spark-40-for-data-engineers",
+        "level": "Advanced"
+      }
+    ]
   },
   {
     "hub": "dbt",
@@ -75,7 +1885,309 @@
       "Beginner": 14,
       "Intermediate": 23,
       "Advanced": 13
-    }
+    },
+    "questions": [
+      {
+        "n": 1,
+        "title": "What is dbt, and where does it fit in ELT?",
+        "anchor": "1-what-is-dbt-and-where-does-it-fit-in-elt",
+        "level": "Beginner"
+      },
+      {
+        "n": 2,
+        "title": "dbt project structure: dbt_project.yml and profiles.yml",
+        "anchor": "2-dbt-project-structure-dbt_projectyml-and-profilesyml",
+        "level": "Beginner"
+      },
+      {
+        "n": 3,
+        "title": "ref() vs source()",
+        "anchor": "3-ref-vs-source",
+        "level": "Beginner"
+      },
+      {
+        "n": 4,
+        "title": "Materializations: view vs table vs incremental vs ephemeral vs materialized_view",
+        "anchor": "4-materializations-view-vs-table-vs-incremental-vs-ephemeral-vs-materialized_view",
+        "level": "Beginner"
+      },
+      {
+        "n": 5,
+        "title": "--full-refresh: when and why",
+        "anchor": "5---full-refresh-when-and-why",
+        "level": "Beginner"
+      },
+      {
+        "n": 6,
+        "title": "Seeds",
+        "anchor": "6-seeds",
+        "level": "Beginner"
+      },
+      {
+        "n": 7,
+        "title": "The four built-in generic data tests",
+        "anchor": "7-the-four-built-in-generic-data-tests",
+        "level": "Beginner"
+      },
+      {
+        "n": 8,
+        "title": "Singular data tests",
+        "anchor": "8-singular-data-tests",
+        "level": "Beginner"
+      },
+      {
+        "n": 9,
+        "title": "Jinja basics in dbt",
+        "anchor": "9-jinja-basics-in-dbt",
+        "level": "Beginner"
+      },
+      {
+        "n": 10,
+        "title": "Project layering: staging, intermediate and marts",
+        "anchor": "10-project-layering-staging-intermediate-and-marts",
+        "level": "Beginner"
+      },
+      {
+        "n": 11,
+        "title": "Naming and style conventions",
+        "anchor": "11-naming-and-style-conventions",
+        "level": "Beginner"
+      },
+      {
+        "n": 12,
+        "title": "dbt run vs build vs test vs compile",
+        "anchor": "12-dbt-run-vs-build-vs-test-vs-compile",
+        "level": "Beginner"
+      },
+      {
+        "n": 13,
+        "title": "Generating documentation and the lineage graph",
+        "anchor": "13-generating-documentation-and-the-lineage-graph",
+        "level": "Beginner"
+      },
+      {
+        "n": 14,
+        "title": "The analyses folder and dbt show",
+        "anchor": "14-the-analyses-folder-and-dbt-show",
+        "level": "Beginner"
+      },
+      {
+        "n": 15,
+        "title": "Incremental models and is_incremental()",
+        "anchor": "15-incremental-models-and-is_incremental",
+        "level": "Intermediate"
+      },
+      {
+        "n": 16,
+        "title": "unique_key and on_schema_change",
+        "anchor": "16-unique_key-and-on_schema_change",
+        "level": "Intermediate"
+      },
+      {
+        "n": 17,
+        "title": "Snapshots: timestamp vs check strategy (See also Q12)",
+        "anchor": "17-snapshots-timestamp-vs-check-strategy-see-also-q12",
+        "level": "Intermediate"
+      },
+      {
+        "n": 18,
+        "title": "Writing custom generic tests",
+        "anchor": "18-writing-custom-generic-tests",
+        "level": "Intermediate"
+      },
+      {
+        "n": 19,
+        "title": "Unit tests",
+        "anchor": "19-unit-tests",
+        "level": "Intermediate"
+      },
+      {
+        "n": 20,
+        "title": "Test severity, warn_if/error_if and store_failures",
+        "anchor": "20-test-severity-warn_iferror_if-and-store_failures",
+        "level": "Intermediate"
+      },
+      {
+        "n": 21,
+        "title": "Source freshness",
+        "anchor": "21-source-freshness",
+        "level": "Intermediate"
+      },
+      {
+        "n": 22,
+        "title": "Writing macros",
+        "anchor": "22-writing-macros",
+        "level": "Intermediate"
+      },
+      {
+        "n": 23,
+        "title": "var() and env_var()",
+        "anchor": "23-var-and-env_var",
+        "level": "Intermediate"
+      },
+      {
+        "n": 24,
+        "title": "Packages: dbt_utils, dbt_expectations and packages.yml",
+        "anchor": "24-packages-dbt_utils-dbt_expectations-and-packagesyml",
+        "level": "Intermediate"
+      },
+      {
+        "n": 25,
+        "title": "Hooks: pre-hook, post-hook, on-run-start/end",
+        "anchor": "25-hooks-pre-hook-post-hook-on-run-startend",
+        "level": "Intermediate"
+      },
+      {
+        "n": 26,
+        "title": "Exposures",
+        "anchor": "26-exposures",
+        "level": "Intermediate"
+      },
+      {
+        "n": 27,
+        "title": "Node selection syntax (+, @, tags, paths, state)",
+        "anchor": "27-node-selection-syntax---tags-paths-state",
+        "level": "Intermediate"
+      },
+      {
+        "n": 28,
+        "title": "Targets, environments and deployment",
+        "anchor": "28-targets-environments-and-deployment",
+        "level": "Intermediate"
+      },
+      {
+        "n": 29,
+        "title": "dbt Core vs dbt platform (Cloud) vs Fusion engine / dbt v2",
+        "anchor": "29-dbt-core-vs-dbt-platform-cloud-vs-fusion-engine--dbt-v2",
+        "level": "Intermediate"
+      },
+      {
+        "n": 30,
+        "title": "Debugging with compiled SQL, logs and the target folder",
+        "anchor": "30-debugging-with-compiled-sql-logs-and-the-target-folder",
+        "level": "Intermediate"
+      },
+      {
+        "n": 31,
+        "title": "Custom schemas and generate_schema_name",
+        "anchor": "31-custom-schemas-and-generate_schema_name",
+        "level": "Intermediate"
+      },
+      {
+        "n": 32,
+        "title": "grants and persist_docs configs",
+        "anchor": "32-grants-and-persist_docs-configs",
+        "level": "Intermediate"
+      },
+      {
+        "n": 33,
+        "title": "Orchestrating dbt (Airflow/Cosmos, dbt platform jobs, warehouse-native dbt projects)",
+        "anchor": "33-orchestrating-dbt-airflowcosmos-dbt-platform-jobs-warehouse-native-dbt-projects",
+        "level": "Intermediate"
+      },
+      {
+        "n": 34,
+        "title": "dbt artifacts: manifest.json and run_results.json",
+        "anchor": "34-dbt-artifacts-manifestjson-and-run_resultsjson",
+        "level": "Intermediate"
+      },
+      {
+        "n": 35,
+        "title": "Designing a test strategy across layers",
+        "anchor": "35-designing-a-test-strategy-across-layers",
+        "level": "Intermediate"
+      },
+      {
+        "n": 36,
+        "title": "Refactoring a legacy SQL script into dbt models",
+        "anchor": "36-refactoring-a-legacy-sql-script-into-dbt-models",
+        "level": "Intermediate"
+      },
+      {
+        "n": 37,
+        "title": "Common dbt anti-patterns",
+        "anchor": "37-common-dbt-anti-patterns",
+        "level": "Intermediate"
+      },
+      {
+        "n": 38,
+        "title": "Incremental strategies by adapter (append, merge, delete+insert, insert_overwrite, microbatch)",
+        "anchor": "38-incremental-strategies-by-adapter-append-merge-deleteinsert-insert_overwrite-microbatch",
+        "level": "Advanced"
+      },
+      {
+        "n": 39,
+        "title": "The microbatch incremental strategy",
+        "anchor": "39-the-microbatch-incremental-strategy",
+        "level": "Advanced"
+      },
+      {
+        "n": 40,
+        "title": "YAML-defined snapshots and hard-delete handling",
+        "anchor": "40-yaml-defined-snapshots-and-hard-delete-handling",
+        "level": "Advanced"
+      },
+      {
+        "n": 41,
+        "title": "Model contracts",
+        "anchor": "41-model-contracts",
+        "level": "Advanced"
+      },
+      {
+        "n": 42,
+        "title": "Model versions, groups and access levels",
+        "anchor": "42-model-versions-groups-and-access-levels",
+        "level": "Advanced"
+      },
+      {
+        "n": 43,
+        "title": "dbt Semantic Layer and MetricFlow (See also Q99)",
+        "anchor": "43-dbt-semantic-layer-and-metricflow-see-also-q99",
+        "level": "Advanced"
+      },
+      {
+        "n": 44,
+        "title": "Slim CI with state:modified and --defer",
+        "anchor": "44-slim-ci-with-statemodified-and---defer",
+        "level": "Advanced"
+      },
+      {
+        "n": 45,
+        "title": "Speeding up slow dbt runs",
+        "anchor": "45-speeding-up-slow-dbt-runs",
+        "level": "Advanced"
+      },
+      {
+        "n": 46,
+        "title": "Python models",
+        "anchor": "46-python-models",
+        "level": "Advanced"
+      },
+      {
+        "n": 47,
+        "title": "Late-arriving data in incremental models (lookback windows)",
+        "anchor": "47-late-arriving-data-in-incremental-models-lookback-windows",
+        "level": "Advanced"
+      },
+      {
+        "n": 48,
+        "title": "dbt Mesh: cross-project refs",
+        "anchor": "48-dbt-mesh-cross-project-refs",
+        "level": "Advanced"
+      },
+      {
+        "n": 49,
+        "title": "Cross-database macros and adapter.dispatch",
+        "anchor": "49-cross-database-macros-and-adapterdispatch",
+        "level": "Advanced"
+      },
+      {
+        "n": 50,
+        "title": "dbt clone and zero-copy CI environments",
+        "anchor": "50-dbt-clone-and-zero-copy-ci-environments",
+        "level": "Advanced"
+      }
+    ]
   },
   {
     "hub": "python",
@@ -88,7 +2200,309 @@
       "Beginner": 15,
       "Intermediate": 23,
       "Advanced": 12
-    }
+    },
+    "questions": [
+      {
+        "n": 1,
+        "title": "list vs tuple vs set vs dict",
+        "anchor": "1-list-vs-tuple-vs-set-vs-dict",
+        "level": "Beginner"
+      },
+      {
+        "n": 2,
+        "title": "Mutable vs immutable types, and the mutable default argument trap",
+        "anchor": "2-mutable-vs-immutable-types-and-the-mutable-default-argument-trap",
+        "level": "Beginner"
+      },
+      {
+        "n": 3,
+        "title": "Shallow copy vs deep copy",
+        "anchor": "3-shallow-copy-vs-deep-copy",
+        "level": "Beginner"
+      },
+      {
+        "n": 4,
+        "title": "List, dict and set comprehensions",
+        "anchor": "4-list-dict-and-set-comprehensions",
+        "level": "Beginner"
+      },
+      {
+        "n": 5,
+        "title": "*args and **kwargs",
+        "anchor": "5-args-and-kwargs",
+        "level": "Beginner"
+      },
+      {
+        "n": 6,
+        "title": "OOP: inheritance vs composition",
+        "anchor": "6-oop-inheritance-vs-composition",
+        "level": "Beginner"
+      },
+      {
+        "n": 7,
+        "title": "Instance vs @classmethod vs @staticmethod",
+        "anchor": "7-instance-vs-classmethod-vs-staticmethod",
+        "level": "Beginner"
+      },
+      {
+        "n": 8,
+        "title": "Exception handling best practices",
+        "anchor": "8-exception-handling-best-practices",
+        "level": "Beginner"
+      },
+      {
+        "n": 9,
+        "title": "Reading and writing CSV, JSON and Parquet",
+        "anchor": "9-reading-and-writing-csv-json-and-parquet",
+        "level": "Beginner"
+      },
+      {
+        "n": 10,
+        "title": "Configuration and secrets via environment variables",
+        "anchor": "10-configuration-and-secrets-via-environment-variables",
+        "level": "Beginner"
+      },
+      {
+        "n": 11,
+        "title": "is vs ==",
+        "anchor": "11-is-vs-",
+        "level": "Beginner"
+      },
+      {
+        "n": 12,
+        "title": "Coding: word count and top-k frequent words",
+        "anchor": "12-coding-word-count-and-top-k-frequent-words",
+        "level": "Beginner"
+      },
+      {
+        "n": 13,
+        "title": "Coding: group anagrams / two-sum with dictionaries",
+        "anchor": "13-coding-group-anagrams--two-sum-with-dictionaries",
+        "level": "Beginner"
+      },
+      {
+        "n": 14,
+        "title": "Coding: batch an iterable into chunks",
+        "anchor": "14-coding-batch-an-iterable-into-chunks",
+        "level": "Beginner"
+      },
+      {
+        "n": 15,
+        "title": "lambda, map, filter and reduce",
+        "anchor": "15-lambda-map-filter-and-reduce",
+        "level": "Beginner"
+      },
+      {
+        "n": 16,
+        "title": "Iterables vs iterators vs generators",
+        "anchor": "16-iterables-vs-iterators-vs-generators",
+        "level": "Intermediate"
+      },
+      {
+        "n": 17,
+        "title": "Decorators (with arguments and functools.wraps)",
+        "anchor": "17-decorators-with-arguments-and-functoolswraps",
+        "level": "Intermediate"
+      },
+      {
+        "n": 18,
+        "title": "Context managers and the with statement",
+        "anchor": "18-context-managers-and-the-with-statement",
+        "level": "Intermediate"
+      },
+      {
+        "n": 19,
+        "title": "dataclasses vs Pydantic models",
+        "anchor": "19-dataclasses-vs-pydantic-models",
+        "level": "Intermediate"
+      },
+      {
+        "n": 20,
+        "title": "Useful dunder methods",
+        "anchor": "20-useful-dunder-methods",
+        "level": "Intermediate"
+      },
+      {
+        "n": 21,
+        "title": "Custom exceptions and retryable errors",
+        "anchor": "21-custom-exceptions-and-retryable-errors",
+        "level": "Intermediate"
+      },
+      {
+        "n": 22,
+        "title": "concurrent.futures executors",
+        "anchor": "22-concurrentfutures-executors",
+        "level": "Intermediate"
+      },
+      {
+        "n": 23,
+        "title": "pandas: loc vs iloc, and vectorisation vs apply",
+        "anchor": "23-pandas-loc-vs-iloc-and-vectorisation-vs-apply",
+        "level": "Intermediate"
+      },
+      {
+        "n": 24,
+        "title": "pandas merge, concat and groupby/agg",
+        "anchor": "24-pandas-merge-concat-and-groupbyagg",
+        "level": "Intermediate"
+      },
+      {
+        "n": 25,
+        "title": "Processing data larger than memory in pandas (chunks, dtypes)",
+        "anchor": "25-processing-data-larger-than-memory-in-pandas-chunks-dtypes",
+        "level": "Intermediate"
+      },
+      {
+        "n": 26,
+        "title": "Read a huge file in chunks with a generator",
+        "anchor": "26-read-a-huge-file-in-chunks-with-a-generator",
+        "level": "Intermediate"
+      },
+      {
+        "n": 27,
+        "title": "Logging in pipelines",
+        "anchor": "27-logging-in-pipelines",
+        "level": "Intermediate"
+      },
+      {
+        "n": 28,
+        "title": "pytest fixtures and parametrize",
+        "anchor": "28-pytest-fixtures-and-parametrize",
+        "level": "Intermediate"
+      },
+      {
+        "n": 29,
+        "title": "Packaging and environments: venv, pip, pyproject.toml, uv",
+        "anchor": "29-packaging-and-environments-venv-pip-pyprojecttoml-uv",
+        "level": "Intermediate"
+      },
+      {
+        "n": 30,
+        "title": "Type hints and static checking",
+        "anchor": "30-type-hints-and-static-checking",
+        "level": "Intermediate"
+      },
+      {
+        "n": 31,
+        "title": "Coding: flatten a nested JSON object",
+        "anchor": "31-coding-flatten-a-nested-json-object",
+        "level": "Intermediate"
+      },
+      {
+        "n": 32,
+        "title": "Coding: deduplicate records by key, keeping the latest",
+        "anchor": "32-coding-deduplicate-records-by-key-keeping-the-latest",
+        "level": "Intermediate"
+      },
+      {
+        "n": 33,
+        "title": "Coding: merge overlapping intervals",
+        "anchor": "33-coding-merge-overlapping-intervals",
+        "level": "Intermediate"
+      },
+      {
+        "n": 34,
+        "title": "Coding: validate records and split good from bad",
+        "anchor": "34-coding-validate-records-and-split-good-from-bad",
+        "level": "Intermediate"
+      },
+      {
+        "n": 35,
+        "title": "Coding: parse log files with regular expressions",
+        "anchor": "35-coding-parse-log-files-with-regular-expressions",
+        "level": "Intermediate"
+      },
+      {
+        "n": 36,
+        "title": "datetime and time zones with zoneinfo",
+        "anchor": "36-datetime-and-time-zones-with-zoneinfo",
+        "level": "Intermediate"
+      },
+      {
+        "n": 37,
+        "title": "Querying databases from Python safely (parameterised queries, SQLAlchemy)",
+        "anchor": "37-querying-databases-from-python-safely-parameterised-queries-sqlalchemy",
+        "level": "Intermediate"
+      },
+      {
+        "n": 38,
+        "title": "Working with S3 using boto3",
+        "anchor": "38-working-with-s3-using-boto3",
+        "level": "Intermediate"
+      },
+      {
+        "n": 39,
+        "title": "Building generator pipelines with yield from",
+        "anchor": "39-building-generator-pipelines-with-yield-from",
+        "level": "Advanced"
+      },
+      {
+        "n": 40,
+        "title": "The GIL, and the free-threaded build in Python 3.13+",
+        "anchor": "40-the-gil-and-the-free-threaded-build-in-python-313",
+        "level": "Advanced"
+      },
+      {
+        "n": 41,
+        "title": "threading vs multiprocessing vs asyncio",
+        "anchor": "41-threading-vs-multiprocessing-vs-asyncio",
+        "level": "Advanced"
+      },
+      {
+        "n": 42,
+        "title": "Concurrent API calls with asyncio",
+        "anchor": "42-concurrent-api-calls-with-asyncio",
+        "level": "Advanced"
+      },
+      {
+        "n": 43,
+        "title": "Memory management: reference counting and garbage collection",
+        "anchor": "43-memory-management-reference-counting-and-garbage-collection",
+        "level": "Advanced"
+      },
+      {
+        "n": 44,
+        "title": "Profiling and speeding up Python code",
+        "anchor": "44-profiling-and-speeding-up-python-code",
+        "level": "Advanced"
+      },
+      {
+        "n": 45,
+        "title": "pandas vs Polars vs PySpark",
+        "anchor": "45-pandas-vs-polars-vs-pyspark",
+        "level": "Advanced"
+      },
+      {
+        "n": 46,
+        "title": "API ingestion with pagination (offset, cursor, next-link)",
+        "anchor": "46-api-ingestion-with-pagination-offset-cursor-next-link",
+        "level": "Advanced"
+      },
+      {
+        "n": 47,
+        "title": "Retries with exponential backoff and rate limiting",
+        "anchor": "47-retries-with-exponential-backoff-and-rate-limiting",
+        "level": "Advanced"
+      },
+      {
+        "n": 48,
+        "title": "Mocking external services in tests",
+        "anchor": "48-mocking-external-services-in-tests",
+        "level": "Advanced"
+      },
+      {
+        "n": 49,
+        "title": "Coding: implement an LRU cache",
+        "anchor": "49-coding-implement-an-lru-cache",
+        "level": "Advanced"
+      },
+      {
+        "n": 50,
+        "title": "Structure of an idempotent, restartable ETL script",
+        "anchor": "50-structure-of-an-idempotent-restartable-etl-script",
+        "level": "Advanced"
+      }
+    ]
   },
   {
     "hub": "scenario-based",
@@ -101,7 +2515,309 @@
       "Beginner": 14,
       "Intermediate": 23,
       "Advanced": 13
-    }
+    },
+    "questions": [
+      {
+        "n": 1,
+        "title": "Ingest from a REST API with strict rate limits",
+        "anchor": "1-ingest-from-a-rest-api-with-strict-rate-limits",
+        "level": "Beginner"
+      },
+      {
+        "n": 2,
+        "title": "Daily vendor files over SFTP arrive in inconsistent formats",
+        "anchor": "2-daily-vendor-files-over-sftp-arrive-in-inconsistent-formats",
+        "level": "Beginner"
+      },
+      {
+        "n": 3,
+        "title": "Source and target row counts don't match",
+        "anchor": "3-source-and-target-row-counts-dont-match",
+        "level": "Beginner"
+      },
+      {
+        "n": 4,
+        "title": "A business user says a dashboard number is wrong",
+        "anchor": "4-a-business-user-says-a-dashboard-number-is-wrong",
+        "level": "Beginner"
+      },
+      {
+        "n": 5,
+        "title": "The driver crashes with OOM after a collect()",
+        "anchor": "5-the-driver-crashes-with-oom-after-a-collect",
+        "level": "Beginner"
+      },
+      {
+        "n": 6,
+        "title": "Reprocess a single corrupted partition",
+        "anchor": "6-reprocess-a-single-corrupted-partition",
+        "level": "Beginner"
+      },
+      {
+        "n": 7,
+        "title": "Should this request be batch or streaming?",
+        "anchor": "7-should-this-request-be-batch-or-streaming",
+        "level": "Beginner"
+      },
+      {
+        "n": 8,
+        "title": "Daily reports are off because of time-zone handling",
+        "anchor": "8-daily-reports-are-off-because-of-time-zone-handling",
+        "level": "Beginner"
+      },
+      {
+        "n": 9,
+        "title": "A rerun double-counted revenue",
+        "anchor": "9-a-rerun-double-counted-revenue",
+        "level": "Beginner"
+      },
+      {
+        "n": 10,
+        "title": "PII found in the raw zone and application logs",
+        "anchor": "10-pii-found-in-the-raw-zone-and-application-logs",
+        "level": "Beginner"
+      },
+      {
+        "n": 11,
+        "title": "Object storage costs grow 20% a month",
+        "anchor": "11-object-storage-costs-grow-20-a-month",
+        "level": "Beginner"
+      },
+      {
+        "n": 12,
+        "title": "The business wants hourly instead of daily refresh",
+        "anchor": "12-the-business-wants-hourly-instead-of-daily-refresh",
+        "level": "Beginner"
+      },
+      {
+        "n": 13,
+        "title": "Set up testing and CI for a brand-new pipeline",
+        "anchor": "13-set-up-testing-and-ci-for-a-brand-new-pipeline",
+        "level": "Beginner"
+      },
+      {
+        "n": 14,
+        "title": "Upstream API was down for two days; how do you recover?",
+        "anchor": "14-upstream-api-was-down-for-two-days-how-do-you-recover",
+        "level": "Beginner"
+      },
+      {
+        "n": 15,
+        "title": "The nightly pipeline failed at 3 AM; executive dashboards refresh at 7 AM",
+        "anchor": "15-the-nightly-pipeline-failed-at-3-am-executive-dashboards-refresh-at-7-am",
+        "level": "Intermediate"
+      },
+      {
+        "n": 16,
+        "title": "Late-arriving events are making daily aggregates wrong",
+        "anchor": "16-late-arriving-events-are-making-daily-aggregates-wrong",
+        "level": "Intermediate"
+      },
+      {
+        "n": 17,
+        "title": "Duplicates discovered in a production fact table",
+        "anchor": "17-duplicates-discovered-in-a-production-fact-table",
+        "level": "Intermediate"
+      },
+      {
+        "n": 18,
+        "title": "A Snowflake dashboard query takes 3 minutes; target is 10 seconds",
+        "anchor": "18-a-snowflake-dashboard-query-takes-3-minutes-target-is-10-seconds",
+        "level": "Intermediate"
+      },
+      {
+        "n": 19,
+        "title": "Upstream added and renamed columns without notice (schema drift)",
+        "anchor": "19-upstream-added-and-renamed-columns-without-notice-schema-drift",
+        "level": "Intermediate"
+      },
+      {
+        "n": 20,
+        "title": "Snowflake cost doubled overnight",
+        "anchor": "20-snowflake-cost-doubled-overnight",
+        "level": "Intermediate"
+      },
+      {
+        "n": 21,
+        "title": "Databricks bill spiked 60% this month",
+        "anchor": "21-databricks-bill-spiked-60-this-month",
+        "level": "Intermediate"
+      },
+      {
+        "n": 22,
+        "title": "Recurring SLA breaches on a critical pipeline",
+        "anchor": "22-recurring-sla-breaches-on-a-critical-pipeline",
+        "level": "Intermediate"
+      },
+      {
+        "n": 23,
+        "title": "The data lake has millions of tiny files",
+        "anchor": "23-the-data-lake-has-millions-of-tiny-files",
+        "level": "Intermediate"
+      },
+      {
+        "n": 24,
+        "title": "Kafka consumer lag keeps growing",
+        "anchor": "24-kafka-consumer-lag-keeps-growing",
+        "level": "Intermediate"
+      },
+      {
+        "n": 25,
+        "title": "Out-of-order events in a streaming aggregation",
+        "anchor": "25-out-of-order-events-in-a-streaming-aggregation",
+        "level": "Intermediate"
+      },
+      {
+        "n": 26,
+        "title": "A join on customer_id is skewed by one huge customer (See also Q264)",
+        "anchor": "26-a-join-on-customer_id-is-skewed-by-one-huge-customer-see-also-q264",
+        "level": "Intermediate"
+      },
+      {
+        "n": 27,
+        "title": "An incremental load silently missed records",
+        "anchor": "27-an-incremental-load-silently-missed-records",
+        "level": "Intermediate"
+      },
+      {
+        "n": 28,
+        "title": "Airflow tasks stuck in queued state",
+        "anchor": "28-airflow-tasks-stuck-in-queued-state",
+        "level": "Intermediate"
+      },
+      {
+        "n": 29,
+        "title": "Auditors need lineage and a data catalog",
+        "anchor": "29-auditors-need-lineage-and-a-data-catalog",
+        "level": "Intermediate"
+      },
+      {
+        "n": 30,
+        "title": "Migrate orchestration from Airflow to a managed service",
+        "anchor": "30-migrate-orchestration-from-airflow-to-a-managed-service",
+        "level": "Intermediate"
+      },
+      {
+        "n": 31,
+        "title": "A hot partition in a Kafka topic",
+        "anchor": "31-a-hot-partition-in-a-kafka-topic",
+        "level": "Intermediate"
+      },
+      {
+        "n": 32,
+        "title": "Source sends full daily dumps; detect only the changes",
+        "anchor": "32-source-sends-full-daily-dumps-detect-only-the-changes",
+        "level": "Intermediate"
+      },
+      {
+        "n": 33,
+        "title": "Share data with an external partner securely",
+        "anchor": "33-share-data-with-an-external-partner-securely",
+        "level": "Intermediate"
+      },
+      {
+        "n": 34,
+        "title": "A MERGE into a large table runs for hours",
+        "anchor": "34-a-merge-into-a-large-table-runs-for-hours",
+        "level": "Intermediate"
+      },
+      {
+        "n": 35,
+        "title": "Design the dimensional model for e-commerce orders",
+        "anchor": "35-design-the-dimensional-model-for-e-commerce-orders",
+        "level": "Intermediate"
+      },
+      {
+        "n": 36,
+        "title": "A pipeline gets slower every month",
+        "anchor": "36-a-pipeline-gets-slower-every-month",
+        "level": "Intermediate"
+      },
+      {
+        "n": 37,
+        "title": "Make KPIs consistent across three BI tools",
+        "anchor": "37-make-kpis-consistent-across-three-bi-tools",
+        "level": "Intermediate"
+      },
+      {
+        "n": 38,
+        "title": "Backfill two years of history without breaking production",
+        "anchor": "38-backfill-two-years-of-history-without-breaking-production",
+        "level": "Advanced"
+      },
+      {
+        "n": 39,
+        "title": "A Spark job went from 40 minutes to 4 hours",
+        "anchor": "39-a-spark-job-went-from-40-minutes-to-4-hours",
+        "level": "Advanced"
+      },
+      {
+        "n": 40,
+        "title": "Design a real-time clickstream pipeline (50k events/sec)",
+        "anchor": "40-design-a-real-time-clickstream-pipeline-50k-eventssec",
+        "level": "Advanced"
+      },
+      {
+        "n": 41,
+        "title": "CDC from a PostgreSQL OLTP database into the warehouse",
+        "anchor": "41-cdc-from-a-postgresql-oltp-database-into-the-warehouse",
+        "level": "Advanced"
+      },
+      {
+        "n": 42,
+        "title": "Migrate an on-prem Oracle/Teradata warehouse to the cloud",
+        "anchor": "42-migrate-an-on-prem-oracleteradata-warehouse-to-the-cloud",
+        "level": "Advanced"
+      },
+      {
+        "n": 43,
+        "title": "SCD Type 2 on a 500-million-row customer dimension",
+        "anchor": "43-scd-type-2-on-a-500-million-row-customer-dimension",
+        "level": "Advanced"
+      },
+      {
+        "n": 44,
+        "title": "Fulfil a GDPR deletion request across lake, warehouse and backups (See also Q85)",
+        "anchor": "44-fulfil-a-gdpr-deletion-request-across-lake-warehouse-and-backups-see-also-q85",
+        "level": "Advanced"
+      },
+      {
+        "n": 45,
+        "title": "Design a data platform from scratch for a growing startup",
+        "anchor": "45-design-a-data-platform-from-scratch-for-a-growing-startup",
+        "level": "Advanced"
+      },
+      {
+        "n": 46,
+        "title": "Multiple jobs writing to the same table cause conflicts",
+        "anchor": "46-multiple-jobs-writing-to-the-same-table-cause-conflicts",
+        "level": "Advanced"
+      },
+      {
+        "n": 47,
+        "title": "Build a data quality framework for 200 tables",
+        "anchor": "47-build-a-data-quality-framework-for-200-tables",
+        "level": "Advanced"
+      },
+      {
+        "n": 48,
+        "title": "Merge customer data after an acquisition (entity resolution)",
+        "anchor": "48-merge-customer-data-after-an-acquisition-entity-resolution",
+        "level": "Advanced"
+      },
+      {
+        "n": 49,
+        "title": "Build point-in-time-correct training data for an ML model",
+        "anchor": "49-build-point-in-time-correct-training-data-for-an-ml-model",
+        "level": "Advanced"
+      },
+      {
+        "n": 50,
+        "title": "Add multi-region disaster recovery to the platform",
+        "anchor": "50-add-multi-region-disaster-recovery-to-the-platform",
+        "level": "Advanced"
+      }
+    ]
   },
   {
     "hub": "behavioral",
@@ -114,6 +2830,116 @@
       "Beginner": 5,
       "Intermediate": 8,
       "Advanced": 5
-    }
+    },
+    "questions": [
+      {
+        "n": 1,
+        "title": "Walk me through a recent project end to end",
+        "anchor": "1-walk-me-through-a-recent-project-end-to-end",
+        "level": "Beginner"
+      },
+      {
+        "n": 2,
+        "title": "Tell me about a mistake you made",
+        "anchor": "2-tell-me-about-a-mistake-you-made",
+        "level": "Beginner"
+      },
+      {
+        "n": 3,
+        "title": "How did you learn a new technology quickly?",
+        "anchor": "3-how-did-you-learn-a-new-technology-quickly",
+        "level": "Beginner"
+      },
+      {
+        "n": 4,
+        "title": "Why are you leaving, and why this company?",
+        "anchor": "4-why-are-you-leaving-and-why-this-company",
+        "level": "Beginner"
+      },
+      {
+        "n": 5,
+        "title": "Do you have any questions for us?",
+        "anchor": "5-do-you-have-any-questions-for-us",
+        "level": "Beginner"
+      },
+      {
+        "n": 6,
+        "title": "Tell me about the most complex pipeline you built",
+        "anchor": "6-tell-me-about-the-most-complex-pipeline-you-built",
+        "level": "Intermediate"
+      },
+      {
+        "n": 7,
+        "title": "Describe a production incident you owned",
+        "anchor": "7-describe-a-production-incident-you-owned",
+        "level": "Intermediate"
+      },
+      {
+        "n": 8,
+        "title": "Tell me about a disagreement with a stakeholder or peer",
+        "anchor": "8-tell-me-about-a-disagreement-with-a-stakeholder-or-peer",
+        "level": "Intermediate"
+      },
+      {
+        "n": 9,
+        "title": "How do you prioritise competing requests?",
+        "anchor": "9-how-do-you-prioritise-competing-requests",
+        "level": "Intermediate"
+      },
+      {
+        "n": 10,
+        "title": "Explain a technical concept to a non-technical audience",
+        "anchor": "10-explain-a-technical-concept-to-a-non-technical-audience",
+        "level": "Intermediate"
+      },
+      {
+        "n": 11,
+        "title": "Pushing back on an unrealistic deadline",
+        "anchor": "11-pushing-back-on-an-unrealistic-deadline",
+        "level": "Intermediate"
+      },
+      {
+        "n": 12,
+        "title": "Handling ambiguous requirements",
+        "anchor": "12-handling-ambiguous-requirements",
+        "level": "Intermediate"
+      },
+      {
+        "n": 13,
+        "title": "The business found a data quality issue before you did",
+        "anchor": "13-the-business-found-a-data-quality-issue-before-you-did",
+        "level": "Intermediate"
+      },
+      {
+        "n": 14,
+        "title": "A process or cost improvement you drove",
+        "anchor": "14-a-process-or-cost-improvement-you-drove",
+        "level": "Advanced"
+      },
+      {
+        "n": 15,
+        "title": "How do you mentor junior engineers?",
+        "anchor": "15-how-do-you-mentor-junior-engineers",
+        "level": "Advanced"
+      },
+      {
+        "n": 16,
+        "title": "An architecture decision made with incomplete information",
+        "anchor": "16-an-architecture-decision-made-with-incomplete-information",
+        "level": "Advanced"
+      },
+      {
+        "n": 17,
+        "title": "Leading a migration and influencing without authority",
+        "anchor": "17-leading-a-migration-and-influencing-without-authority",
+        "level": "Advanced"
+      },
+      {
+        "n": 18,
+        "title": "Balancing technical debt against feature work",
+        "anchor": "18-balancing-technical-debt-against-feature-work",
+        "level": "Advanced"
+      }
+    ]
   }
 ]

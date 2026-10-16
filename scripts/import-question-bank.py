@@ -347,7 +347,9 @@ def main():
         path.write_text("---\n" + "\n".join(f"{k}: {json.dumps(v, ensure_ascii=False)}" for k, v in fm.items())
                         + "\n---\n\n" + "\n".join(out), encoding="utf-8")
         index.append(dict(hub=page["hub"], label=page["label"], title=page["title"], url=p["url"],
-                          ref=f"articles:{page['folder']}/{page['slug']}", count=n, levels=levels))
+                          ref=f"articles:{page['folder']}/{page['slug']}", count=n, levels=levels,
+                          questions=[dict(n=q["n"], title=plain(q["title"]), anchor=q["anchor"], level=q["level"])
+                                     for q in ordered]))
         print(f"{p['url']}: {n} questions, {path.stat().st_size // 1024} KB")
     DATA.write_text(json.dumps(index, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 

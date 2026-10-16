@@ -1,32 +1,113 @@
 ---
 import { getItems, techLabel } from "../../../utils/content";
 import ContentLayout from "../../../layouts/ContentLayout.astro";
-import QuestionTable from "../../../components/interview/QuestionTable.astro";
+import QuestionTable, { type BankRow } from "../../../components/interview/QuestionTable.astro";
+import Tile from "../../../components/content/Tile.astro";
 import { HOME } from "../../../utils/breadcrumbs";
+import { plural } from "../../../utils/dates";
+import banks from "../../../data/question-banks.json";
 
+// Every interview question on the site: the questions inside the "Top N" bank articles (each links to its
+// heading) and the single-question in-depth pages. Topics run from fundamentals to DSA.
+const TOPIC_ORDER = [
+  "data-engineering",
+  "sql",
+  "pyspark",
+  "spark",
+  "snowflake",
+  "databricks",
+  "delta-lake",
+  "dbt",
+  "python",
+  "airflow",
+  "kafka",
+  "aws",
+  "scenario-based",
+  "behavioral",
+  "dsa",
+];
+const rank = (t: string) => (TOPIC_ORDER.indexOf(t) + 1 || TOPIC_ORDER.length + 1);
+const LEVEL: Record<string, BankRow["difficulty"]> = {
+  Beginner: "Easy",
+  Intermediate: "Medium",
+  Advanced: "Hard",
+};
 const ORDER = ["Easy", "Medium", "Hard"];
+
+const sortedBanks = [...banks].sort((a, b) => rank(a.hub) - rank(b.hub));
+const bank: BankRow[] = sortedBanks.flatMap((b) =>
+  b.questions.map((q) => ({
+    title: q.title,
+    url: `${b.url}#${q.anchor}`,
+    topic: b.hub,
+    difficulty: LEVEL[q.level] ?? "Medium",
+    type: "question bank",
+  })),
+);
 const qs = (await getItems("interview-questions")).sort(
   (a, b) =>
-    a.id.split("/")[0].localeCompare(b.id.split("/")[0]) ||
+    rank(a.id.split("/")[0]) - rank(b.id.split("/")[0]) ||
     ORDER.indexOf(a.entry.data.difficulty) - ORDER.indexOf(b.entry.data.difficulty) ||
     a.title.localeCompare(b.title),
 );
-const topicIds = [...new Set(qs.map((q) => q.id.split("/")[0]))];
+const topicIds = [...new Set([...bank.map((b) => b.topic), ...qs.map((q) => q.id.split("/")[0])])];
 const topics = Object.fromEntries(
-  await Promise.all(topicIds.map(async (t) => [t, await techLabel(t)])),
+  await Promise.all(
+    topicIds.map(async (t) => [
+      t,
+      t === "pyspark" ? "PySpark" : (banks.find((b) => b.hub === t)?.label ?? (await techLabel(t))),
+    ]),
+  ),
 );
+const total = bank.length + qs.length;
+const bankTotal = bank.length;
 ---
 
 <ContentLayout
-  title="All in-depth interview questions"
-  seoTitle="Data Engineer Interview Practice Tracker"
-  description="Every in-depth Data Engineering interview question on the site in one list: filter by topic, difficulty and type, and tick off the ones you have practised."
+  title="All Data Engineer interview questions"
+  seoTitle={`All ${total} Data Engineer Interview Questions by Topic`}
+  description={`${total} Data Engineer interview questions with answers in one filterable list: SQL, PySpark, Snowflake, Databricks, dbt, Python, Kafka, Airflow and DSA.`}
   crumbs={[HOME, { label: "Interview", href: "/interview/" }, { label: "All questions" }]}
   eyebrow="Interview preparation"
-  deck={`${qs.length} questions across ${topicIds.length} topics. Filter the list, open a question, and tick it off when you can answer it.`}
+  deck={`${total} questions across ${topicIds.length} topics, each with an answer. Search or filter the list, open a question, and tick it off when you can answer it.`}
   indexable
 >
-  <section class="section section--tight">
-    <QuestionTable questions={qs} topics={topics} caption="All interview questions" />
+  <section class="section section--tight" aria-labelledby="banks-h">
+    <h2 id="banks-h" class="group-title">Start with a question bank</h2>
+    <p class="muted">
+      {bankTotal} of these questions sit in nine "Top" lists, one page per topic, ordered from
+      freshers to experienced.
+    </p>
+    <ul class="tile-grid" role="list">
+      {sortedBanks.map((b) => (
+        <li>
+          <Tile
+            href={b.url}
+            eyebrow="Question bank"
+            title={b.title}
+            meta={[
+              plural(b.count, "question"),
+              ...(["Beginner", "Intermediate", "Advanced"] as const).map(
+                (l) => b.levels[l] > 0 && `${b.levels[l]} ${l.toLowerCase()}`,
+              ),
+            ]}
+          />
+        </li>
+      ))}
+    </ul>
+  </section>
+
+  <section class="section section--tight" aria-labelledby="list-h">
+    <h2 id="list-h" class="group-title">Every question</h2>
+    <p class="muted">
+      "Question bank" rows open the answer on its Top list; the others are in-depth answers on their
+      own page, many with runnable examples. Filter by topic, difficulty or type.
+    </p>
+    <QuestionTable
+      questions={qs}
+      bank={bank}
+      topics={topics}
+      caption="All Data Engineer interview questions"
+    />
   </section>
 </ContentLayout>

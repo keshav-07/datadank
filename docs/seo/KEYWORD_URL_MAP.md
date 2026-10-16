@@ -42,7 +42,7 @@ CTR, average position, indexing status, last substantive update.
 | Kafka interview questions | `/interview/kafka/` | Kafka Interview Questions for Data Engineers |
 | Airflow interview questions | `/interview/airflow/` | Airflow Interview Questions for Data Engineers |
 | (practice trackers: SQL, Snowflake, Databricks, PySpark, Python, Data Engineering) | `/interview/<topic>/` | "<Topic> Interview Practice: In-Depth Answers" — retitled so they do not compete with the Top-N articles; each links its article first |
-| (index of in-depth questions) | `/interview/questions/` | Data Engineer Interview Practice Tracker |
+| list of all data engineer interview questions | `/interview/questions/` | All 819 Data Engineer Interview Questions by Topic — the index: every bank question (linked to its heading) and every in-depth page, filterable; targets "all / list" intent, while the Top 100 article targets "top … with answers" |
 | data engineering system design interview | `/data-engineering/system-design/` | Data Engineering System Design Interview Case Studies |
 | data engineering projects for beginners | `/projects/` | Data Engineering Projects: Step-by-Step Guides |
 | data engineer roadmap for beginners | `/data-engineering/roadmap/` | Data Engineer Roadmap 2026 for Beginners |

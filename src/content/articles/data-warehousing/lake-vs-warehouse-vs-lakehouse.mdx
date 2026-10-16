@@ -1,69 +1,160 @@
 ---
 publishedDate: "2026-10-04"
-updatedDate: "2026-10-04"
-reviewedDate: "2026-10-04"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
 title: "Data Lake vs Data Warehouse vs Lakehouse"
 description: "Compare data lakes, data warehouses and lakehouses by storage, schema, transactions, cost and users, and learn which questions decide the right architecture."
 inventoryId: "TECH-21"
 technology: ["data-warehousing", "delta-lake"]
 topic: ["architecture", "lakehouse"]
 difficulty: "Beginner"
-related: ["interview-questions:data-engineering/lake-warehouse-lakehouse", "articles:delta-lake/transactions-schema-evolution", "articles:etl-elt/etl-vs-elt"]
-sources: [{"label": "Delta Lake documentation: Introduction", "url": "https://docs.delta.io/latest/delta-intro.html"}]
-versionContext: "Conceptual; product capabilities change quickly, so verify specifics against vendor documentation"
+related: ["interview-questions:data-engineering/lake-warehouse-lakehouse", "articles:delta-lake/transactions-schema-evolution", "articles:etl-elt/etl-vs-elt", "articles:delta-lake/data-lakes-lakehouse-delta", "articles:snowflake/snowflake-vs-databricks", "interview-questions:delta-lake/delta-vs-iceberg-vs-hudi", "articles:aws/s3-for-data-engineers"]
+sources:
+  - {"label": "Delta Lake documentation: Introduction", "url": "https://docs.delta.io/latest/delta-intro.html"}
+  - {"label": "Apache Iceberg documentation", "url": "https://iceberg.apache.org/docs/latest/"}
+  - {"label": "DuckDB documentation: Reading multiple files", "url": "https://duckdb.org/docs/stable/data/multiple_files/overview"}
+  - {"label": "DuckDB documentation: Transaction management", "url": "https://duckdb.org/docs/stable/sql/statements/transactions"}
+versionContext: "The lake-versus-warehouse example runs on DuckDB 1.5.6 (Python) and was verified with scripts/verify-examples.py. Product capabilities (open table format support in warehouses, catalogs) as documented in October 2026; they change quickly, so verify specifics against vendor documentation."
 previous: "articles:data-warehousing/modern-modeling-practice"
 next: "articles:data-warehousing/partitioning-clustering-data-layout"
 ---
 
-These three terms describe where analytical data lives and what guarantees it has.
+These three terms describe **where analytical data lives and what guarantees it has**. A data lake is files in cheap object storage; a data warehouse is a database built for analytical SQL; a lakehouse puts a transactional table format on top of lake files so they behave like warehouse tables. Most real platforms combine at least two of them, so the useful skill is knowing which property each one gives you and which one a given workload needs.
+
+## The comparison
 
 | | Data lake | Data warehouse | Lakehouse |
 |--|-----------|----------------|-----------|
-| Storage | Files in object storage (Parquet, JSON, CSV) | Managed storage inside the warehouse | Files in object storage plus a table format (Delta Lake, Apache Iceberg, Apache Hudi) |
-| Schema | Applied when reading | Enforced when writing | Enforced when writing, with controlled evolution |
-| Transactions | None by default | Yes | Yes, through the table format's log |
-| Data types | Anything, including unstructured | Mostly structured | Structured and semi-structured; files of any type alongside |
+| Storage | Files in object storage (Parquet, JSON, CSV, images, logs) | Managed storage inside the warehouse | Files in object storage plus a table format (Delta Lake, Apache Iceberg, Apache Hudi) |
+| Schema | Applied when reading (schema-on-read) | Enforced when writing | Enforced when writing, with controlled evolution |
+| Transactions | None by default | Yes | Yes, through the table format's log or metadata |
+| Updates and deletes | Rewrite files yourself | `UPDATE`, `DELETE`, `MERGE` | `UPDATE`, `DELETE`, `MERGE` through the format |
+| Data types | Anything, including unstructured | Mostly structured and semi-structured | Structured and semi-structured; other files alongside |
 | Compute | Any engine that reads files | The warehouse's engine | Multiple engines over the same tables |
+| Performance tuning | Up to you (file sizes, partitions) | Mostly managed | Partly managed (compaction, clustering, statistics) |
 | Typical users | Data engineers, data scientists | Analysts, BI tools | Both |
 
 ## Data lake
 
-Cheap, durable object storage holding raw and processed files. It is flexible: store anything, process it with any engine. The weakness is reliability: without transactions, concurrent writes and failed jobs can leave inconsistent data, and without enforced schemas the lake can drift into a "swamp" no one trusts.
+Cheap, durable object storage (S3, ADLS, GCS) holding raw and processed files. It is flexible: store anything in any format, and process it with any engine, Spark, Trino, DuckDB, pandas. Storage costs little and scales without limits you will hit.
+
+The weakness is **reliability**. A folder of files is not a table: there is no transaction to make a multi-file write atomic, no enforced schema, and no safe way to update a row. Concurrent writes and failed jobs leave readers seeing partial data, upstream type changes break queries months later, and without layers, ownership and a catalog the lake drifts into a "swamp" no one trusts.
 
 ## Data warehouse
 
-A database optimised for analytical SQL. It enforces schemas, provides transactions, and is easy for analysts. Cloud warehouses separate storage from compute so each scales independently. The trade-offs: data must be loaded into the warehouse's storage, and machine-learning workloads that want raw files are less natural.
+A database optimised for analytical SQL: columnar storage, a cost-based optimiser, statistics, caching and concurrency control. It enforces schemas, provides transactions, and is easy for analysts and BI tools. Cloud warehouses such as Snowflake, BigQuery and Redshift separate storage from compute so each scales independently.
+
+The trade-offs: data must be loaded into the warehouse's storage (one more copy and one more pipeline), the storage format is usually proprietary so other engines cannot read it directly, and workloads that want raw files, such as ML training on images or heavy Python processing, fit less naturally.
 
 ## Lakehouse
 
-A lakehouse adds warehouse-like guarantees to lake storage through an **open table format**: a transaction log on top of Parquet files that provides ACID commits, schema enforcement, time travel and efficient metadata. Many engines (Spark, SQL engines, warehouses with external table support) can read the same tables.
+A lakehouse adds warehouse-like guarantees to lake storage through an **open table format**: metadata on top of Parquet files that records which files make up each version of a table. Delta Lake keeps an ordered transaction log of JSON commits; Iceberg keeps a tree of metadata and manifest files with an atomic pointer swap in a catalog; Hudi keeps a timeline of commits. All three give:
+
+- **ACID commits**: a write becomes visible all at once or not at all.
+- **Schema enforcement and evolution**: writes that do not match the schema fail unless evolution is requested.
+- **Row-level changes**: `MERGE`, `UPDATE` and `DELETE`, implemented by rewriting files or with deletion vectors.
+- **Time travel**: read an earlier version for audits, debugging or reproducible ML.
+- **File-level statistics** for data skipping, plus maintenance operations (compaction, clustering, cleanup of old files).
+
+Many engines can read and write the same tables: Spark, Trino, Flink, DuckDB, and the major warehouses, which now read (and in some cases write) Iceberg or Delta tables in your storage. A **catalog** (Unity Catalog, AWS Glue, Apache Polaris, Hive Metastore and others) maps table names to their metadata and enforces access. The [Delta Lake lesson](/delta-lake/data-lakes-lakehouse-delta/) shows the transaction log working.
+
+The cost of a lakehouse is **operational**: someone has to run compaction and cleanup, choose layouts, keep catalogs and engines on compatible versions, and decide which engine owns writes to each table.
+
+## Seeing the difference: files vs a transactional table
+
+The example uses DuckDB, which can both query a folder of Parquet files (a lake) and manage its own transactional tables (a warehouse), so the two behaviours sit side by side. It runs in Python with `pip install duckdb`.
+
+```python
+import os
+import duckdb
+
+con = duckdb.connect()
+os.makedirs("lake/orders", exist_ok=True)
+
+# Lake: a job writes files into a folder. Readers see whatever files exist.
+con.execute("""COPY (SELECT * FROM (VALUES (1, 'c1', 120.50), (2, 'c2', 80.00)) t(order_id, customer_id, amount))
+               TO 'lake/orders/part-0001.parquet' (FORMAT parquet)""")
+# The next job should write two files but crashes after the first one
+con.execute("""COPY (SELECT * FROM (VALUES (3, 'c1', 15.00)) t(order_id, customer_id, amount))
+               TO 'lake/orders/part-0002.parquet' (FORMAT parquet)""")
+partial = con.execute("SELECT count(*), sum(amount) FROM 'lake/orders/*.parquet'").fetchone()
+print("lake after failed job:", partial)          # half of the failed job is visible
+assert partial[0] == 3
+
+# Upstream starts sending amount as text; nothing stops the file landing
+con.execute("""COPY (SELECT * FROM (VALUES (5, 'c3', 'n/a')) t(order_id, customer_id, amount))
+               TO 'lake/orders/part-0003.parquet' (FORMAT parquet)""")
+try:
+    con.execute("SELECT sum(amount) FROM 'lake/orders/*.parquet'").fetchone()
+    raise AssertionError("expected the read to fail")
+except duckdb.ConversionException as e:
+    print("lake read now fails:", str(e).splitlines()[0][:90])
+
+# Warehouse: a typed table and a transaction. A failure rolls everything back.
+con.execute("CREATE TABLE orders (order_id INT PRIMARY KEY, customer_id TEXT NOT NULL, amount DECIMAL(10,2) NOT NULL)")
+con.execute("INSERT INTO orders VALUES (1, 'c1', 120.50), (2, 'c2', 80.00)")
+try:
+    con.execute("BEGIN TRANSACTION")
+    con.execute("INSERT INTO orders VALUES (3, 'c1', 15.00)")
+    con.execute("INSERT INTO orders VALUES (5, 'c3', 'n/a')")     # rejected by the schema
+    con.execute("COMMIT")
+except duckdb.ConversionException:
+    con.execute("ROLLBACK")
+committed = con.execute("SELECT count(*), sum(amount) FROM orders").fetchone()
+print("warehouse after failed job:", committed)   # nothing from the failed job
+assert committed[0] == 2
+```
+
+The lake showed half of a failed job to every reader, and then a bad file broke every query on the folder long after the job that wrote it. The warehouse rejected the bad row at write time and rolled back the whole job. A lakehouse table format gives lake files the second behaviour: the failed job's files are never committed to the log, so readers never see them, and a write with the wrong schema fails before it commits.
 
 ## How to choose
 
 1. **Who uses the data?** Mostly SQL analysts and dashboards favour a warehouse. Mixed BI, ML and engineering workloads favour a lakehouse.
 2. **What data?** Large volumes of semi-structured or unstructured data push toward lake storage.
-3. **Openness.** Open table formats reduce lock-in and let several engines share one copy.
-4. **Team skills and operations.** A managed warehouse has fewer moving parts.
-5. **Cost profile.** Compare storage, compute and data movement for your workload rather than relying on general claims.
+3. **Openness.** Open table formats reduce lock-in and let several engines share one copy. If several engines must read the same tables, that requirement often decides the design.
+4. **Team skills and operations.** A managed warehouse has fewer moving parts. A lakehouse needs people who understand file layout, compaction and catalogs.
+5. **Cost profile.** Compare storage, compute and data movement for your workload rather than relying on general claims. Copying data into a warehouse costs pipelines and storage; running a lakehouse costs maintenance and engineering time.
+6. **Latency and concurrency.** High-concurrency BI with tight latency targets is where warehouses are strongest; both can serve it with the right engine.
 
-Many organisations combine them: raw data in a lake, curated tables in a lakehouse format, and a warehouse or SQL endpoint for BI.
+### Decision table
+
+| Scenario | Leaning | Reasoning |
+|---|---|---|
+| Startup with a few sources, analysts writing SQL, dashboards | Warehouse | Fastest path to trusted SQL; little to operate |
+| Clickstream or IoT at large volume, Spark processing, ML features | Lakehouse | Cheap storage, many engines, streaming writes with transactions |
+| Raw logs, images, documents kept for future use | Lake (raw zone) | No need for tables yet; keep it cheap and organised |
+| Regulated reporting with strict access control and auditing | Warehouse or governed lakehouse | Both work if the catalog and access controls are strong; choose the one the team can govern |
+| Several engines (Spark, Trino, a warehouse) must share one copy | Lakehouse with one owning catalog per table | Open formats avoid copies; one writer per table avoids conflicts |
+| Existing warehouse that works, plus a new ML team | Keep the warehouse, add a lake or lakehouse for ML | Migrations are expensive; share curated tables through an open format if needed |
+
+Many organisations combine them: raw data in a lake, curated tables in a lakehouse format, and a warehouse or SQL endpoint for BI, often organised as bronze, silver and gold layers.
 
 <Callout tone="info" title="The line is blurring">
 
-Warehouses increasingly read open table formats, and lakehouse platforms increasingly offer warehouse-style SQL. Focus on the properties you need (transactions, schema enforcement, openness, performance) rather than the label.
+Warehouses increasingly read and write open table formats such as Iceberg in your storage, and lakehouse platforms offer warehouse-style SQL engines. Focus on the properties you need (transactions, schema enforcement, openness, performance, governance) rather than the label.
 
 </Callout>
 
+## Trade-offs to name
+
+- **One copy vs convenience.** A lakehouse avoids copying data into a warehouse; a warehouse avoids running table maintenance.
+- **Openness vs integration.** Open formats let you change engines; a single vendor's storage is better integrated with its optimiser, caching and governance.
+- **Flexibility vs trust.** Schema-on-read accepts anything quickly and fails later; schema-on-write fails early and protects readers.
+- **Multi-engine writes.** Several engines can read a table safely; letting several engines write it through different catalogs is how tables get corrupted.
+
 ## Common mistakes
 
-1. Treating a lake as a dumping ground with no layers, schemas or ownership.
+1. Treating a lake as a dumping ground with no layers, schemas, ownership or catalog.
 2. Choosing a lakehouse "because it is modern" when the team only needs BI on structured data.
 3. Copying the same data into a lake and a warehouse without a clear source of truth.
+4. Assuming a lakehouse needs no maintenance; small files and old versions accumulate.
+5. Pointing two writers at the same table through different catalogs.
+6. Saying "a lakehouse is just Parquet"; plain Parquet files have no transactions.
 
-## Interview relevance
+## In an interview
 
-See the [interview answer](/interview/data-engineering/lake-warehouse-lakehouse/). Strong answers name the deciding properties rather than reciting definitions.
+See the [interview answer](/interview/data-engineering/lake-warehouse-lakehouse/). Strong answers name the deciding properties rather than reciting definitions: "A lake gives cheap, open storage but no transactions; a warehouse gives transactions, schema enforcement and fast SQL in managed storage; a lakehouse adds a table format to lake files to get most of both, at the cost of running maintenance." Then recommend for the scenario and mention how the layers fit together. Common follow-ups: "How does a table format make a multi-file write atomic?" (the commit to the log or catalog pointer is the atomic step), "Delta or Iceberg?" ([Delta vs Iceberg vs Hudi](/interview/delta-lake/delta-vs-iceberg-vs-hudi/)) and "Snowflake or Databricks?" ([Snowflake vs Databricks](/snowflake/snowflake-vs-databricks/)).
 
 ## Key takeaway
 
-A lake is flexible storage, a warehouse is reliable SQL, and a lakehouse adds reliability to lake storage through an open table format. Choose by users, data types, openness and operations.
+A lake is flexible storage, a warehouse is reliable SQL, and a lakehouse adds reliability to lake storage through an open table format. Choose by users, data types, openness, operations and measured cost, and be explicit about which system owns each table.

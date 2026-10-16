@@ -9,7 +9,7 @@ section: "career"
 publishedDate: "2026-10-16"
 updatedDate: "2026-10-16"
 reviewedDate: "2026-10-16"
-related: []
+related: ["articles:career/behavioral-interview-data-engineers", "articles:career/explain-a-data-engineering-project"]
 versionContext: "Product names and defaults as of October 2026; code snippets state their dialect or runtime"
 ---
 

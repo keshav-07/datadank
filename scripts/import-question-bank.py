@@ -74,6 +74,7 @@ PAGES = {
             covers="incidents, late-arriving data, duplicates, backfills, cost spikes, migrations and system design scenarios with concrete numbers"),
     9: dict(folder="career", slug="behavioral-interview-questions", hub="behavioral", label="Behavioral",
             noun="behavioral questions", technology=["career", "data-engineering"], section="career",
+            related=["articles:career/behavioral-interview-data-engineers", "articles:career/explain-a-data-engineering-project"],
             title="18 Behavioral Interview Questions for Data Engineers (with STAR Answers)",
             seoTitle="Behavioral Interview Questions for Data Engineers",
             description="18 behavioral interview questions for data engineers with STAR-style answers: project walkthroughs, incidents, mistakes, stakeholders and leadership.",
@@ -303,6 +304,7 @@ def main():
         page, ordered = p["page"], p["ordered"]
         levels = {lv: sum(q["level"] == lv for q in ordered) for lv in LEVELS}
         related = [f"interview-questions:{DEEP[q['num']]}" for q in ordered if q["num"] in DEEP][:12]
+        related += page.get("related", [])
         fm = {
             "title": page["title"],
             "seoTitle": page["seoTitle"],

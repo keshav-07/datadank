@@ -59,7 +59,9 @@ const adsClient = import.meta.env.PUBLIC_ADSENSE_CLIENT;
     <script async src="https://www.googletagmanager.com/gtag/js?id=G-CCE20BWY8N"></script>
     <script is:inline>
       window.dataLayer = window.dataLayer || [];
-      function gtag(...args) { window.dataLayer.push(args); }
+      // gtag.js only processes the Arguments object, so Google's snippet must not use rest parameters.
+      // eslint-disable-next-line prefer-rest-params
+      function gtag() { window.dataLayer.push(arguments); }
       gtag("js", new Date());
       gtag("config", "G-CCE20BWY8N");
     </script>

@@ -47,12 +47,13 @@ curl -sI https://datadank.com/ | grep -iE "content-security|x-content-type|refer
 so they do not compete with the production domain in search. Pick one host for `www`
 (`www.datadank.com` → `datadank.com` with a 301 Redirect Rule in Cloudflare) so only one origin is reachable.
 
-## Analytics (optional)
+## Analytics
 
-Enable Cloudflare Web Analytics for the site, then build with `PUBLIC_CF_ANALYTICS_TOKEN=<token>`. Also:
-
-- add `https://static.cloudflareinsights.com` to `script-src` and `https://cloudflareinsights.com` to `connect-src` in `public/_headers`;
-- the privacy page updates automatically from the same variable.
+Google Analytics 4 (measurement ID `G-CCE20BWY8N`) is loaded in `src/layouts/BaseLayout.astro`. The
+Content-Security-Policy in `public/_headers` allows exactly what GA4 needs: `script-src`
+`https://*.googletagmanager.com`; `img-src` and `connect-src` `https://*.google-analytics.com`,
+`https://*.analytics.google.com` and `https://*.googletagmanager.com`. Keep the snippet's
+`dataLayer.push(arguments)` form (gtag.js ignores plain arrays). The privacy page describes the cookies.
 
 ## Search Console
 

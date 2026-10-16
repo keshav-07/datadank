@@ -5,11 +5,11 @@ description: "Databricks is a lakehouse platform built around Apache Spark and D
 group: platforms
 order: 10
 keyFacts: ["Runs Spark workloads on managed compute","Stores tables in Delta Lake format","Unity Catalog governs data with a catalog.schema.table namespace"]
-whatToLearnFirst: ["articles:databricks/workspace-jobs-lakehouse","articles:databricks/unity-catalog-governance"]
+whatToLearnFirst: ["articles:databricks/workspace-jobs-lakehouse","articles:databricks/unity-catalog-governance", "articles:databricks/auto-loader-declarative-pipelines"]
 relatedTechnologies: ["spark","pyspark","delta-lake"]
 cheatSheet: "cheat-sheets:databricks"
 monogram: "Db"
-lessons: ["articles:databricks/databricks-for-data-engineers", "articles:databricks/workspace-jobs-lakehouse", "articles:databricks/unity-catalog-governance"]
+lessons: ["articles:databricks/databricks-for-data-engineers", "articles:databricks/workspace-jobs-lakehouse", "articles:databricks/unity-catalog-governance", "articles:databricks/auto-loader-declarative-pipelines"]
 updatedDate: 2026-10-05
 ---
 

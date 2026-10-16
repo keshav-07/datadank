@@ -1,7 +1,7 @@
 ---
 publishedDate: "2026-10-04"
-updatedDate: "2026-10-04"
-reviewedDate: "2026-10-04"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
 title: "Unity Catalog and Data Governance Fundamentals"
 seoTitle: "Unity Catalog and Data Governance Fundamentals"
 description: "How Unity Catalog governs data in Databricks: the three-level namespace, metastores, managed versus external tables, grants, lineage and fine-grained access."
@@ -10,58 +10,208 @@ technology: ["databricks", "data-engineering"]
 topic: ["governance", "security"]
 difficulty: "Intermediate"
 prerequisites: ["articles:databricks/workspace-jobs-lakehouse"]
-related: ["interview-questions:databricks/unity-catalog", "articles:delta-lake/transactions-schema-evolution"]
+related: ["interview-questions:databricks/unity-catalog", "articles:delta-lake/transactions-schema-evolution", "interview-questions:data-engineering/handle-pii-in-pipelines", "articles:snowflake/security-access-control", "articles:aws/lake-formation"]
 previous: "articles:databricks/workspace-jobs-lakehouse"
-sources: [{"label": "Databricks documentation: What is Unity Catalog?", "url": "https://docs.databricks.com/en/data-governance/unity-catalog/index.html"}]
-versionContext: "Describes Databricks as documented in 2026; Databricks renames products frequently, so check current names. Examples were not executed in a Databricks workspace"
+next: "articles:databricks/auto-loader-declarative-pipelines"
+sources:
+  - {"label": "Databricks documentation: What is Unity Catalog?", "url": "https://docs.databricks.com/aws/en/data-governance/unity-catalog/"}
+  - {"label": "Databricks documentation: Unity Catalog privileges and securable objects", "url": "https://docs.databricks.com/aws/en/data-governance/unity-catalog/manage-privileges/privileges"}
+  - {"label": "Databricks documentation: Connect to cloud object storage using Unity Catalog", "url": "https://docs.databricks.com/aws/en/connect/unity-catalog/cloud-storage/"}
+  - {"label": "Databricks documentation: What are Unity Catalog volumes?", "url": "https://docs.databricks.com/aws/en/volumes/"}
+  - {"label": "Databricks documentation: Row filters and column masks", "url": "https://docs.databricks.com/aws/en/tables/row-and-column-filters"}
+  - {"label": "Databricks documentation: Attribute-based access control in Unity Catalog", "url": "https://docs.databricks.com/aws/en/data-governance/unity-catalog/abac"}
+  - {"label": "Databricks documentation: View data lineage using Unity Catalog", "url": "https://docs.databricks.com/aws/en/data-governance/unity-catalog/data-lineage"}
+  - {"label": "Databricks documentation: UNDROP TABLE", "url": "https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-undrop-table"}
+versionContext: "Describes Unity Catalog as documented in October 2026. ABAC policies and governed tags were announced as generally available in 2026; check the documentation for the compute and runtime versions your workspace needs. Product names change often. The SQL is Databricks SQL and needs a Unity Catalog-enabled workspace, so it was checked against the documentation, not executed."
 ---
 
-**Governance** means knowing what data exists, who may use it, and how it flows. In Databricks this is the job of **Unity Catalog**, a central catalog for tables, views, files, models and functions across workspaces.
+**Governance** means knowing what data exists, who may use it, and how it flows. In Databricks this is the job of **Unity Catalog**: one catalog for the whole account that governs tables, views, volumes (files), functions and models, and the cloud storage behind them. Because permissions live in Unity Catalog rather than in each workspace or cluster, the same grant applies whether someone queries from a notebook, a SQL warehouse, a job or an external engine.
+
+This lesson covers the object model, how privileges inherit, how Unity Catalog reaches your storage, fine-grained controls for sensitive data, and lineage and audit, with the `GRANT` statements you would actually write.
 
 ## The three-level namespace
 
 Every table is addressed as `catalog.schema.table`:
 
+{/* noexec */}
 ```sql
 SELECT * FROM prod.sales.orders;
 ```
 
-- A **catalog** is the top-level container, often per environment or business domain (`dev`, `prod`, `finance`).
-- A **schema** (database) groups related tables inside a catalog.
-- **Tables and views** hold the data.
+- A **metastore** is the top-level container, one per cloud region, attached to the workspaces in that region. You rarely name it in SQL.
+- A **catalog** is the first level of the namespace, usually per environment (`dev`, `prod`) or business domain (`finance`, `marketing`). A catalog can be **bound** to specific workspaces, so `prod` is not even visible from a sandbox workspace.
+- A **schema** (also called a database) groups related objects inside a catalog, often by source system, domain or medallion layer.
+- Inside a schema live **tables**, **views** (including materialized views), **volumes**, **functions** and registered **models**.
 
-A **metastore** is the top-level container for catalogs, typically one per region, attached to the workspaces that use it. Because governance lives in the metastore rather than in each workspace, the same permissions apply wherever the data is accessed.
+Legacy per-workspace Hive metastore tables still appear as a catalog named `hive_metastore`, but they are not governed by Unity Catalog grants. Migrating them into Unity Catalog catalogs is a common project.
 
 ## Managed and external tables
 
-- **Managed tables**: Unity Catalog manages both metadata and the underlying files in a managed storage location. Dropping the table removes the data.
-- **External tables**: metadata is in Unity Catalog, but files live in a location you manage. Dropping the table leaves the files.
-- **Volumes** govern non-tabular files (CSVs, images, models) with the same permission model.
+- **Managed tables** (the recommended default): Unity Catalog manages both the metadata and the files, which live in the managed storage location of the metastore, catalog or schema. Managed tables get features such as predictive optimization. `DROP TABLE` removes the table; the files are deleted later during maintenance, and `UNDROP TABLE` can recover a dropped managed table within a recovery window (7 days by default, as documented in 2026).
+- **External tables**: the metadata is in Unity Catalog but the files are at a path you manage, inside an external location. `DROP TABLE` removes only the metadata and leaves the files. Use them when another system must own or write the files.
 
-## Permissions
+## Securables, privileges and inheritance
 
-Access is granted with SQL to users, groups or service principals:
+Everything you can grant on is a **securable**. The data hierarchy is metastore → catalog → schema → table, view, volume, function, model. Alongside it sit securables that connect Unity Catalog to the outside world: **storage credentials**, **external locations**, **connections** (Lakehouse Federation to other databases), and **shares** and **recipients** (Delta Sharing).
 
+Privileges you will use most often:
+
+| Privilege | On | Allows |
+|---|---|---|
+| `USE CATALOG`, `USE SCHEMA` | catalog, schema | Pass through to child objects (required to reach anything inside) |
+| `BROWSE` | catalog | See object metadata in Catalog Explorer without reading data |
+| `SELECT` | table, view (or a parent) | Read data |
+| `MODIFY` | table (or a parent) | Insert, update, delete, merge |
+| `CREATE TABLE`, `CREATE SCHEMA`, `CREATE VOLUME`, `CREATE FUNCTION` | schema, catalog | Create objects |
+| `READ VOLUME`, `WRITE VOLUME` | volume | Read and write files in a volume |
+| `EXECUTE` | function, model | Call a function or use a model |
+| `READ FILES`, `WRITE FILES`, `CREATE EXTERNAL TABLE` | external location | Use paths under that location |
+| `MANAGE` | any securable | Manage grants on the object without owning it |
+| `ALL PRIVILEGES` | any | Every privilege applicable to that object (convenient, but rarely least-privilege) |
+
+Two rules explain most "permission denied" or "table not found" errors:
+
+1. **Privileges inherit downward.** `SELECT` granted on a schema applies to every current and future table in it; granted on a catalog, to every schema and table in the catalog. This is how you avoid granting table by table.
+2. **You still need the path.** To read `prod.sales.orders`, a principal needs `USE CATALOG` on `prod` and `USE SCHEMA` on `prod.sales` in addition to `SELECT` (on the table or inherited from above).
+
+Every object has an **owner** (a user, service principal or, better, a group) who can grant privileges on it. Metastore and workspace admins manage the top level.
+
+### Worked GRANT examples
+
+A typical setup: analysts read gold data, a production job writes silver and gold, and engineers can build in a dev schema.
+
+{/* noexec */}
 ```sql
+-- Analysts: read every table in prod.gold, now and in future
 GRANT USE CATALOG ON CATALOG prod TO `analysts`;
-GRANT USE SCHEMA ON SCHEMA prod.sales TO `analysts`;
-GRANT SELECT ON TABLE prod.sales.orders TO `analysts`;
+GRANT USE SCHEMA, SELECT ON SCHEMA prod.gold TO `analysts`;
+
+-- Production pipeline (a service principal, referenced by its application ID)
+GRANT USE CATALOG ON CATALOG prod TO `5c1f7a2e-0d1b-4c3e-9a77-2f2d1b6e8a10`;
+GRANT USE SCHEMA, SELECT, MODIFY, CREATE TABLE
+  ON SCHEMA prod.silver TO `5c1f7a2e-0d1b-4c3e-9a77-2f2d1b6e8a10`;
+GRANT USE SCHEMA, SELECT, MODIFY, CREATE TABLE
+  ON SCHEMA prod.gold TO `5c1f7a2e-0d1b-4c3e-9a77-2f2d1b6e8a10`;
+
+-- Engineers: full control of their sandbox schema only
+GRANT USE CATALOG ON CATALOG dev TO `data-engineers`;
+GRANT ALL PRIVILEGES ON SCHEMA dev.sandbox TO `data-engineers`;
+
+-- Make a group, not a person, the owner of production objects
+ALTER SCHEMA prod.gold OWNER TO `platform-admins`;
+
+-- Inspect and undo
+SHOW GRANTS ON SCHEMA prod.gold;
+SHOW GRANTS `analysts` ON CATALOG prod;
+REVOKE SELECT ON SCHEMA prod.gold FROM `analysts`;
 ```
 
-To read a table a principal needs privileges along the path (catalog and schema usage) as well as on the table. Grant to **groups**, not individuals, so access follows team membership.
+Note what is not granted: analysts have no `MODIFY` anywhere in `prod`, and nobody but the pipeline principal writes silver or gold. Grant to **groups** (synced from your identity provider) so access follows team membership rather than individual tickets.
 
-For finer control, Unity Catalog supports **row filters** and **column masks**, for example hiding email addresses from everyone outside a support group.
+## Storage credentials, external locations and volumes
+
+Unity Catalog never hands users raw cloud keys. Instead an admin creates two objects:
+
+- A **storage credential** wraps a cloud identity that can reach storage: an IAM role on AWS, a managed identity via an access connector on Azure, or a service account on Google Cloud. It is usually created in Catalog Explorer or with the API, because it references cloud IAM.
+- An **external location** combines a storage path with a storage credential. Grants on the external location decide who can read files there or create external tables and volumes under it.
+
+{/* noexec */}
+```sql
+CREATE EXTERNAL LOCATION IF NOT EXISTS raw_landing
+  URL 's3://acme-raw-landing/'
+  WITH (STORAGE CREDENTIAL acme_raw_role)
+  COMMENT 'Files dropped by upstream systems';
+
+GRANT READ FILES ON EXTERNAL LOCATION raw_landing TO `data-engineers`;
+GRANT CREATE EXTERNAL TABLE, CREATE EXTERNAL VOLUME
+  ON EXTERNAL LOCATION raw_landing TO `5c1f7a2e-0d1b-4c3e-9a77-2f2d1b6e8a10`;
+```
+
+**Volumes** govern non-tabular files (CSV and JSON drops, images, model artifacts, wheels) with the same privilege model as tables. A managed volume stores files in Unity Catalog-managed storage; an external volume points at a path inside an external location. Files are addressed by a path that mirrors the namespace:
+
+{/* noexec */}
+```sql
+CREATE EXTERNAL VOLUME prod.bronze.vendor_drops
+  LOCATION 's3://acme-raw-landing/vendor/';
+GRANT READ VOLUME ON VOLUME prod.bronze.vendor_drops TO `data-engineers`;
+
+SELECT * FROM read_files('/Volumes/prod/bronze/vendor_drops/2026-10-15/', format => 'csv', header => true);
+```
+
+Auto Loader, `COPY INTO` and Python file APIs all accept `/Volumes/...` paths, which replaces the old pattern of mounting buckets with shared keys.
+
+## Row filters and column masks
+
+Grants decide whether someone can read a table. **Row filters** and **column masks** decide which rows and values they see. Both are SQL user-defined functions that Unity Catalog applies at query time, and both usually test group membership with `is_account_group_member()`.
+
+{/* noexec */}
+```sql
+-- Column mask: only the support group sees real email addresses
+CREATE OR REPLACE FUNCTION prod.gov.mask_email(email STRING)
+  RETURNS STRING
+  RETURN CASE WHEN is_account_group_member('support') THEN email
+              ELSE concat('***@', split_part(email, '@', 2)) END;
+
+ALTER TABLE prod.silver.customers ALTER COLUMN email SET MASK prod.gov.mask_email;
+
+-- Row filter: regional analysts see only their region; admins see everything
+CREATE OR REPLACE FUNCTION prod.gov.region_filter(region STRING)
+  RETURNS BOOLEAN
+  RETURN is_account_group_member('global-analysts')
+      OR (region = 'EU' AND is_account_group_member('eu-analysts'))
+      OR (region = 'US' AND is_account_group_member('us-analysts'));
+
+ALTER TABLE prod.gold.sales SET ROW FILTER prod.gov.region_filter ON (region);
+
+-- Remove them again
+ALTER TABLE prod.gold.sales DROP ROW FILTER;
+ALTER TABLE prod.silver.customers ALTER COLUMN email DROP MASK;
+```
+
+Things to know: readers need `SELECT` on the table but no privilege on the filter or mask function, because Unity Catalog runs it on their behalf; the filter runs on every query, so keep it simple (a lookup against a small mapping table is fine, a heavy join is not); and some compute types and older runtimes cannot read filtered tables, so check the documented requirements. A **dynamic view** (a view that uses the same group functions in `WHERE` and `CASE`) is the older alternative and still useful when you want to publish a separate, filtered object.
+
+## Tags and attribute-based access control (ABAC)
+
+Per-table filters and masks do not scale to thousands of tables. Unity Catalog adds two layers on top:
+
+- **Tags** are key-value labels on catalogs, schemas, tables and columns, for example `ALTER TABLE prod.silver.customers ALTER COLUMN email SET TAGS ('pii' = 'email')`. **Governed tags** are defined at account level with allowed values and rules about who may assign them, so `pii` means the same thing everywhere. Data classification can suggest or apply tags automatically by scanning column contents.
+- **ABAC policies** are attached to a catalog, schema or table and say, in effect, "for every column tagged `pii = email` under this catalog, apply this mask for everyone except the `pii-readers` group". The policy reuses the same kind of masking or filtering UDF, but you write it once and it covers new tables as soon as their columns are tagged.
+
+As of October 2026, Databricks has announced ABAC policies and governed tags as generally available. Check the ABAC documentation for current syntax, limits and compute requirements before designing around it. In an interview, the high-level idea (tags describe data, policies act on tags, so protection follows the data automatically) is what matters.
 
 ## Lineage and auditing
 
-Unity Catalog captures **lineage**: which jobs and notebooks read and wrote which tables and columns. That answers "what breaks if I change this column?" and "where did this number come from?". Access is also recorded in audit logs.
+Unity Catalog records **lineage** automatically for queries run on Unity Catalog-enabled compute: which notebooks, jobs, pipelines and dashboards read and wrote which tables, down to column level. Catalog Explorer shows it as a graph, and it answers "what breaks if I change this column?" and "where did this number come from?".
+
+Lineage and audit events are also queryable as **system tables**, which you can join and alert on like any other table:
+
+{/* noexec */}
+```sql
+-- Who and what reads a sensitive table?
+SELECT entity_type, entity_id, source_table_full_name, target_table_full_name, event_time
+FROM system.access.table_lineage
+WHERE source_table_full_name = 'prod.silver.customers'
+  AND event_time >= current_date() - INTERVAL 30 DAYS;
+
+-- Recent permission changes in Unity Catalog
+SELECT event_time, user_identity.email, action_name, request_params
+FROM system.access.audit
+WHERE service_name = 'unityCatalog'
+  AND action_name IN ('updatePermissions', 'createTable', 'deleteTable')
+ORDER BY event_time DESC
+LIMIT 100;
+```
+
+System tables must be enabled by an admin, and access to them is itself governed by grants on the `system` catalog.
 
 ## A practical setup
 
-1. Catalogs per environment (`dev`, `staging`, `prod`) or per domain.
-2. Schemas per data area or medallion layer.
-3. Production jobs run as **service principals** with only the privileges they need.
-4. Humans get read access to `prod` through groups; writes to `prod` happen only through jobs.
+1. **Catalogs per environment** (`dev`, `staging`, `prod`), bound to the matching workspaces; or catalogs per domain if teams own their data end to end.
+2. **Schemas per layer or domain** (`prod.bronze`, `prod.silver`, `prod.gold`) so grants can be made at schema level and inherited.
+3. **Production jobs run as service principals** with only the privileges they need. Humans get read access to `prod` through groups; writes to `prod` happen only through jobs.
+4. **Groups own production objects**, so ownership survives people leaving.
+5. **Raw files arrive in volumes** under external locations, not in mounted buckets.
+6. **Sensitive columns are tagged**, and masks or ABAC policies protect them; lineage and the audit system table are reviewed for sensitive tables.
 
 <Callout tone="warning" title="Least privilege applies to pipelines too">
 
@@ -72,14 +222,17 @@ A job that can write to every catalog can damage every catalog. Give each produc
 ## Common mistakes
 
 1. Granting privileges to individual users instead of groups.
-2. Running production jobs with personal credentials.
-3. Forgetting the catalog and schema `USE` privileges and debugging "table not found" errors.
-4. Dropping a managed table expecting the files to remain.
+2. Running production jobs with personal credentials, so they break when that person leaves or loses access.
+3. Forgetting the `USE CATALOG` and `USE SCHEMA` privileges and debugging "table not found" errors.
+4. Dropping a managed table expecting the files to remain (or dropping an external table expecting the files to go).
+5. Granting `ALL PRIVILEGES` on a catalog to "fix" an access error, which also grants `MODIFY` and create rights on everything in it.
+6. Writing a row filter that joins large tables, so every query on the table slows down.
+7. Leaving data in the legacy `hive_metastore` and assuming Unity Catalog grants protect it.
 
-## Interview relevance
+## In an interview
 
-"What is Unity Catalog used for?" and "How would you control access to sensitive columns?" are common. See the [interview answer](/interview/databricks/unity-catalog/).
+"What is Unity Catalog used for?" and "How would you control access to sensitive columns?" are the common openers. A strong answer covers the namespace and metastore, grants to groups with inheritance, service principals for jobs, masks or ABAC for PII, and lineage and audit through system tables. Follow-ups include "managed or external table?", "how does Unity Catalog reach S3 without sharing keys?" (storage credential plus external location) and "how would you audit who read a table?". Practise with the [interview answer](/interview/databricks/unity-catalog/), the PII design question [How do you handle PII in pipelines?](/interview/data-engineering/handle-pii-in-pipelines/), and Q5, Q6, Q23, Q24 and Q43 in the [Top 50 Databricks interview questions](/databricks/databricks-interview-questions/).
 
 ## Key takeaway
 
-Unity Catalog gives one namespace, one permission model and lineage across workspaces. Organise catalogs deliberately, grant to groups, run jobs as service principals, and mask sensitive columns.
+Unity Catalog gives one namespace, one permission model and lineage across workspaces. Organise catalogs deliberately, grant at schema level to groups and let inheritance do the rest, run jobs as service principals, reach storage only through external locations and volumes, and protect sensitive columns with masks or tag-based policies.

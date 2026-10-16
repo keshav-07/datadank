@@ -1,7 +1,7 @@
 ---
 publishedDate: "2026-10-04"
-updatedDate: "2026-10-10"
-reviewedDate: "2026-10-10"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
 title: "Build an Idempotent CSV Loader in Python"
 description: "Build a small Python loader that reads CSV files, skips and counts bad rows, and loads into a database so running it twice gives the same result."
 inventoryId: "TECH-08"
@@ -10,198 +10,676 @@ topic: ["error-handling", "idempotency", "testing"]
 difficulty: "Intermediate"
 featured: false
 kind: "tutorial"
-learningObjectives: ["Load CSV data into a database inside one transaction", "Make a load safe to run twice with an upsert", "Count and log bad rows instead of failing silently or crashing", "Test the loader with pytest"]
-related: ["articles:airflow/dags-scheduling-retries", "interview-questions:data-engineering/idempotent-batch-pipeline", "projects:csv-to-warehouse-pipeline", "articles:python/testing-with-pytest", "articles:etl-elt/idempotency-in-data-pipelines"]
-prerequisites: ["articles:python/testing-with-pytest"]
+learningObjectives: ["Load CSV data into PostgreSQL through a staging table and an upsert inside one transaction", "Make a load safe to rerun with a file checksum, a run id and a no-op-aware merge", "Quarantine bad rows with a reason and fail the run when too many are bad", "Prove idempotency with pytest tests that load the same file twice"]
+related: ["articles:airflow/dags-scheduling-retries", "interview-questions:data-engineering/idempotent-batch-pipeline", "projects:csv-to-warehouse-pipeline", "articles:python/testing-with-pytest", "articles:etl-elt/idempotency-in-data-pipelines", "interview-questions:python/exceptions-in-pipelines", "interview-questions:python/process-large-csv-limited-memory", "articles:python/python-interview-questions"]
+prerequisites: ["articles:python/testing-with-pytest", "articles:python/error-handling-logging"]
 previous: "articles:python/testing-with-pytest"
 next: "articles:airflow/dags-scheduling-retries"
-sources: [{"label": "Python documentation: sqlite3", "url": "https://docs.python.org/3/library/sqlite3.html"}, {"label": "SQLite documentation: UPSERT", "url": "https://www.sqlite.org/lang_upsert.html"}]
-versionContext: "Tested with Python 3.11 and SQLite 3.45.1 (UPSERT requires SQLite 3.24 or later). The test file was run with pytest 9.1 against the loader saved as loader.py."
+sources: [{"label": "PostgreSQL documentation: INSERT ... ON CONFLICT", "url": "https://www.postgresql.org/docs/16/sql-insert.html"}, {"label": "PostgreSQL documentation: advisory lock functions", "url": "https://www.postgresql.org/docs/16/functions-admin.html#FUNCTIONS-ADVISORY-LOCKS"}, {"label": "PostgreSQL documentation: SELECT DISTINCT ON", "url": "https://www.postgresql.org/docs/16/sql-select.html#SQL-DISTINCT"}, {"label": "psycopg 3 documentation: COPY", "url": "https://www.psycopg.org/psycopg3/docs/basic/copy.html"}, {"label": "psycopg 3 documentation: transactions", "url": "https://www.psycopg.org/psycopg3/docs/basic/transactions.html"}, {"label": "Python documentation: csv", "url": "https://docs.python.org/3/library/csv.html"}]
+versionContext: "Run on PostgreSQL 16.14 with CPython 3.11.15 (a venv of /usr/bin/python3 with psycopg 3.3 and pytest 9.1) through scripts/verify-examples.py. The noexec blocks were checked by saving loader.py and test_loader.py and running them: pytest reported 11 passed, and the command-line runs behaved as shown. Three concurrent loads of one file gave one success and two skips."
 ---
 
-A pipeline step is **idempotent** when running it twice for the same input leaves the system in the same state as running it once. That single property makes retries, reruns and backfills safe. In this tutorial you build a small loader that has it.
+A pipeline step is **idempotent** when running it twice for the same input leaves the system in the same state as running it once. That single property makes retries, reruns and backfills safe. In this tutorial you build a loader that has it, for PostgreSQL, using the pattern most warehouse loads follow: validate, stage, merge, record the run.
 
 ## Goal
 
-Load order CSV files into a database table so that:
+Load order CSV files into a PostgreSQL table so that:
 
-1. running the loader twice does not create duplicate rows;
-2. a corrected file replaces earlier values for the same order;
-3. malformed rows are skipped, **counted and logged**, never silently lost;
-4. a failure part-way through leaves no half-loaded file.
+1. running the loader twice does not create duplicate rows, and a retry of an already-loaded file does no work;
+2. a corrected file replaces earlier values for the same order, but an **older** version never overwrites a newer one;
+3. malformed rows are **quarantined with a reason** and counted, never silently lost, and a file that is mostly bad fails the run;
+4. a failure part-way through leaves no half-loaded file;
+5. every run is recorded with a run id, the file's checksum and its counts, so you can answer "what loaded this row?".
 
 ## Prerequisites
 
-Python 3.10 or later and `pytest` (`pip install pytest`). We use SQLite so there is nothing to install, but the same pattern works for Postgres, Snowflake or any database that supports upserts.
+Python 3.10 or later, a PostgreSQL database you can create tables in (version 11 or later; this page was run on 16), and two packages:
+
+```bash
+pip install "psycopg[binary]" pytest
+export LOADER_DSN="postgresql://postgres:postgres@localhost:5432/postgres"   # your connection string
+```
+
+A local server from your package manager or `docker run -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:16` is enough. The [testing with pytest](/python/testing-with-pytest/) and [error handling](/python/error-handling-logging/) lessons cover the techniques used here.
+
+## The design
+
+```text
+orders_2026-10-05.csv
+   │  sha256 checksum ──► already loaded successfully? ──► yes: record "skipped", stop
+   ▼
+parse and validate each row (Python)
+   ├── bad rows ──────────────► orders_quarantine (run_id, line_no, raw_line, reason)
+   ▼
+COPY good rows ──► stg_orders (temporary table, dropped at commit)
+   ▼
+merge: latest version per order_id, upsert, skip stale and no-op rows ──► orders
+   ▼
+load_runs: run_id, file, checksum, status, counts
+```
+
+Three layers make this idempotent, and each catches something the others do not:
+
+- **Checksum per file.** The same bytes loaded again are recognised and skipped. This makes scheduler retries cheap.
+- **Upsert on a natural key.** Even if the same data arrives in a different file (renamed, re-exported, forced reload), `order_id` is the primary key, so rows are updated rather than appended.
+- **One transaction per file.** Staging, quarantine, merge and the "succeeded" status commit together or not at all, so a crash cannot leave half a file loaded or a file marked done that is not.
+
+## The merge, in SQL
+
+The heart of the loader is one SQL statement. It is worth running on its own first, because it carries most of the correctness. It takes the latest version of each key from the staging table, inserts new keys, updates changed keys, and skips both stale rows and rows that would not change anything:
+
+```sql
+CREATE TABLE orders (
+    order_id    bigint PRIMARY KEY,
+    customer    text NOT NULL,
+    amount      numeric(12,2) NOT NULL,
+    updated_at  timestamptz NOT NULL
+);
+CREATE TEMP TABLE stg_orders (LIKE orders);
+
+PREPARE merge_staging AS
+WITH merged AS (
+    INSERT INTO orders (order_id, customer, amount, updated_at)
+    SELECT DISTINCT ON (order_id) order_id, customer, amount, updated_at
+    FROM stg_orders
+    ORDER BY order_id, updated_at DESC                 -- latest version per key within the batch
+    ON CONFLICT (order_id) DO UPDATE
+    SET customer = EXCLUDED.customer, amount = EXCLUDED.amount, updated_at = EXCLUDED.updated_at
+    WHERE orders.updated_at <= EXCLUDED.updated_at     -- never let an older row overwrite a newer one
+      AND (orders.customer, orders.amount, orders.updated_at)
+          IS DISTINCT FROM (EXCLUDED.customer, EXCLUDED.amount, EXCLUDED.updated_at)   -- skip no-op updates
+    RETURNING order_id
+)
+SELECT count(*) AS rows_changed FROM merged;
+
+INSERT INTO stg_orders VALUES
+    (1, 'Asha', 50.00, '2026-10-05 09:00+00'),
+    (2, 'Ben',  20.00, '2026-10-05 09:05+00'),
+    (2, 'Ben',  25.00, '2026-10-05 11:00+00');
+EXECUTE merge_staging;     -- first load: 2 rows
+EXECUTE merge_staging;     -- the same batch again: 0 rows
+
+TRUNCATE stg_orders;
+INSERT INTO stg_orders VALUES
+    (1, 'Asha', 55.00, '2026-10-06 08:00+00'),       -- a real correction
+    (2, 'Ben',  20.00, '2026-10-05 09:05+00');       -- a stale replay
+EXECUTE merge_staging;     -- 1 row: order 1 changes, order 2 keeps 25.00
+
+SELECT order_id, customer, amount FROM orders ORDER BY order_id;
+```
+
+```text
+ rows_changed
+--------------
+            2
+(1 row)
+
+ rows_changed
+--------------
+            0
+(1 row)
+
+ rows_changed
+--------------
+            1
+(1 row)
+
+ order_id | customer | amount
+----------+----------+--------
+        1 | Asha     |  55.00
+        2 | Ben      |  25.00
+(2 rows)
+```
+
+Why each clause is there:
+
+- **`DISTINCT ON (order_id) ... ORDER BY order_id, updated_at DESC`** keeps one row per key. Without it, a file that contains two versions of order 2 makes PostgreSQL raise `ON CONFLICT DO UPDATE command cannot affect row a second time`.
+- **`WHERE orders.updated_at <= EXCLUDED.updated_at`** stops an old file, replayed late, from rolling data back. "Last file loaded wins" is not the same as "latest version wins".
+- **`IS DISTINCT FROM`** skips updates that would write identical values. The result is the same either way, but skipping them means a rerun reports 0 changed rows (useful as a signal), writes no new row versions and fires no triggers. `IS DISTINCT FROM` rather than `<>` so that NULLs compare correctly if you add nullable columns.
 
 ## The loader
 
-Save this as `loader.py`.
+Save this as `loader.py`. It reads `LOADER_DSN` for the connection and creates its three tables in the connection's current schema.
 
 ```python
 import csv
+import hashlib
+import io
 import logging
-import sqlite3
+import os
+import uuid
+from dataclasses import dataclass
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+import psycopg
+
 log = logging.getLogger("loader")
+
+EXPECTED_HEADER = ["order_id", "customer", "amount", "updated_at"]
+MAX_AMOUNT = Decimal("9999999999.99")          # fits numeric(12,2)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS orders (
-    order_id   INTEGER PRIMARY KEY,
-    customer   TEXT NOT NULL,
-    amount     REAL NOT NULL
+    order_id     bigint PRIMARY KEY,
+    customer     text NOT NULL,
+    amount       numeric(12,2) NOT NULL CHECK (amount >= 0),
+    updated_at   timestamptz NOT NULL,
+    source_file  text NOT NULL,
+    load_run_id  uuid NOT NULL,
+    loaded_at    timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE IF NOT EXISTS load_audit (
-    file_name  TEXT PRIMARY KEY,
-    rows_read  INTEGER NOT NULL,
-    rows_bad   INTEGER NOT NULL
+CREATE TABLE IF NOT EXISTS load_runs (
+    run_id            uuid PRIMARY KEY,
+    file_name         text NOT NULL,
+    file_sha256       text NOT NULL,
+    status            text NOT NULL CHECK (status IN ('running', 'succeeded', 'skipped', 'failed')),
+    rows_read         integer,
+    rows_staged       integer,
+    rows_quarantined  integer,
+    rows_changed      integer,
+    note              text,
+    started_at        timestamptz NOT NULL DEFAULT now(),
+    finished_at       timestamptz
+);
+CREATE INDEX IF NOT EXISTS load_runs_checksum ON load_runs (file_sha256, status);
+CREATE TABLE IF NOT EXISTS orders_quarantine (
+    run_id     uuid NOT NULL REFERENCES load_runs (run_id),
+    file_name  text NOT NULL,
+    line_no    integer NOT NULL,
+    raw_line   text NOT NULL,
+    reason     text NOT NULL,
+    PRIMARY KEY (run_id, line_no)
 );
 """
 
 
-def parse_rows(path):
-    """Return (good_rows, bad_count). Bad rows are logged and skipped, never silently dropped."""
-    bad = 0
-    good = []
-    with path.open(newline="") as f:
-        for line_no, row in enumerate(csv.DictReader(f), start=2):
+class LoadError(Exception):
+    """The whole file is unusable (wrong header, too many bad rows). The run fails."""
+
+
+@dataclass
+class RunResult:
+    run_id: str
+    status: str            # "succeeded" or "skipped"
+    rows_read: int = 0
+    rows_staged: int = 0
+    rows_quarantined: int = 0
+    rows_changed: int = 0
+
+
+def init_db(conn: psycopg.Connection) -> None:
+    with conn.transaction():
+        conn.execute(SCHEMA)
+
+
+def file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def parse_row(row: list[str]) -> tuple:
+    """Validate one CSV row. Returns a tuple for staging or raises ValueError with a reason."""
+    if len(row) != len(EXPECTED_HEADER):
+        raise ValueError(f"expected {len(EXPECTED_HEADER)} fields, got {len(row)}")
+    order_id, customer, amount, updated_at = (v.strip() for v in row)
+    try:
+        order_id = int(order_id)
+    except ValueError:
+        raise ValueError(f"order_id is not an integer: {order_id!r}") from None
+    if not customer:
+        raise ValueError("customer is empty")
+    try:
+        amount = Decimal(amount)
+    except InvalidOperation:
+        raise ValueError(f"amount is not a number: {amount!r}") from None
+    if not amount.is_finite() or not 0 <= amount <= MAX_AMOUNT or amount.as_tuple().exponent < -2:
+        raise ValueError(f"amount must be between 0 and {MAX_AMOUNT} with at most 2 decimals: {amount}")
+    try:
+        ts = datetime.fromisoformat(updated_at)
+    except ValueError:
+        raise ValueError(f"updated_at is not an ISO-8601 timestamp: {updated_at!r}") from None
+    if ts.tzinfo is None:
+        raise ValueError("updated_at has no time zone offset")
+    return order_id, customer, amount, ts
+
+
+def split_rows(path: Path):
+    """Return (good_rows, bad_rows). bad_rows are (line_no, raw_text, reason)."""
+    good, bad = [], []
+    with path.open(newline="", encoding="utf-8-sig") as f:      # utf-8-sig drops a BOM if present
+        reader = csv.reader(f)
+        header = next(reader, None)
+        if header is None or [h.strip() for h in header] != EXPECTED_HEADER:
+            raise LoadError(f"{path.name}: header must be {','.join(EXPECTED_HEADER)}, got {header}")
+        for row in reader:
+            line_no = reader.line_num
             try:
-                good.append((int(row["order_id"]), row["customer"].strip(), float(row["amount"])))
-            except (KeyError, ValueError, AttributeError):
-                bad += 1
-                log.warning("skipping bad row at line %d: %r", line_no, row)
+                good.append(parse_row(row))
+            except ValueError as exc:
+                raw = io.StringIO()
+                csv.writer(raw).writerow(row)
+                bad.append((line_no, raw.getvalue().rstrip("\r\n"), str(exc)))
     return good, bad
 
 
-def load_file(conn, path):
-    """Load one file. Safe to run twice: rows are upserted by order_id, never appended."""
-    rows, bad = parse_rows(path)
-    with conn:  # one transaction: all of it commits, or none of it does
-        conn.executemany(
-            """INSERT INTO orders (order_id, customer, amount) VALUES (?, ?, ?)
-               ON CONFLICT(order_id) DO UPDATE SET customer = excluded.customer, amount = excluded.amount""",
-            rows,
-        )
+MERGE_SQL = """
+INSERT INTO orders (order_id, customer, amount, updated_at, source_file, load_run_id)
+SELECT DISTINCT ON (order_id) order_id, customer, amount, updated_at, %(file)s, %(run_id)s
+FROM stg_orders
+ORDER BY order_id, updated_at DESC
+ON CONFLICT (order_id) DO UPDATE
+SET customer = EXCLUDED.customer,
+    amount = EXCLUDED.amount,
+    updated_at = EXCLUDED.updated_at,
+    source_file = EXCLUDED.source_file,
+    load_run_id = EXCLUDED.load_run_id,
+    loaded_at = now()
+WHERE orders.updated_at <= EXCLUDED.updated_at
+  AND (orders.customer, orders.amount, orders.updated_at)
+      IS DISTINCT FROM (EXCLUDED.customer, EXCLUDED.amount, EXCLUDED.updated_at)
+"""
+
+
+def load_file(conn: psycopg.Connection, path: Path, *, max_bad_ratio: float = 0.2,
+              force: bool = False) -> RunResult:
+    """Load one CSV file into orders. Safe to run any number of times.
+
+    conn must be in autocommit mode: every step below opens its own explicit transaction.
+    """
+    run_id = str(uuid.uuid4())
+    checksum = file_sha256(path)
+
+    # 1. Record the run before doing any work, in its own committed transaction,
+    #    so a crash still leaves a 'running' or 'failed' row to investigate.
+    with conn.transaction():
         conn.execute(
-            """INSERT INTO load_audit (file_name, rows_read, rows_bad) VALUES (?, ?, ?)
-               ON CONFLICT(file_name) DO UPDATE SET rows_read = excluded.rows_read, rows_bad = excluded.rows_bad""",
-            (path.name, len(rows) + bad, bad),
-        )
-    log.info("%s: loaded %d rows, skipped %d", path.name, len(rows), bad)
+            "INSERT INTO load_runs (run_id, file_name, file_sha256, status) VALUES (%s, %s, %s, 'running')",
+            (run_id, path.name, checksum))
+
+    try:
+        with conn.transaction():
+            # Serialise loaders working on the same file content.
+            conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (checksum,))
+            already = conn.execute(
+                "SELECT run_id FROM load_runs WHERE file_sha256 = %s AND status = 'succeeded'",
+                (checksum,)).fetchone()
+            if already and not force:
+                conn.execute("UPDATE load_runs SET status = 'skipped', finished_at = now(), "
+                             "note = %s WHERE run_id = %s",
+                             (f"same checksum as run {already[0]}", run_id))
+                log.info("%s: unchanged since run %s, skipped", path.name, already[0])
+                return RunResult(run_id, "skipped")
+
+            good, bad = split_rows(path)
+            rows_read = len(good) + len(bad)
+            if rows_read and len(bad) / rows_read > max_bad_ratio:
+                raise LoadError(f"{path.name}: {len(bad)} of {rows_read} rows are bad "
+                                f"(limit {max_bad_ratio:.0%}); nothing loaded")
+
+            # 2. Stage: a temporary table that disappears at commit, filled with COPY.
+            conn.execute("CREATE TEMP TABLE stg_orders (order_id bigint, customer text, "
+                         "amount numeric(12,2), updated_at timestamptz) ON COMMIT DROP")
+            with conn.cursor().copy(
+                    "COPY stg_orders (order_id, customer, amount, updated_at) FROM STDIN") as copy:
+                for row in good:
+                    copy.write_row(row)
+
+            # 3. Quarantine bad rows with the reason, keyed by run so reruns never duplicate them.
+            with conn.cursor() as cur:
+                cur.executemany(
+                    "INSERT INTO orders_quarantine (run_id, file_name, line_no, raw_line, reason) "
+                    "VALUES (%s, %s, %s, %s, %s)",
+                    [(run_id, path.name, n, raw, reason) for n, raw, reason in bad])
+
+            # 4. Merge staging into the target: latest version per key, never older over newer.
+            changed = conn.execute(MERGE_SQL, {"file": path.name, "run_id": run_id}).rowcount
+
+            # 5. Mark success in the same transaction as the data.
+            conn.execute(
+                "UPDATE load_runs SET status = 'succeeded', finished_at = now(), rows_read = %s, "
+                "rows_staged = %s, rows_quarantined = %s, rows_changed = %s WHERE run_id = %s",
+                (rows_read, len(good), len(bad), changed, run_id))
+    except Exception as exc:
+        with conn.transaction():
+            conn.execute("UPDATE load_runs SET status = 'failed', finished_at = now(), note = %s "
+                         "WHERE run_id = %s", (f"{type(exc).__name__}: {exc}"[:500], run_id))
+        log.error("%s: run %s failed: %s", path.name, run_id, exc)
+        raise
+
+    log.info("%s: run %s read=%d staged=%d quarantined=%d changed=%d",
+             path.name, run_id, rows_read, len(good), len(bad), changed)
+    return RunResult(run_id, "succeeded", rows_read, len(good), len(bad), changed)
+```
+
+Then add the command-line entry point at the bottom of the same file. It is kept as a separate block here only because it reads the real command line:
+
+{/* noexec */}
+```python
+import argparse
 
 
-def main(data_dir="data", db_path="warehouse.db"):
-    conn = sqlite3.connect(db_path)
-    conn.executescript(SCHEMA)
-    for path in sorted(Path(data_dir).glob("*.csv")):
-        load_file(conn, path)
-    conn.close()
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Load order CSV files into PostgreSQL, idempotently.")
+    parser.add_argument("files", nargs="+", type=Path)
+    parser.add_argument("--force", action="store_true", help="reload even if the checksum was loaded before")
+    parser.add_argument("--max-bad-ratio", type=float, default=0.2)
+    args = parser.parse_args(argv)
+
+    failed = 0
+    with psycopg.connect(os.environ.get("LOADER_DSN", "dbname=postgres"), autocommit=True) as conn:
+        init_db(conn)
+        for path in sorted(args.files):
+            try:
+                load_file(conn, path, force=args.force, max_bad_ratio=args.max_bad_ratio)
+            except (LoadError, psycopg.Error, OSError):
+                failed += 1                      # already logged and recorded in load_runs
+    return 1 if failed else 0                    # non-zero exit: the scheduler marks the task failed
 
 
 if __name__ == "__main__":
-    main()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    raise SystemExit(main())
 ```
 
 ## How it achieves each goal
 
-- **No duplicates on rerun.** `order_id` is the primary key and the insert uses `ON CONFLICT ... DO UPDATE` (an **upsert**). Loading the same row again updates it to identical values.
-- **Corrections win.** Because the upsert overwrites, a corrected file changes the stored values rather than being ignored. One limit: an upsert never deletes. If a corrected file *drops* an order, the old row stays in the table. When a file is the complete truth for its slice, record the source file on each row and delete that file's rows before inserting, inside the same transaction (the partition-overwrite pattern from [idempotency in data pipelines](/etl-elt/idempotency-in-data-pipelines/)).
-- **Bad rows are visible.** `parse_rows` catches only the expected parsing errors, logs each bad row with its line number, and `load_audit` records how many rows were read and how many were bad. Compare these in monitoring.
-- **All or nothing.** `with conn:` wraps the inserts and the audit write in one transaction. If anything raises, the database rolls back and the file is not half loaded.
+- **No duplicates, cheap retries.** `file_sha256` hashes the file in 1 MB blocks (so large files do not need to fit in memory). If a run with the same checksum already succeeded, the new run is recorded as `skipped` and nothing else happens. Under it, the upsert on `order_id` keeps the table correct even when the same rows arrive under a different file name or with `--force`.
+- **Concurrent runs are safe.** `pg_advisory_xact_lock` on the checksum makes a second loader for the same file wait until the first commits, then see its `succeeded` row and skip. The lock is released automatically at commit or rollback.
+- **Latest version wins.** The merge keeps the newest version per key within a file and refuses to overwrite a newer row with an older one across files.
+- **Bad rows are visible.** `parse_row` validates every field and raises `ValueError` with a specific reason. `split_rows` records the CSV line number (`reader.line_num`, which stays correct when quoted fields contain newlines) and the raw row, and the loader writes them to `orders_quarantine`. Someone can fix the source and reload; nothing is silently dropped.
+- **Systemic failures fail loudly.** A wrong header, or more bad rows than `max_bad_ratio`, raises `LoadError`. A few bad rows are data problems; half a file of bad rows is a broken export, and loading the good half would hide it.
+- **All or nothing.** The staging table is `ON COMMIT DROP`, and staging, quarantine, merge and the `succeeded` status are in one `conn.transaction()` block. Any exception rolls all of it back. The `running` row is committed **before** that transaction and updated to `failed` afterwards, so even a failed run leaves a record with the error message.
+- **Lineage.** Every row in `orders` carries the `source_file` and `load_run_id` that last changed it, which joins to `load_runs` for the checksum and timestamps.
+
+Why staging instead of inserting straight from Python? `COPY` into a temporary table is the fastest way to move rows into PostgreSQL, and once the rows are in the database the merge is one set-based statement that the database can do atomically, instead of thousands of single-row round trips. The same stage-then-merge shape is what you use with `MERGE` in Snowflake, Databricks or BigQuery.
 
 <Callout tone="info" title="Memory note">
 
-`parse_rows` collects good rows in a list, which is fine for files that fit comfortably in memory. For very large files, read and insert in batches of a few thousand rows (a generator that yields batches), keeping the same transaction and upsert approach.
+`split_rows` collects the good rows in a list, which is fine for files of a few million rows. For bigger files, turn it into a generator and write each row to `COPY` as it is parsed, collecting only the bad rows (see [iterators and generators](/python/iterators-generators/)). The transaction, staging table and merge stay the same.
 
 </Callout>
 
-## Try it
+## Worked example: prove it is idempotent
+
+This walkthrough runs the loader against a throwaway `loader_demo` schema and exercises each property: a first load with bad rows, a retry, a forced reload, a correction with a stale replay, and a broken file.
+
+```python
+import os
+import tempfile
+from pathlib import Path
+
+import psycopg
+
+DSN = os.environ.get("LOADER_DSN", "dbname=postgres")
+conn = psycopg.connect(DSN, autocommit=True)
+conn.execute("DROP SCHEMA IF EXISTS loader_demo CASCADE")   # a throwaway schema for this walkthrough
+conn.execute("CREATE SCHEMA loader_demo")
+conn.execute("SET search_path TO loader_demo")
+init_db(conn)
+
+data = Path(tempfile.mkdtemp())
+
+def write_csv(name, text):
+    path = data / name
+    path.write_text(text, encoding="utf-8")
+    return path
+
+def orders():
+    return conn.execute("SELECT order_id, customer, amount::text, updated_at::text FROM orders "
+                        "ORDER BY order_id").fetchall()
+
+def show(label, result):
+    print(f"{label}: {result.status} read={result.rows_read} staged={result.rows_staged} "
+          f"quarantined={result.rows_quarantined} changed={result.rows_changed}")
+
+conn.execute("SET TIME ZONE 'UTC'")
+day1 = write_csv("orders_2026-10-05.csv",
+    "order_id,customer,amount,updated_at\n"
+    "1,Asha,50.00,2026-10-05T09:00:00+00:00\n"
+    "2,Ben,20.00,2026-10-05T09:05:00+00:00\n"
+    "3,Chen,abc,2026-10-05T09:10:00+00:00\n"           # bad amount
+    "2,Ben,25.00,2026-10-05T11:00:00+00:00\n"          # a later version of order 2 in the same file
+    "4,\"Diaz, Maria\",12.50,2026-10-05\n"            # no time zone offset
+    "5,Eve,7.25,2026-10-05T10:00:00+05:30\n")
+
+# 1. First load.
+first = load_file(conn, day1, max_bad_ratio=0.5)     # a tiny demo file: allow up to half bad
+show("first run ", first)
+after_first = orders()
+
+# 2. The scheduler retries the same file: the checksum says it is already loaded.
+show("retry     ", load_file(conn, day1, max_bad_ratio=0.5))
+
+# 3. Force a full reload: every row is staged again, but nothing changes.
+forced = load_file(conn, day1, max_bad_ratio=0.5, force=True)
+show("forced    ", forced)
+assert forced.rows_changed == 0 and orders() == after_first
+
+# 4. A corrected file the next day: a real change to order 1, and a stale replay of order 2.
+day2 = write_csv("orders_2026-10-06.csv",
+    "order_id,customer,amount,updated_at\n"
+    "1,Asha,55.00,2026-10-06T08:00:00+00:00\n"
+    "2,Ben,20.00,2026-10-05T09:05:00+00:00\n")         # older than what we hold: ignored
+show("correction", load_file(conn, day2))
+
+# 5. A broken export: every data row is bad, so the run fails and loads nothing.
+broken = write_csv("orders_2026-10-07.csv", "order_id,customer,amount,updated_at\nx,y,z,w\n")
+try:
+    load_file(conn, broken)
+except LoadError as exc:
+    print("broken    : LoadError:", exc)
+
+for row in orders():
+    print(row)
+print(conn.execute("SELECT file_name, status, rows_changed FROM load_runs ORDER BY started_at").fetchall())
+print(conn.execute("SELECT line_no, reason FROM orders_quarantine WHERE run_id = %s ORDER BY line_no",
+                   (first.run_id,)).fetchall())
+```
+
+```text
+first run : succeeded read=6 staged=4 quarantined=2 changed=3
+retry     : skipped read=0 staged=0 quarantined=0 changed=0
+forced    : succeeded read=6 staged=4 quarantined=2 changed=0
+correction: succeeded read=2 staged=2 quarantined=0 changed=1
+broken    : LoadError: orders_2026-10-07.csv: 1 of 1 rows are bad (limit 20%); nothing loaded
+(1, 'Asha', '55.00', '2026-10-06 08:00:00+00')
+(2, 'Ben', '25.00', '2026-10-05 11:00:00+00')
+(5, 'Eve', '7.25', '2026-10-05 04:30:00+00')
+[('orders_2026-10-05.csv', 'succeeded', 3), ('orders_2026-10-05.csv', 'skipped', None), ('orders_2026-10-05.csv', 'succeeded', 0), ('orders_2026-10-06.csv', 'succeeded', 1), ('orders_2026-10-07.csv', 'failed', None)]
+[(4, "amount is not a number: 'abc'"), (6, 'updated_at has no time zone offset')]
+```
+
+What the output shows:
+
+- **First run**: 6 data rows read, 2 quarantined with their line numbers and reasons, 4 staged, 3 orders changed (order 2 appeared twice; only its 11:00 version was kept). Order 5's `+05:30` offset was converted to UTC.
+- **Retry**: skipped by checksum, no work done.
+- **Forced reload**: all rows staged and merged again, `changed=0`, and the table is identical. This is the row-level proof of idempotency, independent of the checksum shortcut.
+- **Correction**: order 1 changed; the stale version of order 2 was ignored, so it still holds 25.00 from the newer row.
+- **Broken file**: the run failed, nothing was loaded, and `load_runs` records it as `failed` with the error.
+- **Lineage**: orders 2 and 5 still point at the first run, because the forced run changed nothing; order 1 points at the correction run.
+
+The `loader_demo` schema is left in place so you can inspect it with the queries below; drop it with `DROP SCHEMA loader_demo CASCADE` when you are done.
+
+## Try it from the command line
 
 ```bash
 mkdir data
-printf 'order_id,customer,amount\n1,Asha,50\n2,Ben,20\nx,Bad,1\n' > data/orders_1.csv
-python loader.py
-python loader.py   # run it a second time
+printf 'order_id,customer,amount,updated_at\n1,Asha,50.00,2026-10-05T09:00:00+00:00\n2,Ben,abc,2026-10-05T09:00:00+00:00\n3,Chen,5,2026-10-05T09:00:00+00:00\n' > data/orders_1.csv
+python loader.py --max-bad-ratio 0.5 data/*.csv; echo "exit $?"
+python loader.py --max-bad-ratio 0.5 data/*.csv; echo "exit $?"    # the retry
+python loader.py --force data/*.csv; echo "exit $?"                 # default 20% limit: fails
 ```
-
-Both runs log the same result:
 
 ```text
-WARNING skipping bad row at line 4: {'order_id': 'x', 'customer': 'Bad', 'amount': '1'}
-INFO orders_1.csv: loaded 2 rows, skipped 1
+2026-10-16 21:54:51,292 INFO loader orders_1.csv: run 1e392284-b291-4b54-b4f2-6f0c64a8e55f read=3 staged=2 quarantined=1 changed=2
+exit 0
+2026-10-16 21:54:51,465 INFO loader orders_1.csv: unchanged since run 1e392284-b291-4b54-b4f2-6f0c64a8e55f, skipped
+exit 0
+2026-10-16 21:54:51,647 ERROR loader orders_1.csv: run 555479e4-9d87-439d-8e7a-9d0f5243e39c failed: orders_1.csv: 1 of 3 rows are bad (limit 20%); nothing loaded
+exit 1
 ```
 
-Inspect the table afterwards: it holds exactly two orders after one run **and** after two runs, and `load_audit` shows 3 rows read and 1 bad.
+Your run ids and timestamps will differ. The non-zero exit code on the last run is what makes a scheduler such as Airflow mark the task failed and retry or alert.
+
+Inspect the bookkeeping with `psql`:
+
+{/* noexec */}
+```sql
+SELECT file_name, status, rows_read, rows_quarantined, rows_changed, note FROM load_runs ORDER BY started_at;
+SELECT line_no, reason, raw_line FROM orders_quarantine ORDER BY run_id, line_no;
+SELECT o.order_id, o.source_file, r.file_sha256 FROM orders o JOIN load_runs r ON r.run_id = o.load_run_id;
+```
 
 ## Test it
 
-Save this as `test_loader.py` next to `loader.py` and run `pytest`. (It imports `loader`, so it runs from your project directory rather than on this page.)
+Save this as `test_loader.py` next to `loader.py` and run `pytest`. Each test gets a fresh schema, so tests never see each other's rows. Point `LOADER_TEST_DSN` at a database you can create schemas in.
 
 {/* noexec */}
 ```python
-import sqlite3
-from pathlib import Path
+import os
+import uuid
+
+import psycopg
+import pytest
+
 import loader
 
-
-def make_conn():
-    conn = sqlite3.connect(":memory:")
-    conn.executescript(loader.SCHEMA)
-    return conn
+HEADER = "order_id,customer,amount,updated_at\n"
 
 
-def write(tmp, name, text):
-    p = Path(tmp) / name
-    p.write_text(text)
-    return p
+@pytest.fixture
+def conn():
+    """A connection whose search_path points at a fresh, empty schema; dropped afterwards."""
+    schema = f"test_{uuid.uuid4().hex[:12]}"
+    with psycopg.connect(os.environ.get("LOADER_TEST_DSN", "dbname=postgres"), autocommit=True) as c:
+        c.execute(f"CREATE SCHEMA {schema}")
+        c.execute(f"SET search_path TO {schema}")
+        loader.init_db(c)
+        yield c
+        c.execute(f"DROP SCHEMA {schema} CASCADE")
 
 
-def test_running_twice_gives_same_result(tmp_path):
-    p = write(tmp_path, "orders_1.csv", "order_id,customer,amount\n1,Asha,50\n2,Ben,20\n")
-    conn = make_conn()
+def write(tmp_path, name, body):
+    path = tmp_path / name
+    path.write_text(HEADER + body, encoding="utf-8")
+    return path
+
+
+def snapshot(conn):
+    return conn.execute("SELECT order_id, customer, amount, updated_at FROM orders ORDER BY 1").fetchall()
+
+
+def test_rerun_is_skipped_and_changes_nothing(conn, tmp_path):
+    p = write(tmp_path, "a.csv", "1,Asha,50.00,2026-10-05T09:00:00+00:00\n2,Ben,20.00,2026-10-05T09:00:00+00:00\n")
+    assert loader.load_file(conn, p).status == "succeeded"
+    before = snapshot(conn)
+    assert loader.load_file(conn, p).status == "skipped"
+    assert snapshot(conn) == before
+
+
+def test_forced_reload_changes_no_rows(conn, tmp_path):
+    p = write(tmp_path, "a.csv", "1,Asha,50.00,2026-10-05T09:00:00+00:00\n")
     loader.load_file(conn, p)
-    loader.load_file(conn, p)
-    assert conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0] == 2
-    assert conn.execute("SELECT SUM(amount) FROM orders").fetchone()[0] == 70
+    before = snapshot(conn)
+    result = loader.load_file(conn, p, force=True)
+    assert result.rows_changed == 0
+    assert snapshot(conn) == before
 
 
-def test_bad_rows_are_counted_not_loaded(tmp_path):
-    p = write(tmp_path, "orders_2.csv", "order_id,customer,amount\n1,Asha,50\nx,Ben,20\n3,Chen,abc\n")
-    conn = make_conn()
-    loader.load_file(conn, p)
-    assert conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0] == 1
-    assert conn.execute("SELECT rows_read, rows_bad FROM load_audit").fetchone() == (3, 2)
+def test_latest_version_wins_and_stale_rows_are_ignored(conn, tmp_path):
+    loader.load_file(conn, write(tmp_path, "a.csv",
+                                 "1,Asha,50.00,2026-10-05T09:00:00+00:00\n"
+                                 "1,Asha,60.00,2026-10-05T12:00:00+00:00\n"))
+    loader.load_file(conn, write(tmp_path, "b.csv", "1,Asha,10.00,2026-10-05T10:00:00+00:00\n"))
+    assert conn.execute("SELECT amount::text FROM orders WHERE order_id = 1").fetchone() == ("60.00",)
 
 
-def test_corrected_file_updates_existing_rows(tmp_path):
-    conn = make_conn()
-    loader.load_file(conn, write(tmp_path, "a.csv", "order_id,customer,amount\n1,Asha,50\n"))
-    loader.load_file(conn, write(tmp_path, "a.csv", "order_id,customer,amount\n1,Asha,55\n"))
-    assert conn.execute("SELECT amount FROM orders WHERE order_id = 1").fetchone()[0] == 55
+@pytest.mark.parametrize("bad_line, reason", [
+    ("x,Asha,1.00,2026-10-05T09:00:00+00:00", "order_id"),
+    ("2,,1.00,2026-10-05T09:00:00+00:00", "customer"),
+    ("2,Ben,-1,2026-10-05T09:00:00+00:00", "amount"),
+    ("2,Ben,1.999,2026-10-05T09:00:00+00:00", "amount"),
+    ("2,Ben,1.00,2026-10-05", "time zone"),
+    ("2,Ben,1.00", "fields"),
+])
+def test_bad_rows_are_quarantined_with_a_reason(conn, tmp_path, bad_line, reason):
+    p = write(tmp_path, "a.csv", "1,Asha,50.00,2026-10-05T09:00:00+00:00\n" + bad_line + "\n")
+    result = loader.load_file(conn, p, max_bad_ratio=0.5)
+    assert (result.rows_staged, result.rows_quarantined) == (1, 1)
+    line_no, stored_reason = conn.execute("SELECT line_no, reason FROM orders_quarantine").fetchone()
+    assert line_no == 3 and reason in stored_reason
+
+
+def test_too_many_bad_rows_fails_the_run_and_loads_nothing(conn, tmp_path):
+    p = write(tmp_path, "a.csv", "1,Asha,50.00,2026-10-05T09:00:00+00:00\nx,y,z,w\n")
+    with pytest.raises(loader.LoadError):
+        loader.load_file(conn, p)                       # default limit: 20% bad
+    assert snapshot(conn) == []
+    assert conn.execute("SELECT status FROM load_runs").fetchone() == ("failed",)
+
+
+def test_wrong_header_fails(conn, tmp_path):
+    p = tmp_path / "a.csv"
+    p.write_text("id,name\n1,Asha\n", encoding="utf-8")
+    with pytest.raises(loader.LoadError, match="header"):
+        loader.load_file(conn, p)
 ```
 
-The first test is the important one: it loads the same file twice and asserts the row count and total are unchanged. That is the definition of idempotency expressed as a test.
+```text
+...........                                                              [100%]
+11 passed in 0.40s
+```
+
+The first two tests are the important ones: they load the same file twice (once through the checksum shortcut, once forced) and assert the table is unchanged. That is the definition of idempotency expressed as a test. The parametrised test covers one bad-row reason per case, so a change to validation shows exactly which rule broke.
 
 ## Validation
 
 You have succeeded when:
 
-- `pytest` reports 3 passed;
-- running `python loader.py` repeatedly never changes the row count;
-- editing a value in the CSV and rerunning updates the stored value.
+- `pytest` reports 11 passed;
+- running `python loader.py data/*.csv` repeatedly never changes the row count, and the second run says `skipped`;
+- `--force` reports `changed=0` for a file that was already loaded;
+- editing a value and its `updated_at` in a CSV and rerunning updates the stored value;
+- every rejected row is in `orders_quarantine` with a reason.
+
+## Common mistakes
+
+1. **Plain `INSERT`.** Every rerun appends duplicates. Always merge on a natural key.
+2. **"Last file wins" upserts.** Without the `updated_at` comparison, a late replay of an old file silently rolls data back.
+3. **Duplicate keys in one batch.** `ON CONFLICT DO UPDATE` cannot touch the same row twice in one statement; deduplicate in staging first.
+4. **Checksum as the only protection.** A renamed or re-exported file has a new checksum; the upsert is what keeps the table correct.
+5. **Marking the file done in a separate transaction** from the data. A crash between the two either reloads it needlessly or, worse, marks it done when it is not.
+6. **Swallowing bad rows.** Catching every exception and continuing hides a broken export. Quarantine with a reason, count, and fail past a threshold.
+7. **`float` for money.** Parse amounts with `Decimal` and store them as `numeric`.
+8. **Timestamps without a time zone.** A naive `2026-10-05 09:00` means different instants on different servers; reject it or apply an explicit, documented zone.
+9. **Upserts never delete.** If a corrected file *drops* an order, the old row stays. When a file is the complete truth for its slice (one day, one store), delete that slice and insert inside the same transaction instead: the partition-overwrite pattern from [idempotency in data pipelines](/etl-elt/idempotency-in-data-pipelines/).
 
 ## Troubleshooting
 
-- **`near "ON": syntax error`**: your SQLite is older than 3.24. Check `sqlite3.sqlite_version` or upgrade.
-- **Everything is skipped**: the CSV header must contain `order_id`, `customer` and `amount` exactly.
-- **Rows missing after a crash**: that is the transaction working. The whole file rolled back; fix the cause and rerun.
+- **`ON CONFLICT DO UPDATE command cannot affect row a second time`**: the batch contains the same key twice; the `DISTINCT ON` in the merge must be there.
+- **`there is no unique or exclusion constraint matching the ON CONFLICT specification`**: the target table has no primary key or unique index on `order_id`.
+- **Everything fails with a header error**: the header must be exactly `order_id,customer,amount,updated_at`. A UTF-8 BOM from Excel is handled by `encoding="utf-8-sig"`.
+- **`relation "stg_orders" already exists`**: you ran the merge outside the loader's transaction; `ON COMMIT DROP` only drops a temporary table at the end of a transaction.
+- **Rows missing after a crash**: that is the transaction working. The whole file rolled back and `load_runs` says `failed`; fix the cause and rerun.
 
-## Interview relevance
+## In an interview
 
-"How would you design an idempotent load?" is a common question. This loader demonstrates the three standard techniques: a natural key, an upsert, and a single transaction. See also the [Airflow retries guide](/airflow/dags-scheduling-retries/) for why this matters.
+"How would you design an idempotent load?" is one of the most common Data Engineer questions. A complete answer, in the order this loader implements it:
+
+1. **A natural key and an upsert** (or `MERGE`), so reprocessing updates instead of appending.
+2. **Deduplicate within the batch** and compare a version or timestamp so late data cannot overwrite newer data.
+3. **One transaction** covering the data and the "done" marker.
+4. **Run bookkeeping**: a run id, the input checksum and counts, so retries can skip finished work and every row is traceable.
+5. **Bad-row handling**: quarantine with reasons, plus a threshold that fails the run.
+6. **A test** that runs the load twice and asserts nothing changed.
+
+Expect follow-ups such as "what if the file is 50 GB?" (stream into `COPY`, see [processing a large CSV with limited memory](/interview/python/process-large-csv-limited-memory/)), "what if two runs start at once?" (advisory lock or a unique constraint on the run marker), "how do deletes propagate?" (partition overwrite or soft deletes from CDC) and "which exceptions do you retry?" (see [exceptions in production pipelines](/interview/python/exceptions-in-pipelines/)). The design-level version is [designing an idempotent batch pipeline](/interview/data-engineering/idempotent-batch-pipeline/); more Python questions are in the [top 50 Python interview questions](/python/python-interview-questions/).
 
 ## Next step
 
-Wire this loader into a scheduler, then extend it with data-quality checks. The [CSV to warehouse pipeline project](/projects/csv-to-warehouse-pipeline/) builds on this foundation.
+Wire this loader into a scheduler with retries (the [Airflow retries guide](/airflow/dags-scheduling-retries/) explains why idempotency is what makes those retries safe), then extend it with data-quality checks. The [CSV to warehouse pipeline project](/projects/csv-to-warehouse-pipeline/) builds on this foundation.

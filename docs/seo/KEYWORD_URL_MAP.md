@@ -30,13 +30,19 @@ CTR, average position, indexing status, last substantive update.
 
 | Primary query | Preferred URL | Title (after 10 Oct 2026) |
 |---|---|---|
-| SQL interview questions for data engineers | `/interview/sql/` | SQL Interview Questions for Data Engineers |
-| PySpark interview questions | `/interview/pyspark/` | PySpark Interview Questions for Data Engineers |
-| Spark interview questions | `/interview/spark/` | Apache Spark Interview Questions for Data Engineers |
-| Snowflake interview questions | `/interview/snowflake/` | Snowflake Interview Questions for Data Engineers |
+| SQL interview questions (and answers) for data engineers | `/interview/sql/` | SQL Interview Questions & Answers for Data Engineers (bank of 50 + in-depth answers) |
+| PySpark / Spark interview questions | `/interview/pyspark/` | PySpark and Spark Interview Questions and Answers (bank of 50) |
+| Spark internals interview questions | `/interview/spark/` | Apache Spark Interview Questions for Data Engineers (in-depth answers; links to the PySpark bank) |
+| Snowflake interview questions | `/interview/snowflake/` | Snowflake Interview Questions and Answers (bank of 50) |
+| Databricks interview questions | `/interview/databricks/` | Databricks Interview Questions and Answers (bank of 50) |
+| dbt interview questions | `/interview/dbt/` | dbt Interview Questions and Answers (bank of 50; new 16 Oct) |
+| Python interview questions for data engineers | `/interview/python/` | Python Interview Questions for Data Engineers (bank of 50) |
 | Kafka interview questions | `/interview/kafka/` | Kafka Interview Questions for Data Engineers |
 | Airflow interview questions | `/interview/airflow/` | Airflow Interview Questions for Data Engineers |
-| data engineering interview questions | `/interview/questions/` | Data Engineer Interview Questions and Answers |
+| data engineering interview questions (and answers) | `/interview/data-engineering/` | Data Engineering Interview Questions and Answers (bank of 100) |
+| scenario based data engineering interview questions | `/interview/scenario-based/` | Scenario-Based Data Engineering Interview Questions (new 16 Oct) |
+| behavioral interview questions for data engineers | `/interview/behavioral/` | Behavioral Interview Questions for Data Engineers (new 16 Oct) |
+| (index of in-depth questions) | `/interview/questions/` | Data Engineer Interview Practice Tracker — retitled 16 Oct so it no longer competes with `/interview/data-engineering/` |
 | data engineering system design interview | `/data-engineering/system-design/` | Data Engineering System Design Interview Case Studies |
 | data engineering projects for beginners | `/projects/` | Data Engineering Projects: Step-by-Step Guides |
 | data engineer roadmap for beginners | `/data-engineering/roadmap/` | Data Engineer Roadmap 2026 for Beginners |
@@ -47,6 +53,13 @@ CTR, average position, indexing status, last substantive update.
 
 "data engineering", "data engineer", "data engineering course": homepage `/` and `/data-engineering/`. Not a
 success criterion on their own; they follow from the clusters above.
+
+## Question banks (16 Oct 2026)
+
+The 468-question master file (`docs/question-bank/`) is published as one page per category on the existing
+interview hubs, so each "<topic> interview questions" query has one URL. Where a bank answer overlaps a
+single-question page (48 cases, listed in `scripts/import-question-bank.py` `DEEP`), the bank answer links to
+that page with "In depth:", so the deeper page stays the target for the specific long-tail query.
 
 ## Cannibalisation watch list
 
@@ -59,6 +72,8 @@ serve different intents.
 | CDC pipeline | system design vs interview answer vs project | Distinct intents (design / answer / build). Keep cross-links explicit. |
 | idempotent pipeline | concept lesson vs interview vs system design vs project | As above. |
 | SCD type 2 | modeling lesson vs SQL interview | See Tier 1 row. |
+| scenario / system design interview | `/interview/scenario-based/` (50 scenarios with sample answers) vs `/data-engineering/system-design/` (full case studies) | Different formats; watch GSC for "data engineering system design interview questions" on both. |
+| PySpark vs Spark interview questions | `/interview/pyspark/` (bank) vs `/interview/spark/` (5 in-depth answers) | Spark hub links to the bank; merge the Spark hub's questions into the bank page if both rank for the same query. |
 
 ## Weekly review (from the SEO plan)
 

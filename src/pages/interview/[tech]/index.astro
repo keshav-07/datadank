@@ -1,5 +1,7 @@
 ---
+import { getCollection, render } from "astro:content";
 import { getItems, getHub, techLabel } from "../../../utils/content";
+import QuestionBank from "../../../components/interview/QuestionBank.astro";
 import ContentLayout from "../../../layouts/ContentLayout.astro";
 import IndexMeta from "../../../components/content/IndexMeta.astro";
 import Tile from "../../../components/content/Tile.astro";
@@ -9,13 +11,17 @@ import { inLearningOrder, questionOrder } from "../../../utils/curriculum";
 
 export async function getStaticPaths() {
   const qs = await getItems("interview-questions");
-  const techs = [...new Set(qs.map((q) => q.id.split("/")[0]))];
+  // Hubs with individual question pages, plus categories that only have a question bank (dbt, behavioral...).
+  const banks = (await getCollection("question-banks")).map((b) => b.data.hub);
+  const techs = [...new Set([...qs.map((q) => q.id.split("/")[0]), ...banks])];
   return techs.map((tech) => ({ params: { tech } }));
 }
 
 const ORDER = ["Easy", "Medium", "Hard"];
 const { tech } = Astro.params;
-const label = await techLabel(tech!);
+const bank = (await getCollection("question-banks")).find((b) => b.data.hub === tech);
+const { Content: BankContent } = bank ? await render(bank) : { Content: null };
+const label = bank?.data.label ?? (await techLabel(tech!));
 const qs = inLearningOrder(
   tech!,
   (await getItems("interview-questions"))
@@ -35,24 +41,52 @@ const articles = (await getItems("articles")).filter(
   (a) => a.technology[0] === tech && a.entry.data.section === "learn",
 );
 const hub = await getHub(tech!);
+// Hubs without a bank of their own point to the bank that covers them.
+const BANK_FOR: Record<string, string> = {
+  spark: "pyspark",
+  "delta-lake": "databricks",
+  airflow: "data-engineering",
+  kafka: "data-engineering",
+  aws: "data-engineering",
+};
+const otherBank = bank
+  ? undefined
+  : (await getCollection("question-banks")).find((b) => b.data.hub === BANK_FOR[tech!]);
 ---
 
 <ContentLayout
-  title={`${label} interview questions${/data engineering/i.test(label) ? "" : " for Data Engineers"}`}
-  seoTitle={`${label} Interview Questions${/data engineering/i.test(label) ? " and Answers" : " for Data Engineers"}`}
-  description={`${qs.length} ${label} interview questions for Data Engineers, each with a short answer you can say out loud, a deeper explanation, common mistakes and follow-ups.`}
+  title={bank?.data.title ??
+    `${label} interview questions${/data engineering/i.test(label) ? "" : " for Data Engineers"}`}
+  seoTitle={bank?.data.seoTitle ??
+    `${label} Interview Questions${/data engineering/i.test(label) ? " and Answers" : " for Data Engineers"}`}
+  description={bank?.data.description ??
+    `${qs.length} ${label} interview questions for Data Engineers, each with a short answer you can say out loud, a deeper explanation, common mistakes and follow-ups.`}
   crumbs={[HOME, { label: "Interview", href: "/interview/" }, { label }]}
   eyebrow="Interview preparation"
-  deck="Every question starts with a direct answer you could say out loud, then explains why, when and what goes wrong. Tick questions off as you practise."
+  deck={bank
+    ? `${bank.data.questions.length} questions${qs.length ? `, plus ${qs.length} in-depth answers` : ""}. Each answer opens with what you would say in the first 20 seconds, then goes deeper with examples, common mistakes and the follow-ups interviewers ask.`
+    : "Every question starts with a direct answer you could say out loud, then explains why, when and what goes wrong. Tick questions off as you practise."}
   indexable
 >
   <IndexMeta type="Interview hub" technology={tech} />
-  <section class="section section--tight" aria-labelledby="qs-h">
-    <h2 id="qs-h" class="group-title">
-      All {label} questions
-    </h2>
-    <QuestionTable questions={qs} topicOf={topicOf} caption={`${label} interview questions`} />
-  </section>
+  {bank && BankContent && (
+    <QuestionBank questions={bank.data.questions} levels={bank.data.levels} label={label}>
+      <BankContent />
+    </QuestionBank>
+  )}
+  {qs.length > 0 && (
+    <section class="section section--tight" aria-labelledby="qs-h">
+      <h2 id="qs-h" class="group-title">
+        {bank ? "In-depth answers" : `All ${label} questions`}
+      </h2>
+      {bank && (
+        <p class="muted">
+          Longer, single-question guides with runnable examples. Tick them off as you practise.
+        </p>
+      )}
+      <QuestionTable questions={qs} topicOf={topicOf} caption={`${label} interview questions`} />
+    </section>
+  )}
 
   {articles.length > 0 && (
     <section class="section section--tight" aria-labelledby="concept-h">
@@ -74,6 +108,16 @@ const hub = await getHub(tech!);
       Continue preparing
     </h2>
     <ul class="tile-grid" role="list">
+      {otherBank && (
+        <li>
+          <Tile
+            href={`/interview/${otherBank.data.hub}/`}
+            eyebrow="Question bank"
+            title={`${otherBank.data.label} interview questions`}
+            description={`${otherBank.data.questions.length} questions with answers on one page, including ${label}.`}
+          />
+        </li>
+      )}
       {hub && (
         <li>
           <Tile

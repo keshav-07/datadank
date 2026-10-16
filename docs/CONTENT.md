@@ -71,6 +71,15 @@ practice: { "platform": "LeetCode", "number": 1, "title": "Two Sum", "url": "htt
   explanations and solutions stay original.
 - The build rejects other platforms and URLs that are not `https` on the platform's own domain.
 
+### Interview question banks
+
+`docs/question-bank/data-engineering-interview-master.md` holds 468 questions in nine sections. Edit the
+questions there, then run `python3 scripts/import-question-bank.py`; it regenerates
+`src/content/question-banks/<hub>.md` (never edit those by hand). Each section is shown on `/interview/<hub>/`
+with an anchor index (`#q<number>`), a level filter and expandable answers. "See Q209" style references become
+links, and the `DEEP` map in the script links a bank answer to the matching single-question page. The script
+fails on numbering gaps, placeholder text in prose, or a `DEEP` entry whose page no longer exists.
+
 ## MDX components
 
 `.mdx` files may use `<Callout tone="info|success|warning|danger|neutral" title="...">...</Callout>`.

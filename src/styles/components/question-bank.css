@@ -1,0 +1,195 @@
+@layer components {
+  /* Interview question bank (components/interview/QuestionBank.astro) */
+  .qb-tools {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2);
+    margin: var(--sp-4) 0;
+  }
+  .qb-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--sp-2);
+    min-height: 36px;
+    padding: 4px 14px;
+    border: 1px solid var(--c-border-strong);
+    border-radius: var(--radius-pill);
+    background: var(--c-surface);
+    color: var(--c-text);
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .qb-chip span {
+    color: var(--c-text-muted);
+    font-weight: 500;
+  }
+  .qb-chip[aria-pressed="true"] {
+    border-color: var(--c-primary);
+    background: var(--c-accent-soft);
+    color: var(--c-accent);
+  }
+  .qb-tools__sep {
+    flex: 1 1 auto;
+  }
+  .qb-link {
+    padding: 4px 6px;
+    border: 0;
+    background: none;
+    color: var(--c-link, var(--c-accent));
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .qb-link:hover {
+    text-decoration: underline;
+  }
+
+  .qb-index {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr));
+    gap: 2px var(--sp-6);
+    margin: 0 0 var(--sp-8);
+    padding: 0;
+    list-style: none;
+    font-size: var(--fs-sm);
+  }
+  .qb-index li {
+    display: flex;
+    align-items: baseline;
+    gap: var(--sp-2);
+    padding: 6px 0;
+    border-bottom: 1px solid var(--c-border);
+  }
+  .qb-index li[hidden] {
+    display: none;
+  }
+  .qb-index a {
+    display: flex;
+    flex: 1;
+    gap: var(--sp-2);
+    color: var(--c-text);
+    text-decoration: none;
+  }
+  .qb-index a:hover .qb-index__title {
+    color: var(--c-accent);
+    text-decoration: underline;
+  }
+  .qb-index__num {
+    flex: none;
+    min-width: 3.2em;
+    color: var(--c-text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .qb-index__level {
+    flex: none;
+    color: var(--c-text-muted);
+    font-size: var(--fs-xs);
+  }
+
+  .qb-list {
+    max-width: 52rem;
+  }
+  .qb-list > * + * {
+    margin-top: 0;
+  }
+  .qb-item {
+    border: 1px solid var(--c-border);
+    border-radius: var(--radius-md);
+    background: var(--c-surface);
+    margin-bottom: var(--sp-3);
+    scroll-margin-top: 88px;
+  }
+  .qb-item[hidden] {
+    display: none;
+  }
+  .qb-item > summary {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    column-gap: var(--sp-3);
+    padding: var(--sp-4) var(--sp-5);
+    cursor: pointer;
+    list-style: none;
+  }
+  .qb-item > summary::-webkit-details-marker {
+    display: none;
+  }
+  .qb-item > summary::after {
+    content: "+";
+    grid-column: 3;
+    grid-row: 1;
+    color: var(--c-text-muted);
+    font-size: var(--fs-xl);
+    line-height: 1;
+  }
+  .qb-item[open] > summary::after {
+    content: "−";
+  }
+  .qb-item > summary:focus-visible {
+    outline: 2px solid var(--c-primary);
+    outline-offset: 2px;
+    border-radius: var(--radius-md);
+  }
+  .qb-num {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+    padding-top: 2px;
+    color: var(--c-accent);
+    font-size: var(--fs-sm);
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  .prose .qb-title {
+    grid-column: 2;
+    grid-row: 1;
+    margin: 0;
+    font-size: var(--fs-lg);
+    line-height: 1.35;
+  }
+  .qb-meta {
+    grid-column: 2;
+    grid-row: 2;
+    margin-top: var(--sp-1);
+    color: var(--c-text-muted);
+    font-size: var(--fs-xs);
+  }
+  .qb-item[open] > summary {
+    border-bottom: 1px solid var(--c-border);
+  }
+  .qb-item > :not(summary) {
+    margin-left: var(--sp-5);
+    margin-right: var(--sp-5);
+  }
+  .qb-item > :not(summary) + * {
+    margin-top: var(--sp-4);
+  }
+  .qb-item > summary + * {
+    margin-top: var(--sp-4);
+  }
+  .qb-back {
+    padding-bottom: var(--sp-4);
+    font-size: var(--fs-sm);
+  }
+  @media (max-width: 767px) {
+    .qb-item > summary {
+      padding: var(--sp-3) var(--sp-4);
+    }
+    .qb-item > :not(summary) {
+      margin-left: var(--sp-4);
+      margin-right: var(--sp-4);
+    }
+  }
+}
+
+@layer components {
+  /* "Short answer:", "Detailed explanation:" … on their own line read as section labels. */
+  .qb-item > p:has(> strong:only-child) {
+    margin-bottom: calc(-1 * var(--sp-2));
+    color: var(--c-accent);
+    font-size: var(--fs-xs);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+}

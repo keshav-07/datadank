@@ -1,4 +1,5 @@
 ---
+import { getCollection } from "astro:content";
 import { plural } from "../../utils/dates";
 import { getItems, getHub, techLabel } from "../../utils/content";
 import ContentLayout from "../../layouts/ContentLayout.astro";
@@ -23,6 +24,8 @@ const groups = await Promise.all(
   })),
 );
 groups.sort((a, b) => b.c.n - a.c.n || a.label.localeCompare(b.label));
+const banks = (await getCollection("question-banks")).sort((a, b) => a.data.section - b.data.section);
+const bankTotal = banks.reduce((n, b) => n + b.data.questions.length, 0);
 const companies = await getItems("company-guides");
 const designs = await getItems("system-designs");
 ---
@@ -45,7 +48,7 @@ const designs = await getItems("system-designs");
         <span class="continue-link__label">
           One filterable list, with progress you can tick off
         </span>
-        <strong>All {qs.length} interview questions</strong>
+        <strong>All {qs.length} in-depth interview questions</strong>
       </span>
       <span class="continue-link__arrow" aria-hidden="true">
         →
@@ -53,9 +56,35 @@ const designs = await getItems("system-designs");
     </a>
   </section>
 
+  <section class="section section--tight" aria-labelledby="banks-h">
+    <h2 id="banks-h" class="group-title">
+      Question banks: {bankTotal} questions with answers
+    </h2>
+    <p class="muted">
+      One page per category. Every question opens to a short answer, a detailed explanation, an
+      example and the follow-ups interviewers ask.
+    </p>
+    <ul class="tile-grid" role="list">
+      {banks.map((b) => (
+        <li>
+          <Tile
+            href={`/interview/${b.data.hub}/`}
+            eyebrow="Question bank"
+            title={`${b.data.label} interview questions`}
+            meta={[
+              plural(b.data.questions.length, "question"),
+              ...(["Beginner", "Intermediate", "Advanced"] as const).map(
+                (l) => b.data.levels[l] > 0 && `${b.data.levels[l]} ${l.toLowerCase()}`,
+              ),
+            ]}
+          />
+        </li>
+      ))}
+    </ul>
+  </section>
   <section class="section section--tight" aria-labelledby="topics-h">
     <h2 id="topics-h" class="group-title">
-      Questions by topic
+      In-depth answers by topic
     </h2>
     <ul class="tile-grid" role="list">
       {groups.map((g) => (

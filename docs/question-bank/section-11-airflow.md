@@ -408,3 +408,478 @@ A finance pipeline pulled data from two source systems in parallel, cleaned each
 - Do the edges between TaskFlow calls also pass data? — Yes. Passing an output both adds the edge and moves the XCom value. A bare `>>` only orders the tasks.
 
 ---
+
+### Q524. What are trigger rules, and which ones do you actually use?
+**ID:** AF-06
+**Topic:** Airflow > Trigger Rules
+**Level:** Intermediate
+**Frequency:** Very Common
+**Tags:** `airflow`, `trigger-rules`, `dependencies`, `failure-handling`
+
+**Short Answer (2–3 lines):**
+A trigger rule decides when a task may run, based on the states of its direct upstream tasks. The default is `all_success`. The everyday alternatives are `all_done` for cleanup, `one_failed` for alerting, and `none_failed_min_one_success` for joining after a branch. A trigger rule only looks at direct parents, not at the whole DAG.
+
+**Detailed Explanation:**
+The rules in Airflow 3.3's `TriggerRule` enum:
+
+| Rule | Runs when direct upstreams… | Typical use |
+|---|---|---|
+| `all_success` (default) | all succeeded | Normal flow |
+| `all_failed` | all failed or upstream_failed | Fallback path |
+| `all_done` | all finished, in any state | Cleanup, audit row |
+| `all_done_min_one_success` | all finished and at least one succeeded (3.1+) | Partial-tolerance join |
+| `all_done_setup_success` | all done and a setup succeeded | Used by teardowns (see Q528) |
+| `one_success` / `one_failed` / `one_done` | as soon as one does so | Race, early alert |
+| `none_failed` | none failed (skips are fine) | Join after optional work |
+| `none_failed_min_one_success` | none failed and at least one succeeded | **Join after a branch** (see Q525) |
+| `none_skipped` | none were skipped | Rare |
+| `all_skipped` | all were skipped | "Nothing happened" handling |
+| `always` | no condition | Use with care |
+
+Two behaviours interviewers probe:
+- **Propagation.** Under `all_success`, a failure upstream marks the child `upstream_failed`, and a skip marks it `skipped`. Each state cascades down until some task's rule accepts it.
+- **DAG run state comes from the leaf tasks.** If the only leaf is an `all_done` cleanup task that succeeds, the run can be marked *success* even though real work failed. Either keep a work task as a leaf or make the cleanup a teardown, because teardowns are ignored when the run's state is worked out.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.sdk import TriggerRule, dag, task
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False)
+def trigger_rules_demo():
+    @task
+    def load_eu():
+        return "ok"
+
+    @task
+    def load_us():
+        raise ValueError("source file missing")
+
+    @task  # default all_success: will not run because load_us failed
+    def build_report():
+        print("report built")
+
+    @task(trigger_rule=TriggerRule.ALL_DONE)  # runs whatever happened upstream
+    def cleanup_tmp():
+        print("temp files removed")
+
+    @task(trigger_rule=TriggerRule.ONE_FAILED)  # runs as soon as any upstream fails
+    def page_on_call():
+        print("paging on-call")
+
+    loads = [load_eu(), load_us()]
+    loads >> build_report()
+    loads >> cleanup_tmp()
+    loads >> page_on_call()
+
+
+dag_obj = trigger_rules_demo()
+
+if __name__ == "__main__":
+    run = dag_obj.test()
+    for ti in sorted(run.get_task_instances(), key=lambda t: t.task_id):
+        print(f"{ti.task_id:14} {ti.state}")
+    print("dag run:", run.state)
+```
+```text
+temp files removed
+paging on-call
+build_report   upstream_failed
+cleanup_tmp    success
+load_eu        success
+load_us        failed
+page_on_call   success
+dag run: failed
+```
+
+**Real-World Use Case:**
+A nightly job ended in a single `all_done` task that dropped staging tables. For weeks the runs showed green while the load step was failing, because that cleanup task was the only leaf and it succeeded. The team turned the cleanup into a teardown and added a `one_failed` alert task. After that, the failures showed up the same night.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Leaving the join after a branch on the default rule, so it is always skipped.
+- Using `always` or `all_done` on tasks that need correct upstream data.
+- Assuming a trigger rule can look at tasks that are not direct parents.
+
+**Follow-up Questions Interviewers Ask:**
+- What is the difference between `none_failed` and `none_failed_min_one_success`? — The second also requires at least one success, so it won't run when every upstream was skipped.
+- How do you alert on failure without a task? — Use `on_failure_callback` or a notifier (see Q552).
+
+---
+
+### Q525. How does branching work in Airflow, and why is the join task often skipped?
+**ID:** AF-07
+**Topic:** Airflow > Branching
+**Level:** Intermediate
+**Frequency:** Very Common
+**Tags:** `airflow`, `branching`, `trigger-rules`, `taskflow`
+
+**Short Answer (2–3 lines):**
+A branch task (`@task.branch` or `BranchPythonOperator`) returns the task_id, or list of task_ids, to follow. Airflow skips its other direct downstream tasks. The skip then spreads: a join task on the default `all_success` rule sees a skipped parent and is skipped too. Give the join `none_failed_min_one_success`.
+
+**Detailed Explanation:**
+How it works:
+1. The branch callable runs and returns `"a"`, `["a", "b"]`, or `None`/`[]`. Returning nothing skips every direct downstream task.
+2. Every task directly downstream of the branch that was not chosen is set to `skipped`.
+3. Each later task applies its own trigger rule to its parents' states (see Q524).
+
+Variants:
+| Need | Tool |
+|---|---|
+| Choose a path in Python | `@task.branch` |
+| Choose by SQL result | `BranchSQLOperator` (common-sql provider) |
+| Choose by time of day or weekday | `BranchDateTimeOperator`, `BranchDayOfWeekOperator` |
+| Reusable custom logic | Subclass `BaseBranchOperator` and implement `choose_branch` |
+| Just stop or continue | `@task.short_circuit` (see Q526) |
+
+Design rules:
+- **Branch on run metadata**, such as `data_interval_start`, `params` or upstream XComs, not on `datetime.now()`. A rerun next week must take the same path.
+- Return task_ids that are **direct** downstream tasks. Inside a task group, use the full id, such as `"group.task"`.
+- Keep the branch cheap. A heavy check belongs in an upstream task whose result the branch reads.
+- If the branches build the same output in different ways, think about one task with a parameter instead. Branches add a lot of skipped boxes to the grid.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime, timezone
+from airflow.sdk import TriggerRule, dag, task
+
+
+@dag(schedule="@daily", start_date=datetime(2026, 1, 1), catchup=False)
+def branch_by_day():
+    @task.branch
+    def choose_load(**context) -> str:
+        # Branch on run metadata, not on wall-clock time, so reruns pick the same path.
+        is_month_start = context["data_interval_start"].day == 1
+        return "full_reload" if is_month_start else "incremental_load"
+
+    @task
+    def full_reload():
+        print("rebuilding whole table")
+
+    @task
+    def incremental_load():
+        print("merging one day")
+
+    # Without this trigger rule the join would be skipped along with the unchosen branch.
+    @task(trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS)
+    def refresh_dashboard():
+        print("dashboard refreshed")
+
+    choose_load() >> [full_reload(), incremental_load()] >> refresh_dashboard()
+
+
+dag_obj = branch_by_day()
+
+if __name__ == "__main__":
+    for day in (1, 2):
+        run = dag_obj.test(logical_date=datetime(2026, 3, day, tzinfo=timezone.utc))
+        states = {ti.task_id: ti.state for ti in run.get_task_instances()}
+        print(f"2026-03-0{day}:", dict(sorted(states.items())))
+```
+```text
+2026-03-01: {'choose_load': 'success', 'full_reload': 'success', 'incremental_load': 'skipped', 'refresh_dashboard': 'success'}
+2026-03-02: {'choose_load': 'success', 'full_reload': 'skipped', 'incremental_load': 'success', 'refresh_dashboard': 'success'}
+```
+
+**Real-World Use Case:**
+A subscription-metrics DAG fully rebuilt its churn table on the first day of each month and merged one day on the other days. Because the branch read `data_interval_start`, a backfill of last quarter took the full-reload path on exactly the right three dates.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Forgetting the join's trigger rule, then "fixing" it with `all_done`, which also runs after a failure.
+- Branching on `datetime.now()` or on a Variable someone edits, which makes reruns take a different path.
+- Returning a task_id that is not a direct child of the branch task.
+
+**Follow-up Questions Interviewers Ask:**
+- Can a branch pick several paths? — Yes. Return a list of task_ids.
+- Branch or dynamic task mapping? — Branch picks from a fixed set of paths. Mapping runs one task over a variable number of inputs (see Q529).
+
+---
+
+### Q526. Short-circuit, branch or `AirflowSkipException`: how do you skip work cleanly?
+**ID:** AF-08
+**Topic:** Airflow > Skipping Tasks
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `airflow`, `short-circuit`, `skip`, `trigger-rules`
+
+**Short Answer (2–3 lines):**
+`@task.short_circuit` skips downstream tasks when its function returns a falsy value; it is a stop-or-continue gate. A branch chooses between paths. Raising `AirflowSkipException` inside a task marks only that task as skipped. By default a short-circuit skips *all* downstream tasks and ignores their trigger rules. Set `ignore_downstream_trigger_rules=False` to skip only the direct children.
+
+**Detailed Explanation:**
+| Tool | Effect | Use when |
+|---|---|---|
+| `@task.short_circuit` (default) | Falsy result → every downstream task skipped, trigger rules ignored | "No new data today, stop here" |
+| `@task.short_circuit(ignore_downstream_trigger_rules=False)` | Direct children skipped; tasks further down apply their own rules | An audit or cleanup task must still run |
+| `@task.branch` | Unchosen direct children skipped | Choosing between paths (see Q525) |
+| `raise AirflowSkipException(...)` | This task becomes `skipped`; children follow their rules | Feature flag, an optional export, a tenant opt-out |
+| `raise AirflowFailException(...)` | Fails at once, with no retries | Bad input that retrying won't fix |
+
+Points to make:
+- A skip is not a failure. A DAG run whose leaves are all `success` or `skipped` counts as successful. Make sure "no data" really is fine; sometimes it should be an alert instead.
+- A short-circuit that runs before a sensor saves the waiting time as well as the work.
+- `on_skipped_callback` fires only when a task raises `AirflowSkipException` while running. It does not fire for tasks skipped by a branch or a trigger rule.
+- In Airflow 3, import task exceptions from `airflow.sdk.exceptions`.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.sdk import TriggerRule, dag, task
+from airflow.sdk.exceptions import AirflowSkipException
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False)
+def short_circuit_demo():
+    @task
+    def count_new_rows() -> int:
+        return 0                      # nothing arrived today
+
+    # False/falsy return -> skip downstream. ignore_downstream_trigger_rules=False
+    # skips only direct downstream tasks and lets the others apply their own trigger rules.
+    @task.short_circuit(ignore_downstream_trigger_rules=False)
+    def has_new_rows(n: int) -> bool:
+        return n > 0
+
+    @task
+    def transform():
+        print("transforming")
+
+    @task(trigger_rule=TriggerRule.ALL_DONE)
+    def write_audit_row():
+        print("audit row written")       # still runs: it has its own trigger rule
+
+    @task
+    def optional_export():
+        if True:                          # e.g. feature flag off for this tenant
+            raise AirflowSkipException("export disabled for this tenant")
+
+    gate = has_new_rows(count_new_rows())
+    gate >> transform() >> write_audit_row()
+    optional_export()
+
+
+dag_obj = short_circuit_demo()
+
+if __name__ == "__main__":
+    run = dag_obj.test()
+    for ti in sorted(run.get_task_instances(), key=lambda t: t.task_id):
+        print(f"{ti.task_id:16} {ti.state}")
+    print("dag run:", run.state)
+```
+```text
+audit row written
+count_new_rows   success
+has_new_rows     success
+optional_export  skipped
+transform        skipped
+write_audit_row  success
+dag run: success
+```
+With the default `ignore_downstream_trigger_rules=True`, the same run also marks `write_audit_row` as `skipped`.
+
+**Real-World Use Case:**
+A partner-feed DAG ran every hour, but the partner only published a few times a day. A short-circuit on "new manifest present" cut the run to two cheap tasks on most hours. The `ignore_downstream_trigger_rules=False` setting kept the audit-log task running, so operators could see each empty hour in the audit table.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Expecting a downstream `all_done` task to run after a default short-circuit.
+- Using a skip to hide errors. If the data should have arrived, fail or alert.
+- Catching every exception and turning it into `AirflowSkipException`.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you skip one mapped instance? — Raise `AirflowSkipException` inside it. Only that map index is skipped.
+- What does `AirflowFailException` do differently? — It fails the task without using the remaining retries.
+
+---
+
+### Q527. What are task groups, and why did they replace SubDAGs?
+**ID:** AF-09
+**Topic:** Airflow > Task Groups
+**Level:** Beginner
+**Frequency:** Common
+**Tags:** `airflow`, `task-groups`, `dag-structure`, `reuse`
+
+**Short Answer (2–3 lines):**
+A task group is a UI and authoring container. It folds related tasks into one collapsible box and prefixes their ids, as in `ingest_crm.load`. It does not change scheduling, so the tasks stay in the same DAG and run with the same executor and concurrency. SubDAGs ran a separate DAG with its own scheduling and deadlock problems, and they were removed in Airflow 3.0.
+
+**Detailed Explanation:**
+What task groups give you:
+- **Reuse.** A `@task_group` function is a template. Call it once per source with `.override(group_id=...)` to stamp out identical pipelines.
+- **Group-level `default_args`.** For example, give everything in the ingest group `retries=2`.
+- **Dependencies on the whole group.** `group_a >> group_b` connects group_a's leaf tasks to group_b's root tasks.
+- **Readable graphs.** Fifty tasks become five boxes.
+- **Mapping.** A task group can be mapped with `expand()` to repeat a whole sub-pipeline per input (see Q530).
+
+What they don't do:
+- They add no separate concurrency limit or pool. Use pools (see Q547) or `max_active_tis_per_dagrun`.
+- They don't isolate failures. A failure inside a group propagates like any other.
+- `prefix_group_id=False` removes the prefix, but then task_ids must be unique across the whole DAG.
+
+SubDAGs versus task groups:
+| | SubDAG (removed in 3.0) | Task group |
+|---|---|---|
+| Scheduling | Separate DAG run | Same DAG run |
+| Concurrency issues | Could deadlock the worker slots | None |
+| UI | Separate view | Collapsible in the graph |
+| Status in 3.x | Gone | Recommended |
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.sdk import dag, task, task_group
+
+
+@task
+def extract(source: str) -> str:
+    return f"s3://raw/{source}/"
+
+@task
+def validate(path: str) -> str:
+    return path
+
+@task
+def load(path: str) -> None:
+    print("loading", path)
+
+
+@task_group(default_args={"retries": 2})       # group-level defaults apply to its tasks
+def ingest(source: str):
+    load(validate(extract(source)))
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False)
+def ingest_sources():
+    @task
+    def publish():
+        print("all sources loaded")
+
+    groups = [ingest.override(group_id=f"ingest_{s}")(s) for s in ("crm", "billing")]
+    groups >> publish()
+
+
+dag_obj = ingest_sources()
+
+if __name__ == "__main__":
+    print(sorted(dag_obj.task_ids))
+    print("retries:", dag_obj.get_task("ingest_crm.load").retries)
+    print("publish upstream:", sorted(dag_obj.get_task("publish").upstream_task_ids))
+    print(dag_obj.test().state)
+```
+```text
+['ingest_billing.extract', 'ingest_billing.load', 'ingest_billing.validate', 'ingest_crm.extract', 'ingest_crm.load', 'ingest_crm.validate', 'publish']
+retries: 2
+publish upstream: ['ingest_billing.load', 'ingest_crm.load']
+loading s3://raw/billing/
+loading s3://raw/crm/
+success
+```
+
+**Real-World Use Case:**
+A marketing-data team pulled from six ad platforms, all with the same extract, validate and load shape. One `@task_group` function, called once per platform from a config list, replaced six copied blocks. A fix to validation now reached every platform in one change.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Expecting a task group to limit concurrency or retry as a unit.
+- Using a short task id in a branch's return value when the task lives inside a group.
+- Calling task groups "SubDAGs" or proposing SubDAGs in Airflow 3.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you retry a whole group? — Clear the group's tasks in the UI. Clearing a task can also clear its downstream tasks, and setup/teardown pairs inside it (see Q528).
+- Task group or separate DAG? — Use a separate DAG when the part has its own schedule, owner or SLA, and link it with assets (see Q538).
+
+---
+
+### Q528. What are setup and teardown tasks, and how are they different from an `all_done` cleanup?
+**ID:** AF-10
+**Topic:** Airflow > Setup and Teardown
+**Level:** Intermediate
+**Frequency:** Occasional
+**Tags:** `airflow`, `setup-teardown`, `resources`, `cleanup`
+
+**Short Answer (2–3 lines):**
+Setup and teardown tasks wrap work that needs a temporary resource, such as an ephemeral cluster, a temp schema or a lock. The teardown runs even when the work fails, as long as its setup succeeded. Teardowns are ignored when the DAG run's state is worked out. Clearing a work task also clears its setup and teardown, so a rerun gets a fresh resource.
+
+**Detailed Explanation:**
+Mark tasks with `@setup` / `@teardown`, or call `.as_setup()` / `.as_teardown(setups=...)` on existing operators. The tasks between a pair are in its **scope**.
+
+Why this beats a plain cleanup task with `trigger_rule="all_done"`:
+
+| Concern | `all_done` cleanup | Setup/teardown |
+|---|---|---|
+| Runs after a work failure | Yes | Yes |
+| Runs if the resource was never created | Yes (and may error) | No. The fixed rule `all_done_setup_success` needs a setup to have succeeded |
+| Effect on DAG run state | Can turn a failed run green when it is the leaf | Ignored by default; set `on_failure_fail_dagrun=True` to count it |
+| Clearing one work task | Doesn't recreate the resource | Clears its setup and teardown as well |
+| Graph | Ordinary edge | Dotted setup/teardown edge |
+
+Rules:
+- A teardown's trigger rule cannot be changed.
+- Every task in a setup's scope implicitly needs that setup to succeed.
+- Setups and teardowns can be attached to a whole task group, which gives the group a clear lifecycle.
+- They are tasks, so they use worker slots and honour retries. Keep teardowns idempotent ("delete if exists"), because they may run twice.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.sdk import dag, setup, task, teardown
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False)
+def ephemeral_cluster():
+    @setup
+    def create_cluster() -> str:
+        print("cluster created")
+        return "cluster-42"
+
+    @task
+    def run_job(cluster_id: str):
+        raise RuntimeError(f"job failed on {cluster_id}")
+
+    @task
+    def publish():
+        print("published")
+
+    @teardown
+    def delete_cluster(cluster_id: str):
+        print(f"deleted {cluster_id}")       # runs even though run_job failed
+
+    cluster = create_cluster()
+    job = run_job(cluster)
+    job >> publish()
+    # as_teardown links the setup to the teardown; the work in between is "in scope"
+    job >> delete_cluster(cluster).as_teardown(setups=cluster)
+
+
+dag_obj = ephemeral_cluster()
+
+if __name__ == "__main__":
+    run = dag_obj.test()
+    for ti in sorted(run.get_task_instances(), key=lambda t: t.task_id):
+        print(f"{ti.task_id:15} {ti.state}")
+    print("dag run:", run.state)
+```
+```text
+cluster created
+deleted cluster-42
+create_cluster  success
+delete_cluster  success
+publish         upstream_failed
+run_job         failed
+dag run: failed
+```
+
+**Real-World Use Case:**
+A team spun up a short-lived Spark cluster for each nightly run. Before setup/teardown, a failed job left the cluster running until someone noticed it on the bill. After the change, the delete always ran. Clearing the failed job also created a new cluster, instead of trying to reuse the one that had been deleted.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Using `all_done` for cleanup and then wondering why failed runs show green.
+- Writing a teardown that fails if the resource is already gone.
+- Expecting teardown failures to fail the run without `on_failure_fail_dagrun=True`.
+
+**Follow-up Questions Interviewers Ask:**
+- What happens if the setup fails? — The work tasks become `upstream_failed`, and the teardown does not run, because no setup succeeded.
+- Can one teardown serve several setups? — Yes. Pass a list to `as_teardown(setups=[...])`.
+
+---

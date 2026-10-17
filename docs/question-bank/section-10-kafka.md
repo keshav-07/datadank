@@ -1146,3 +1146,523 @@ A team alerted on "lag > 50,000" for every topic. The alert fired constantly on 
 - How would you alert on lag? — On time lag or lag growth rate per group, with thresholds tied to the freshness SLA.
 
 ---
+
+### Q484. Consumer fetch tuning: fetch.min.bytes, fetch.max.wait.ms and partition fetch sizes
+**ID:** KFK-16
+**Topic:** Kafka > Consumers
+**Level:** Intermediate
+**Frequency:** Occasional
+**Tags:** `kafka`, `consumer`, `fetch`, `latency`, `throughput`
+
+**Short Answer (2–3 lines):**
+A fetch request waits on the broker until it has `fetch.min.bytes` of data or `fetch.max.wait.ms` passes. It returns at most `max.partition.fetch.bytes` per partition and `fetch.max.bytes` in total. Raise `fetch.min.bytes` for bulk sinks to get fewer, larger fetches. Keep it at 1 for low-latency consumers, because on quiet topics a high value turns into waiting.
+
+**Detailed Explanation:**
+| Setting (Java default) | Effect | Raise when | Lower when |
+|---|---|---|---|
+| `fetch.min.bytes` (1) | Broker holds the response until this much data is ready | Bulk sinks; you want to cut broker request load | Latency-sensitive consumers |
+| `fetch.max.wait.ms` (500) | Maximum the broker holds the request | Paired with a big `fetch.min.bytes` | You need a tight latency bound |
+| `max.partition.fetch.bytes` (1 MiB) | Per-partition cap per response | Large records; few partitions | Many partitions and limited memory |
+| `fetch.max.bytes` (50 MiB) | Per-response cap across partitions | Very high throughput | Memory pressure |
+| `max.poll.records` (500) | Records handed to the application per `poll()` | Cheap per-record work | Slow per-record work (see Q479) |
+
+**How they interact**
+- The fetcher works ahead of the application. Java buffers completed fetches. librdkafka prefetches into a queue bounded by `queued.max.messages.kbytes` (64 MiB per client by default), which is a common cause of memory bloat when there are many partitions.
+- One record bigger than `max.partition.fetch.bytes` is still returned, so the consumer can't get stuck. But memory must allow for it.
+- Cross-AZ costs: fetching from a follower in the same zone (`client.rack`, see Q492) changes where bytes come from, not how many.
+
+**Rule of thumb profiles**
+- *Lake sink* (S3/Iceberg writer): `fetch.min.bytes=1 MB`, `fetch.max.wait.ms=500`, larger `max.poll.records`.
+- *Alerting or fraud*: defaults or a lower `fetch.max.wait.ms`.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16, Apache Kafka 4.3
+# A low-traffic topic (one record every 100 ms): how fetch.min.bytes changes end-to-end latency.
+import statistics, threading, time
+from confluent_kafka import Consumer, Producer
+
+def measure(fetch_conf, n=30):
+    c = Consumer({"bootstrap.servers": "localhost:19092", "group.id": f"lat-{time.time()}",
+                  "auto.offset.reset": "latest", **fetch_conf})
+    c.subscribe(["trickle"])
+    while not c.assignment():
+        c.poll(0.2)
+    time.sleep(1)
+    def produce():
+        p = Producer({"bootstrap.servers": "localhost:19092", "linger.ms": 0})
+        for _ in range(n):
+            p.produce("trickle", value=str(time.time()).encode()); p.poll(0); time.sleep(0.1)
+        p.flush()
+    threading.Thread(target=produce).start()
+    lat = []
+    while len(lat) < n:
+        m = c.poll(2)
+        if m and not m.error():
+            lat.append((time.time() - float(m.value())) * 1000)
+    c.close()
+    return f"median {statistics.median(lat):6.1f} ms, max {max(lat):6.1f} ms"
+
+print("fetch.min.bytes=1 (default)            :", measure({}))
+print("fetch.min.bytes=1MB, fetch.wait.max=500 :", measure({"fetch.min.bytes": 1048576, "fetch.wait.max.ms": 500}))
+```
+```text
+fetch.min.bytes=1 (default)            : median    1.7 ms, max    7.6 ms
+fetch.min.bytes=1MB, fetch.wait.max=500 : median  267.4 ms, max  469.6 ms
+```
+On a quiet topic the 1 MB threshold is never reached, so every fetch waits for the timeout. On a busy topic the same settings would cost almost nothing and save many requests. (librdkafka names the wait setting `fetch.wait.max.ms`; Java calls it `fetch.max.wait.ms`.)
+
+**Real-World Use Case:**
+A team copied "throughput" consumer settings from a busy clickstream sink to a low-volume payments-alert consumer. Alerts arrived about half a second late on average. Restoring `fetch.min.bytes=1` for that consumer brought them back to milliseconds.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Applying one consumer profile to every workload.
+- Confusing `fetch.max.bytes` with `max.poll.records`: one limits network responses, the other what `poll()` hands you.
+- Ignoring prefetch memory when one process consumes thousands of partitions.
+
+**Follow-up Questions Interviewers Ask:**
+- Which metrics show fetch behaviour? — `fetch-rate`, `fetch-size-avg`, `fetch-latency-avg` and `records-per-request-avg` on the consumer.
+- Why might a consumer use lots of memory while idle? — Prefetch queues filled for many partitions; lower `queued.max.messages.kbytes` (librdkafka) or the fetch sizes.
+- Does the broker read from disk for every fetch? — Usually not; recent data is served from the page cache with zero-copy transfer.
+
+---
+
+### Q485. Processing faster than one thread per partition: worker pools and ordering
+**ID:** KFK-17
+**Topic:** Kafka > Consumers
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `kafka`, `consumer`, `concurrency`, `ordering`, `offsets`
+
+**Short Answer (2–3 lines):**
+Partitions cap how many group members can work in parallel. Within one consumer you can still fan records out to a worker pool. To keep per-key order, route each key to a fixed worker. Commit only the lowest offset per partition below which everything is finished. Use `pause()`/`resume()` for backpressure instead of letting queues grow without limit.
+
+**Detailed Explanation:**
+**Options, from simple to complex**
+| Approach | Ordering | Notes |
+|---|---|---|
+| More partitions + more consumers | Per key | Simplest, but changes key placement (see Q474) |
+| One consumer per thread, `N` threads in a process | Per partition | Same as scaling out; each thread has its own consumer |
+| Consumer + worker pool routed by key | Per key | Higher parallelism than partitions; needs offset tracking |
+| Consumer + unordered pool | None | Highest throughput; only for independent records |
+| Share groups (see Q488) | None | The broker does per-record dispatch and acknowledgement |
+| Libraries such as Confluent Parallel Consumer (Java) | Per key, per partition or none | Handle offset tracking and retries for you |
+
+**The offset problem.** Workers finish out of order. If offsets 10–12 are done but 9 isn't, committing 13 would lose 9 after a crash. Track finished offsets per partition and commit the contiguous high mark. This is what `advance()` does below.
+
+**Backpressure.** When the work queues are full, call `pause()` on the assigned partitions but **keep calling `poll()`**, so the member stays in the group (see Q479). `resume()` when the backlog drains.
+
+**Rebalances.** On revoke, either wait for in-flight work on those partitions and commit, or drop it and accept reprocessing. Records still queued for a revoked partition must not be committed later by the old owner.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16, Apache Kafka 4.3
+# One consumer, 8 worker threads. Per-key order is kept by routing each key to a fixed worker;
+# offsets are committed only up to the lowest offset that is finished with no gaps before it.
+import queue, threading, time, zlib
+from collections import defaultdict
+from confluent_kafka import Consumer, TopicPartition
+
+N_WORKERS, MAX_QUEUED = 8, 200
+queues = [queue.Queue() for _ in range(N_WORKERS)]
+done = defaultdict(set)          # partition -> finished offsets not yet committed
+lock = threading.Lock()
+last_by_key = {}
+
+def worker(q):
+    while True:
+        m = q.get()
+        if m is None:
+            return
+        key, val = m.key().decode(), int(m.value())
+        assert last_by_key.get(key, -1) < val, "per-key order violated"
+        last_by_key[key] = val
+        time.sleep(0.005)                        # pretend to call an API
+        with lock:
+            done[m.partition()].add(m.offset())
+
+threads = [threading.Thread(target=worker, args=(q,)) for q in queues]
+for t in threads: t.start()
+
+c = Consumer({"bootstrap.servers": "localhost:19092", "group.id": "parallel-demo-2",
+              "auto.offset.reset": "earliest", "enable.auto.commit": False})
+c.subscribe(["events6"])
+next_commit = {}                 # partition -> next offset we expect to commit from
+paused, handled, idle = False, 0, 0
+
+def advance():
+    """Move each partition's commit point over contiguous finished offsets."""
+    moved = []
+    with lock:
+        for p, nxt in next_commit.items():
+            while nxt in done[p]:
+                done[p].discard(nxt); nxt += 1
+            if nxt != next_commit[p]:
+                next_commit[p] = nxt
+                moved.append(TopicPartition("events6", p, nxt))
+    return moved
+
+while idle < 6:
+    m = c.poll(0.5)
+    if m is not None and not m.error():
+        idle = 0
+        next_commit.setdefault(m.partition(), m.offset())
+        queues[zlib.crc32(m.key()) % N_WORKERS].put(m)   # same key -> same worker
+        handled += 1
+    else:
+        idle += 1
+    backlog = sum(q.qsize() for q in queues)
+    if backlog > MAX_QUEUED and not paused:
+        c.pause(c.assignment()); paused = True           # keep polling, stop fetching
+    elif backlog < MAX_QUEUED // 2 and paused:
+        c.resume(c.assignment()); paused = False
+    to_commit = advance()
+    if to_commit:
+        c.commit(offsets=to_commit, asynchronous=True)
+
+for q in queues: q.put(None)
+for t in threads: t.join()
+advance()
+c.commit(offsets=[TopicPartition("events6", p, o) for p, o in next_commit.items()], asynchronous=False)
+print(f"handled {handled} records with {N_WORKERS} workers; committed:",
+      {p: o for p, o in sorted(next_commit.items())})
+c.close()
+```
+```text
+handled 600 records with 8 workers; committed: {0: 84, 1: 108, 2: 120, 3: 96, 4: 108, 5: 84}
+```
+The committed offsets equal each partition's log-end offset (`kafka-get-offsets.sh` printed `events6:0:84 … events6:5:84`), and the per-key order assertion never fired.
+
+**Real-World Use Case:**
+An enrichment consumer called a geocoding API taking about 50 ms per record. Twelve partitions limited the group to 12 concurrent calls. A key-routed pool of 64 workers in each of 3 pods raised throughput many times over without re-partitioning, and still applied each customer's updates in order.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Committing the highest finished offset instead of the contiguous one.
+- Sharing one Java `KafkaConsumer` between threads.
+- Unbounded in-memory queues, which turn a slow sink into an out-of-memory crash.
+- Forgetting that a rebalance can hand a partition to someone else while its records sit in your queue.
+
+**Follow-up Questions Interviewers Ask:**
+- Why route by key hash and not round-robin? — Round-robin lets two workers handle the same key at once, breaking order.
+- How do you handle a poison record in one worker? — Retry with limits, then send it to a DLQ and mark it finished so the commit point can advance (see Q500).
+- When is adding partitions better? — When work is CPU-bound and can scale across pods, and the topic's keys can tolerate a remap.
+
+---
+
+### Q486. Partition assignment strategies: range, round-robin, sticky and cooperative-sticky
+**ID:** KFK-18
+**Topic:** Kafka > Consumer Groups
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `kafka`, `consumer-groups`, `assignor`, `cooperative-rebalancing`
+
+**Short Answer (2–3 lines):**
+In the classic protocol, the group leader's assignor decides who gets which partitions. **Range** assigns per topic in contiguous blocks, which co-locates the same partition numbers across topics but can be uneven. **Round-robin** spreads everything evenly. **Sticky** is balanced and minimises movement. **Cooperative-sticky** does the same with incremental rebalancing, so members keep their unaffected partitions while the group changes.
+
+**Detailed Explanation:**
+| Assignor | Balance | Movement on change | Rebalance style | Notes |
+|---|---|---|---|---|
+| `RangeAssignor` | Can be skewed with many topics | High | Eager | Same partition numbers across co-partitioned topics go to one member |
+| `RoundRobinAssignor` | Even | High | Eager | Breaks cross-topic co-location |
+| `StickyAssignor` | Even | Minimal | Eager | Still stops everything during the rebalance |
+| `CooperativeStickyAssignor` | Even | Minimal | Incremental | Two-phase: revoke only what moves, then assign it |
+
+**Eager vs incremental.** With eager assignors every member revokes everything, then receives a new assignment. With cooperative, only partitions that change owner are revoked, in a first round, and assigned in a follow-up round. Consumers keep processing the rest.
+
+**Defaults.** Java's default `partition.assignment.strategy` is `[RangeAssignor, CooperativeStickyAssignor]`. That lets a rolling upgrade move a group to cooperative by removing Range in a second roll. librdkafka defaults to `range,roundrobin`, so Python groups are eager unless you opt in. All members must support a common strategy.
+
+**Migrating to cooperative (classic protocol).** Roll once with both `[cooperative-sticky, range]` listed, then roll again with only `cooperative-sticky`. Switching all at once with mixed members fails to agree on a protocol.
+
+**Where this is heading.** With the KIP-848 protocol the broker computes assignments (`uniform` or `range`) and every rebalance is incremental (see Q487). Client-side assignors then don't apply.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16, Apache Kafka 4.3 (classic group protocol)
+# Two consumers, two topics with 3 partitions each: compare assignment strategies.
+import time
+from confluent_kafka import Consumer
+from confluent_kafka.admin import AdminClient, NewTopic
+
+admin = AdminClient({"bootstrap.servers": "localhost:19092"})
+for f in admin.create_topics([NewTopic(t, 3) for t in ("ta", "tb")]).values():
+    try: f.result()
+    except Exception: pass               # already exists
+
+def run(strategy):
+    group = f"assign-{strategy}-{int(time.time())}"
+    cs = [Consumer({"bootstrap.servers": "localhost:19092", "group.id": group,
+                    "partition.assignment.strategy": strategy}) for _ in range(2)]
+    for c in cs:
+        c.subscribe(["ta", "tb"])
+    end = time.time() + 12
+    while time.time() < end:
+        for c in cs:
+            c.poll(0.2)
+    for i, c in enumerate(cs):
+        parts = sorted(f"{tp.topic}-{tp.partition}" for tp in c.assignment())
+        print(f"{strategy:18} consumer{i}: {len(parts)} -> {parts}")
+    for c in cs:
+        c.close()
+
+for s in ("range", "roundrobin", "cooperative-sticky"):
+    run(s)
+```
+```text
+range              consumer0: 2 -> ['ta-2', 'tb-2']
+range              consumer1: 4 -> ['ta-0', 'ta-1', 'tb-0', 'tb-1']
+roundrobin         consumer0: 3 -> ['ta-1', 'tb-0', 'tb-2']
+roundrobin         consumer1: 3 -> ['ta-0', 'ta-2', 'tb-1']
+cooperative-sticky consumer0: 3 -> ['ta-1', 'tb-0', 'tb-2']
+cooperative-sticky consumer1: 3 -> ['ta-0', 'ta-2', 'tb-1']
+```
+Range gave one member twice the work. The other two strategies balanced it 3/3.
+
+**Real-World Use Case:**
+A Python sink group of 20 pods read 15 topics with librdkafka's default range assignor. A few pods carried most partitions and lagged, and every deploy paused the whole group. Moving to `cooperative-sticky` balanced the load and made rolling deploys nearly invisible in lag graphs.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Assuming Python and Java consumers share the same default assignor.
+- Switching every member to cooperative in a single deploy.
+- Using round-robin where a downstream process needs `orders-3` and `payments-3` on the same member.
+
+**Follow-up Questions Interviewers Ask:**
+- What does "sticky" preserve? — Existing assignments, so local caches and state stay warm.
+- Does cooperative rebalancing make the rebalance shorter? — Not necessarily shorter, but far less disruptive, because unaffected partitions keep flowing.
+- What extra callback matters with cooperative? — `on_revoke` receives only the partitions being moved, so commit just those.
+
+---
+
+### Q487. The KIP-848 consumer group protocol: what changes with group.protocol=consumer?
+**ID:** KFK-19
+**Topic:** Kafka > Consumer Groups
+**Level:** Advanced
+**Frequency:** Common
+**Tags:** `kafka`, `kip-848`, `consumer-groups`, `rebalancing`, `kafka-4`
+
+**Short Answer (2–3 lines):**
+KIP-848 moves partition assignment from the client group leader to the broker's group coordinator. Members send periodic heartbeats with their subscriptions, and the coordinator reconciles each member towards a target assignment one member at a time. There's no group-wide join/sync barrier, so a slow member can't stall everyone, and every change is incremental. It's GA since Kafka 4.0, but clients still default to `group.protocol=classic`.
+
+**Detailed Explanation:**
+Q68 mentions KIP-848 in passing. The mechanics are worth knowing in detail.
+
+**Classic protocol**
+- JoinGroup and SyncGroup rounds. One member, the leader, runs the assignor and hands out the result.
+- Every member must rejoin before anyone gets an assignment, so one slow member stalls the whole group.
+- Session timeout and heartbeat interval are client settings.
+
+**Consumer protocol (KIP-848)**
+- A single `ConsumerGroupHeartbeat` API carries subscriptions, owned partitions and assignment updates.
+- The **broker** runs a server-side assignor: `group.consumer.assignors=uniform,range` (default `uniform`). Clients may pick one with `group.remote.assignor`.
+- Changes are reconciled per member: a partition is revoked from A, and only after A confirms is it assigned to C. No other member is touched.
+- Liveness is configured on the broker or per group: `group.consumer.session.timeout.ms` (45 s) and `group.consumer.heartbeat.interval.ms` (5 s). Clients that set `session.timeout.ms` get an error (shown below).
+- Regex subscriptions are evaluated on the broker.
+- Static membership still works through `group.instance.id`.
+
+**Migration.** An empty classic group converts automatically when the first new-protocol member joins. A live group can be rolled member by member: the group converts when the first new-protocol member joins, and the coordinator interoperates with the remaining classic members. This works only if the classic assignor embeds no custom metadata. Rack-aware assignment isn't fully supported yet. Clients: Java 4.0+, and librdkafka 2.12+ (GA). Check your client's release notes for gaps such as rack-aware assignment or specific callbacks.
+
+Kafka Streams has its own broker-side protocol (KIP-1071, `group.protocol=streams`), production-ready for its core feature set since 4.2. Product behaviour changes; checked October 2026.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16, Apache Kafka 4.3
+# Two members own a 6-partition topic; a third joins. Which partitions move?
+import sys, time
+from confluent_kafka import Consumer
+
+PROTOCOL = sys.argv[1]            # "classic-eager", "classic-cooperative" or "consumer"
+closing = False
+group = f"rb-{PROTOCOL}-{int(time.time())}"
+
+def make(name):
+    conf = {"bootstrap.servers": "localhost:19092", "group.id": group}
+    if PROTOCOL == "consumer":
+        conf["group.protocol"] = "consumer"            # KIP-848: broker computes assignments
+    elif PROTOCOL == "classic-cooperative":
+        conf["partition.assignment.strategy"] = "cooperative-sticky"
+    else:
+        conf["partition.assignment.strategy"] = "range"  # eager
+    c = Consumer(conf)
+    def log(verb):
+        def cb(consumer, parts):
+            if parts and not closing:     # skip empty incremental callbacks and shutdown noise
+                print(f"  {name} {verb} {sorted(p.partition for p in parts)}")
+        return cb
+    c.subscribe(["events6"], on_assign=log("assigned"), on_revoke=log("revoked "))
+    return c
+
+def spin(cs, secs):
+    end = time.time() + secs
+    while time.time() < end:
+        for c in cs:
+            c.poll(0.1)
+
+print(PROTOCOL)
+members = [make("A"), make("B")]
+spin(members, 15)
+print(" -- C joins --")
+members.append(make("C"))
+spin(members, 15)
+closing = True
+for c in members:
+    c.close()
+```
+Output (`python rebalance.py classic-eager`, then `classic-cooperative`, then `consumer`):
+```text
+classic-eager
+  A assigned [3, 4, 5]
+  B assigned [0, 1, 2]
+ -- C joins --
+  B revoked  [0, 1, 2]
+  A revoked  [3, 4, 5]
+  A assigned [4, 5]
+  B assigned [0, 1]
+  C assigned [2, 3]
+classic-cooperative
+  A assigned [1, 3, 5]
+  B assigned [0, 2, 4]
+ -- C joins --
+  A revoked  [1]
+  B revoked  [0]
+  C assigned [0, 1]
+consumer
+  A assigned [0, 1, 2, 3, 4, 5]
+  A revoked  [3, 4, 5]
+  B assigned [3, 4, 5]
+ -- C joins --
+  B revoked  [5]
+  C assigned [5]
+  A revoked  [2]
+  C assigned [2]
+```
+Eager stopped all six partitions to add one member. Both other protocols moved only two. Under KIP-848 each move was confirmed member by member. Inspecting a running new-protocol group:
+```text
+$ bin/kafka-consumer-groups.sh --bootstrap-server localhost:19092 --describe --group kip848-demo --state
+GROUP           COORDINATOR (ID)          ASSIGNMENT-STRATEGY  STATE                #MEMBERS
+kip848-demo     localhost:19092  (1)      uniform              Stable               1
+
+# Setting a client-side session timeout with the new protocol:
+KafkaError{code=_INVALID_ARG,val=-186,str="Failed to create consumer: `session.timeout.ms` is not supported for `group.protocol=consumer` or share consumer. It is defined broker side"}
+```
+
+**Real-World Use Case:**
+A group of 150 consumers on Kubernetes rebalanced for minutes during each rolling deploy under the classic protocol, because every pod restart forced a group-wide join. After the brokers reached 4.x and the clients switched to `group.protocol=consumer`, pod restarts moved only that pod's partitions, and lag during deploys flattened.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Assuming upgrading the brokers turns KIP-848 on; clients must opt in.
+- Keeping `partition.assignment.strategy` or `session.timeout.ms` in client configs after switching.
+- Calling KIP-848 just "cooperative sticky on the broker"; the barrier-free, per-member reconciliation is the real change.
+
+**Follow-up Questions Interviewers Ask:**
+- Where do you tune the session timeout now? — Broker defaults `group.consumer.session.timeout.ms`, or per group with `kafka-configs.sh --entity-type groups`.
+- Can classic and new members share a group? — Yes, during an online migration; the coordinator converts the group when possible.
+- Is the classic protocol going away? — The plan (KIP-1274) is that `KafkaConsumer` defaults to the new protocol in 5.0 and drops classic in 6.0, while brokers keep supporting classic clients.
+
+---
+
+### Q488. Share groups (Queues for Kafka): how do they differ from consumer groups?
+**ID:** KFK-20
+**Topic:** Kafka > Share Groups
+**Level:** Advanced
+**Frequency:** Occasional
+**Tags:** `kafka`, `share-groups`, `kip-932`, `queues`, `acknowledgement`
+
+**Short Answer (2–3 lines):**
+A share group (KIP-932, production-ready in Kafka 4.2) lets many consumers read the **same partition** together. Each record is acquired by one member for a time-limited lock and acknowledged on its own as ACCEPT, RELEASE (redeliver) or REJECT. Kafka counts deliveries per record. You get queue semantics without ordering and without the members ≤ partitions limit.
+
+**Detailed Explanation:**
+| | Consumer group | Share group |
+|---|---|---|
+| Unit of assignment | Whole partition to one member | Records within a partition, to any member |
+| Max useful members | Number of partitions | Not tied to partitions |
+| Ordering | Per partition | None guaranteed |
+| Progress tracking | One committed offset per partition | Per-record state: available, acquired, acknowledged, archived |
+| Retries | Application's job | RELEASE, or lock expiry, redelivers; `delivery_count` is tracked |
+| Poison records | DLQ pattern in app code (see Q500) | REJECT, or exceeding the delivery limit, archives the record |
+
+**How it works**
+- The **share-partition leader** (on the partition leader broker) tracks in-flight records between the share-partition start offset (SPSO) and end offset (SPEO). State is persisted in `__share_group_state`.
+- `group.share.record.lock.duration.ms` (30 s) is how long a member holds a record before it becomes available again.
+- `group.share.delivery.count.limit` (5) caps attempts. After that the record is archived and never delivered again (4.3 adds a per-group `share.delivery.count.limit`).
+- Where a new group starts is set per group with `share.auto.offset.reset` (default `latest`) via `kafka-configs.sh --entity-type groups`, not in client config.
+- Acknowledgement is implicit (accept the previous batch on the next poll) or explicit.
+
+**When to use**
+- Job or work queues where each item is independent: image processing, sending notifications, calling rate-limited APIs.
+- Spiky workloads that need more workers than partitions.
+
+**When not to**
+- Per-key ordering, stateful stream processing, or Kafka transactions across read and write (not supported).
+
+**Example / Code:**
+```bash
+# Runtime: Apache Kafka 4.3.1 CLI
+bin/kafka-topics.sh --bootstrap-server localhost:19092 --create --topic jobs --partitions 1
+seq 0 11 | sed 's/^/job-/' | bin/kafka-console-producer.sh --bootstrap-server localhost:19092 --topic jobs
+bin/kafka-configs.sh --bootstrap-server localhost:19092 --alter --entity-type groups \
+  --entity-name workers --add-config share.auto.offset.reset=earliest
+```
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16 (ShareConsumer), Apache Kafka 4.3 with share.version=1
+# Two share-group members read ONE partition. Bad jobs are rejected; a flaky one is released and retried.
+import time
+from confluent_kafka import ShareConsumer, AcknowledgeType
+
+def member(name):
+    c = ShareConsumer({"bootstrap.servers": "localhost:19092", "group.id": "workers",
+                       "share.acknowledgement.mode": "explicit"})
+    c.subscribe(["jobs"])
+    return name, c
+
+members = [member("w1"), member("w2")]
+seen, end = [], time.time() + 25
+while time.time() < end and len(seen) < 13:
+    for name, c in members:
+        for m in c.poll(0.5):
+            if m.error():
+                continue
+            job, n = m.value().decode(), m.delivery_count()
+            if job == "job-3":
+                ack = AcknowledgeType.REJECT          # poison: never redeliver
+            elif job == "job-5" and n == 1:
+                ack = AcknowledgeType.RELEASE         # transient failure: give it back
+            else:
+                ack = AcknowledgeType.ACCEPT
+            c.acknowledge(m, ack)
+            seen.append(job)
+            print(f"{name} offset={m.offset():2} {job:6} delivery_count={n} -> {ack.name}")
+        c.commit_async()
+for _, c in members:
+    c.close()
+```
+```text
+w2 offset= 0 job-0  delivery_count=1 -> ACCEPT
+w2 offset= 1 job-1  delivery_count=1 -> ACCEPT
+w2 offset= 2 job-2  delivery_count=1 -> ACCEPT
+w2 offset= 3 job-3  delivery_count=1 -> REJECT
+w2 offset= 4 job-4  delivery_count=1 -> ACCEPT
+w2 offset= 5 job-5  delivery_count=1 -> RELEASE
+w2 offset= 6 job-6  delivery_count=1 -> ACCEPT
+w2 offset= 7 job-7  delivery_count=1 -> ACCEPT
+w2 offset= 8 job-8  delivery_count=1 -> ACCEPT
+w2 offset= 9 job-9  delivery_count=1 -> ACCEPT
+w2 offset=10 job-10 delivery_count=1 -> ACCEPT
+w2 offset=11 job-11 delivery_count=1 -> ACCEPT
+w1 offset= 5 job-5  delivery_count=2 -> ACCEPT
+```
+Both members read the single partition. The released job went to the other member with `delivery_count=2`, and the rejected job was never redelivered. In a consumer group, w1 would have sat idle.
+
+**Real-World Use Case:**
+A document-OCR service had bursts of 50,000 jobs on a 12-partition topic. Each job took seconds, so the consumer group could use only 12 workers. Moving to a share group let the autoscaler run 200 workers against the same topic. Jobs that kept failing hit the delivery limit and were archived, rather than blocking a partition.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Promising ordering with share groups.
+- Setting `auto.offset.reset` on the share consumer instead of `share.auto.offset.reset` on the group.
+- Processing longer than the lock duration, so records get redelivered while still being worked on.
+- Forgetting that clusters with fewer than 3 brokers need `share.coordinator.state.topic.replication.factor` lowered.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you inspect a share group? — `kafka-share-groups.sh --describe --group workers` (start offset and lag) and `--members`.
+- Is delivery exactly-once? — No; it's at-least-once with per-record retries, so processing must be idempotent.
+- Which clients support it? — The Java `KafkaShareConsumer` is production-ready; librdkafka's share consumer (used by `confluent-kafka`'s `ShareConsumer`) is still marked Preview in its changelog, so check before relying on it.
+
+---

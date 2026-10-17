@@ -1,0 +1,217 @@
+---
+publishedDate: "2026-10-16"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
+title: "dbt Materializations: View, Table, Ephemeral, Incremental and Materialized View"
+seoTitle: "dbt Materializations: When to Use Each"
+description: "dbt materializations compared: view, table, ephemeral, incremental and materialized view, with the SQL dbt runs for each and when to choose which one."
+technology: ["dbt", "sql", "data-warehousing"]
+topic: ["materializations"]
+difficulty: "Beginner"
+learningObjectives:
+  - "Configure a materialization in dbt_project.yml or in a model's config block"
+  - "Describe the SQL dbt runs for a view, a table and an incremental model"
+  - "Explain how ephemeral models are inlined as CTEs and when that hurts"
+  - "Know when a materialized view or dynamic table fits and which adapters support them"
+  - "Pick a materialization for each layer from query cost, freshness and build time"
+prerequisites: ["articles:dbt/models-ref-and-sources"]
+related: ["articles:data-warehousing/star-schema", "articles:etl-elt/incremental-loading-watermarks-backfills"]
+previous: "articles:dbt/models-ref-and-sources"
+versionContext: "Run on dbt Core 1.12.6 with dbt-duckdb 1.11.0 (DuckDB 1.5.6, Python 3.11) on 16 October 2026. Statements were copied from target/run and logs/dbt.log; output is trimmed and timestamps are removed."
+sources:
+  - { label: "dbt documentation: Materializations", url: "https://docs.getdbt.com/docs/build/materializations" }
+  - { label: "dbt documentation: Configure incremental models", url: "https://docs.getdbt.com/docs/build/incremental-models" }
+  - { label: "dbt documentation: About incremental strategy", url: "https://docs.getdbt.com/docs/build/incremental-strategy" }
+  - { label: "dbt documentation: Configs, properties and precedence", url: "https://docs.getdbt.com/reference/define-configs" }
+  - { label: "dbt documentation: Snowflake configurations (dynamic tables)", url: "https://docs.getdbt.com/reference/resource-configs/snowflake-configs" }
+---
+
+A **materialization** decides what dbt does with a model's `select`: wrap it in a view, build a table from it, merge it into an existing table, or inline it into other models. The model's SQL does not change; the configuration does. Choosing well is mostly a trade-off between how expensive the model is to build, how often it is queried, and how fresh it must be.
+
+## Setting a materialization
+
+Set defaults by folder in `dbt_project.yml`, and override per model only where needed:
+
+```yaml
+models:
+  shop:
+    staging:
+      +materialized: view
+    intermediate:
+      +materialized: ephemeral
+    marts:
+      +materialized: table
+```
+
+A model overrides its folder default with a `config()` block at the top of the file. `fct_orders` sits in `marts/` but is incremental:
+
+{/* noexec */}
+```sql
+{{
+    config(
+        materialized='incremental',
+        unique_key='order_id',
+        incremental_strategy='merge',
+        on_schema_change='append_new_columns'
+    )
+}}
+```
+
+The same keys can also go in the model's YAML under `config:`. The most specific config wins: an in-file `config()` block beats YAML properties, which beat `dbt_project.yml`.
+
+## View
+
+A view stores no data; every query re-runs the `select`. dbt rebuilds the view on every run. For `stg_shop__orders`, `target/run/` shows dbt creates a temporary view first:
+
+{/* noexec */}
+```sql
+  create view "shop"."dbt_dev"."stg_shop__orders__dbt_tmp" as (
+    with source as (
+    select * from "shop"."raw"."orders"
+),
+
+renamed as (
+    select
+        id          as order_id,
+        customer_id,
+        order_date,
+        status,
+        updated_at,
+        _loaded_at  as loaded_at
+    from source
+)
+
+select * from renamed
+  );
+```
+
+and the debug log shows the swap that follows on DuckDB:
+
+```text
+alter view "shop"."dbt_dev"."stg_shop__orders" rename to "stg_shop__orders__dbt_backup"
+alter view "shop"."dbt_dev"."stg_shop__orders__dbt_tmp" rename to "stg_shop__orders"
+drop view if exists "shop"."dbt_dev"."stg_shop__orders__dbt_backup" cascade
+```
+
+Views are cheap to build and always current, and slow to query when they do heavy work or stack on other views. The dbt docs advise starting with views and suit them to light transformations such as renaming and recasting, which is exactly what staging does.
+
+## Table
+
+A table is rebuilt from scratch on every run with `create table as`. The swap pattern is the same, so readers keep seeing the old table until the new one is ready:
+
+{/* noexec */}
+```sql
+    create  table
+      "shop"."dbt_dev"."agg_daily_events__dbt_tmp"
+    as (
+      select
+    md5(cast(coalesce(cast(event_date as TEXT), '_dbt_utils_surrogate_key_null_') || '-' || coalesce(cast(event_type as TEXT), '_dbt_utils_surrogate_key_null_') as TEXT)) as daily_event_key,
+    event_date,
+    event_type,
+    count(*)                    as event_count,
+    count(distinct customer_id) as customer_count
+from "shop"."dbt_dev"."fct_events"
+group by event_date, event_type
+    );
+```
+
+```text
+alter table "shop"."dbt_dev"."agg_daily_events" rename to "agg_daily_events__dbt_backup"
+alter table "shop"."dbt_dev"."agg_daily_events__dbt_tmp" rename to "agg_daily_events"
+drop table if exists "shop"."dbt_dev"."agg_daily_events__dbt_backup" cascade
+```
+
+Tables are fast to query and cost a full rebuild each run. Use them for marts that BI tools hit and for slow transformations that many downstream models read. Other adapters generate different DDL, so read `target/run/` on your own warehouse rather than assuming the rename-and-swap shown here.
+
+## Ephemeral
+
+An ephemeral model is never created in the warehouse. dbt pastes its compiled SQL into each model that refs it as a CTE whose name starts with `__dbt__cte__`. Here is the start of the compiled `fct_orders`, which refs the ephemeral `int_order_payments`:
+
+{/* noexec */}
+```sql
+with  __dbt__cte__int_order_payments as (
+with payments as (
+    select * from "shop"."dbt_dev"."stg_shop__payments"
+),
+
+methods as (
+    select * from "shop"."dbt_dev"."payment_methods"
+)
+
+select
+    payments.order_id,
+    count(*)            as payment_count,
+    sum(payments.amount) as total_amount,
+    sum(case when methods.method_group = 'card' then payments.amount else 0 end) as card_amount,
+    sum(case when methods.method_group = 'bank' then payments.amount else 0 end) as bank_amount,
+    sum(case when methods.method_group = 'voucher' then payments.amount else 0 end) as voucher_amount
+from payments
+left join methods using (payment_method)
+group by payments.order_id
+), orders as (
+    select * from "shop"."dbt_dev"."stg_shop__orders"
+```
+
+That is why `int_order_payments` did not appear in the list of relations in the previous lesson. Ephemeral keeps the warehouse tidy, but the docs list real costs: you cannot query the model directly, `dbt run-operation` macros cannot ref it, it does not support model contracts, and many layers of inlined CTEs are hard to debug. If two or more expensive models ref the same ephemeral model, the warehouse computes it twice. Use it for small, early, single-use steps.
+
+## Incremental
+
+An incremental model is a table that dbt **adds to or updates** instead of rebuilding. The first run (or a `--full-refresh`) builds it like a table. Later runs select only new or changed rows, guarded by `is_incremental()`, and apply them with the configured strategy. On the second day of data, the statement dbt ran for `fct_orders` was a `MERGE`:
+
+{/* noexec */}
+```sql
+    MERGE INTO "shop"."dbt_dev"."fct_orders" AS DBT_INTERNAL_DEST
+        USING "fct_orders__dbt_tmp20261016215226367574" AS DBT_INTERNAL_SOURCE
+        ON (DBT_INTERNAL_SOURCE.order_id = DBT_INTERNAL_DEST.order_id)
+    WHEN MATCHED
+    THEN
+        UPDATE BY NAME
+    WHEN NOT MATCHED
+    THEN
+        INSERT BY NAME
+```
+
+Incremental models cut build time on large, append-heavy data, at the price of logic you must get right: what counts as "new", late data, schema changes, and when to rebuild. The docs' advice is to reach for incremental when runs become too slow, not by default. The next lesson covers it in depth.
+
+## Materialized view (and dynamic tables)
+
+`materialized: materialized_view` asks the warehouse to keep the result up to date itself. dbt treats a `dbt run` on it as a deployment, like a view; the platform refreshes the data on its own schedule where it supports automatic refresh. It suits cases where an incremental model would work but you would rather the platform managed the increments.
+
+Support depends on the adapter. Per the dbt docs, `dbt-snowflake` does not create materialized views and uses **dynamic tables** instead (`materialized: dynamic_table`). DuckDB has no materialized views, and the adapter says so if you try:
+
+```text
+$ dbt run -s tmp_check      # a one-line model with materialized='materialized_view'
+1 of 1 ERROR creating sql materialized_view model dbt_dev.tmp_check ............ [ERROR in 0.06s]
+
+[ERROR]: in model tmp_check (models/marts/tmp_check.sql)
+  Compilation Error in model tmp_check (models/marts/tmp_check.sql)
+  `get_create_materialized_view_as_sql` has not been implemented for this adapter.
+```
+
+## Choosing, layer by layer
+
+| Materialization | Build cost | Query cost | Freshness | Typical use |
+|---|---|---|---|---|
+| `view` | Almost none | Re-runs the logic on every query | Always current | Staging; light marts queried rarely |
+| `table` | Full rebuild each run | Low | As of last run | Marts used by BI; heavy shared logic |
+| `ephemeral` | None (inlined) | Paid by each parent query | As of parent's run | Small single-use intermediate steps |
+| `incremental` | Only new or changed rows | Low | As of last run | Large fact tables, events |
+| `materialized_view` / `dynamic_table` | Managed by the platform | Low | Platform refresh lag | Near-real-time marts on supporting warehouses |
+
+A sensible default for a new project is the one used here: views for staging, ephemeral or views for intermediate, tables for marts, and incremental only for the few models whose rebuild is too slow or too expensive.
+
+## Common mistakes
+
+- **Making everything incremental from day one.** You take on late-data and schema-change logic before you need it. Start with tables and measure.
+- **Long chains of views.** A mart built on five stacked views re-executes all of them on every dashboard query. Materialize the expensive step as a table.
+- **Ephemeral models referenced by many parents.** Each parent recomputes the logic; make it a view or table instead.
+- **Assuming one adapter's behaviour applies to another.** Materialized views, strategies and DDL differ; check the adapter's config page and `target/run/`.
+- **Forgetting that a table is a snapshot of the last run.** If a source updates hourly and the job runs daily, the table is up to a day stale; that is a scheduling decision, not a dbt bug.
+
+## In an interview
+
+"When would you use a view, a table or an incremental model?" Answer with cost and freshness: views cost nothing to build and are re-computed per query, so they suit light staging logic; tables trade a full rebuild for fast reads, so they suit marts; incremental models process only changes, so they suit large facts where a rebuild is too slow, and they need a unique key, a change filter and a full-refresh plan. Mention that ephemeral models are inlined CTEs and that materialized views are adapter-specific (Snowflake uses dynamic tables).
+
+## Key takeaway
+
+Materialization is configuration, not code. Default by folder, override per model, and look at `target/run/` to see what dbt actually executes. Move a model up the ladder (view, table, incremental) only when its cost or latency makes you.

@@ -1,7 +1,7 @@
 ---
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-17"
+reviewedDate: "2026-10-17"
 title: "Snowflake Virtual Warehouses: Sizing, Scaling and Concurrency"
 seoTitle: "Snowflake Warehouses: Sizing, Scaling, Concurrency"
 description: "Snowflake virtual warehouse sizing: scale up vs scale out, multi-cluster warehouses, auto-suspend, reading queueing and setting resource monitors."
@@ -26,6 +26,7 @@ sources:
   - { label: "Snowflake documentation: CREATE WAREHOUSE", url: "https://docs.snowflake.com/en/sql-reference/sql/create-warehouse" }
   - { label: "Snowflake documentation: Working with resource monitors", url: "https://docs.snowflake.com/en/user-guide/resource-monitors" }
   - { label: "Snowflake documentation: Reducing queues", url: "https://docs.snowflake.com/en/user-guide/performance-query-warehouse-queue" }
+  - { label: "Snowflake documentation: Using the query acceleration service", url: "https://docs.snowflake.com/en/user-guide/query-acceleration-service" }
 versionContext: "Written against the current Snowflake documentation (October 2026). The Snowflake SQL examples were not executed, because no Snowflake account is available in this environment. Limits such as the maximum cluster count and the default warehouse generation have changed recently; confirm them in your account's documentation."
 ---
 
@@ -35,7 +36,7 @@ It builds on [Snowflake Architecture](/snowflake/architecture-virtual-warehouses
 
 ## Virtual warehouse sizing
 
-**Size** is the amount of compute in one cluster. Each step up (X-Small, Small, Medium, Large, X-Large, 2X-Large and beyond) doubles the compute resources and doubles the credits per hour. For first-generation standard warehouses that is 1, 2, 4, 8, 16, 32 credits per hour and so on; other warehouse types and generations have their own rates in Snowflake's Service Consumption Table.
+**Size** is the amount of compute in one cluster. Each step up (X-Small, Small, Medium, Large, X-Large, 2X-Large and beyond) doubles the compute resources and doubles the credits per hour. For first-generation (Gen1) standard warehouses that is 1, 2, 4, 8, 16, 32 credits per hour and so on. New standard warehouses default to Gen2 where it is available, which also doubles per step but from a higher hourly rate; that and the rates of other warehouse types are in Snowflake's Service Consumption Table.
 
 What a bigger size gives a query:
 
@@ -97,6 +98,43 @@ Diagnose before choosing:
 **In interviews**
 
 This is one of the most asked Snowflake questions. State the rule (up for complexity, out for concurrency), give the symptom for each, and mention that both are after checking pruning.
+
+## The query acceleration service
+
+There is a third lever between scaling up and scaling out. The **query acceleration service** (QAS, Enterprise Edition or higher) lends a warehouse extra serverless compute for the parts of a query that scan and filter a lot of data, such as an analyst's ad hoc query over a year of events with a selective filter. The warehouse keeps its size; only eligible queries borrow capacity, and only while they run.
+
+- **Eligibility** is decided per query: it needs a large enough scan with filtering or aggregation that can be parallelised. Short queries and queries limited by joins or a single-threaded step are not accelerated.
+- **The ceiling** is `QUERY_ACCELERATION_MAX_SCALE_FACTOR`, a multiple of the warehouse's own size. It is 8 when you enable QAS yourself, and 2 when Snowflake enables it automatically.
+- **Defaults changed**: QAS is switched on automatically when you create a Gen2 standard warehouse or a multi-cluster warehouse. Older single-cluster Gen1 warehouses need `ENABLE_QUERY_ACCELERATION = TRUE`.
+- **Billing**: accelerated work is charged as serverless credits on top of the warehouse's own credits, so check it when a warehouse's cost jumps without a change in size.
+
+{/* noexec */}
+```sql
+-- Snowflake SQL (not executed here)
+-- Would this slow query have been faster with QAS, and at which scale factor?
+SELECT PARSE_JSON(SYSTEM$ESTIMATE_QUERY_ACCELERATION('<query_id>'));
+
+-- Which warehouses ran the most eligible work recently?
+SELECT warehouse_name, SUM(eligible_query_acceleration_time) AS eligible_s
+FROM snowflake.account_usage.query_acceleration_eligible
+WHERE start_time >= DATEADD('day', -7, CURRENT_TIMESTAMP())
+GROUP BY warehouse_name
+ORDER BY eligible_s DESC;
+
+ALTER WAREHOUSE adhoc_wh SET ENABLE_QUERY_ACCELERATION = TRUE
+  QUERY_ACCELERATION_MAX_SCALE_FACTOR = 4;
+```
+
+The estimate function returns the original run time, estimated times for several scale factors, and an `ineligibleReason` (for example `NO_LARGE_ENOUGH_SCAN`) when acceleration would not help.
+
+**Pitfalls**
+
+- Using QAS instead of fixing pruning. Acceleration scans the same micro-partitions faster; clustering or a better filter scans fewer.
+- Leaving a high scale factor on an ad hoc warehouse without watching it. QAS is billed by the second as serverless compute, separately from the warehouse's own credits, so track it with budgets and `METERING_HISTORY` (service type `QUERY_ACCELERATION`) as well as the warehouse's resource monitor.
+
+**In interviews**
+
+If asked how to speed up "a few huge ad hoc queries" without making every query on the warehouse more expensive, QAS is the answer to name, with its condition (large, filterable scans), its cap (scale factor) and its billing (serverless credits).
 
 ## Multi-cluster warehouses
 

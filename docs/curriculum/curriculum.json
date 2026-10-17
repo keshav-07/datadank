@@ -5054,7 +5054,7 @@
     ]
    },
    {
-    "ref": "articles:kafka/kafka-streams",
+    "ref": "articles:kafka/kafka-streams-basics",
     "title": "Kafka Streams: KStream, KTable, State, Windows and Joins",
     "difficulty": "Advanced",
     "existing": false,
@@ -5071,7 +5071,7 @@
     ]
    },
    {
-    "ref": "articles:kafka/schema-registry",
+    "ref": "articles:kafka/schema-registry-schema-evolution",
     "title": "Schema Registry: Avro, Protobuf, Compatibility and Subject Naming",
     "difficulty": "Intermediate",
     "existing": false,
@@ -5085,7 +5085,7 @@
     ]
    },
    {
-    "ref": "articles:kafka/kafka-operations",
+    "ref": "articles:kafka/kafka-real-time-data-engineering",
     "title": "Operating Kafka: Sizing, Monitoring, Security, Replication and DR",
     "difficulty": "Advanced",
     "existing": false,
@@ -5492,168 +5492,168 @@
     "topic": "Streams DSL",
     "category": "Kafka Streams",
     "difficulty": "Beginner",
-    "lesson": "articles:kafka/kafka-streams",
+    "lesson": "articles:kafka/kafka-streams-basics",
     "heading": null
    },
    {
     "topic": "KStream vs KTable",
     "category": "Kafka Streams",
     "difficulty": "Beginner",
-    "lesson": "articles:kafka/kafka-streams",
+    "lesson": "articles:kafka/kafka-streams-basics",
     "heading": null
    },
    {
     "topic": "Stateful processing",
     "category": "Kafka Streams",
     "difficulty": "Beginner",
-    "lesson": "articles:kafka/kafka-streams",
+    "lesson": "articles:kafka/kafka-streams-basics",
     "heading": null
    },
    {
     "topic": "State stores",
     "category": "Kafka Streams",
     "difficulty": "Advanced",
-    "lesson": "articles:kafka/kafka-streams",
+    "lesson": "articles:kafka/kafka-streams-basics",
     "heading": null
    },
    {
     "topic": "Windowing",
     "category": "Kafka Streams",
     "difficulty": "Intermediate",
-    "lesson": "articles:kafka/kafka-streams",
+    "lesson": "articles:kafka/kafka-streams-basics",
     "heading": null
    },
    {
     "topic": "Joins in Streams",
     "category": "Kafka Streams",
     "difficulty": "Intermediate",
-    "lesson": "articles:kafka/kafka-streams",
+    "lesson": "articles:kafka/kafka-streams-basics",
     "heading": null
    },
    {
     "topic": "Interactive queries",
     "category": "Kafka Streams",
     "difficulty": "Advanced",
-    "lesson": "articles:kafka/kafka-streams",
+    "lesson": "articles:kafka/kafka-streams-basics",
     "heading": null
    },
    {
     "topic": "Processor API",
     "category": "Kafka Streams",
     "difficulty": "Expert",
-    "lesson": "articles:kafka/kafka-streams",
+    "lesson": "articles:kafka/kafka-streams-basics",
     "heading": null
    },
    {
     "topic": "Exactly-once in Streams",
     "category": "Kafka Streams",
     "difficulty": "Expert",
-    "lesson": "articles:kafka/kafka-streams",
+    "lesson": "articles:kafka/kafka-streams-basics",
     "heading": null
    },
    {
     "topic": "Schema Registry basics",
     "category": "Schema Registry",
     "difficulty": "Beginner",
-    "lesson": "articles:kafka/schema-registry",
+    "lesson": "articles:kafka/schema-registry-schema-evolution",
     "heading": null
    },
    {
     "topic": "Avro/Protobuf/JSON schemas",
     "category": "Schema Registry",
     "difficulty": "Beginner",
-    "lesson": "articles:kafka/schema-registry",
+    "lesson": "articles:kafka/schema-registry-schema-evolution",
     "heading": null
    },
    {
     "topic": "Schema evolution & compatibility",
     "category": "Schema Registry",
     "difficulty": "Intermediate",
-    "lesson": "articles:kafka/schema-registry",
+    "lesson": "articles:kafka/schema-registry-schema-evolution",
     "heading": null
    },
    {
     "topic": "Subject naming strategies",
     "category": "Schema Registry",
     "difficulty": "Advanced",
-    "lesson": "articles:kafka/schema-registry",
+    "lesson": "articles:kafka/schema-registry-schema-evolution",
     "heading": null
    },
    {
     "topic": "Serializers/deserializers",
     "category": "Schema Registry",
     "difficulty": "Advanced",
-    "lesson": "articles:kafka/schema-registry",
+    "lesson": "articles:kafka/schema-registry-schema-evolution",
     "heading": null
    },
    {
     "topic": "Schema references",
     "category": "Schema Registry",
     "difficulty": "Expert",
-    "lesson": "articles:kafka/schema-registry",
+    "lesson": "articles:kafka/schema-registry-schema-evolution",
     "heading": null
    },
    {
     "topic": "Cluster sizing",
     "category": "Operations",
     "difficulty": "Beginner",
-    "lesson": "articles:kafka/kafka-operations",
+    "lesson": "articles:kafka/kafka-real-time-data-engineering",
     "heading": null
    },
    {
     "topic": "Throughput tuning",
     "category": "Operations",
     "difficulty": "Beginner",
-    "lesson": "articles:kafka/kafka-operations",
+    "lesson": "articles:kafka/kafka-real-time-data-engineering",
     "heading": null
    },
    {
     "topic": "Monitoring & JMX metrics",
     "category": "Operations",
     "difficulty": "Beginner",
-    "lesson": "articles:kafka/kafka-operations",
+    "lesson": "articles:kafka/kafka-real-time-data-engineering",
     "heading": null
    },
    {
     "topic": "Quotas",
     "category": "Operations",
     "difficulty": "Intermediate",
-    "lesson": "articles:kafka/kafka-operations",
+    "lesson": "articles:kafka/kafka-real-time-data-engineering",
     "heading": null
    },
    {
     "topic": "Security (SASL/SSL/ACL)",
     "category": "Operations",
     "difficulty": "Intermediate",
-    "lesson": "articles:kafka/kafka-operations",
+    "lesson": "articles:kafka/kafka-real-time-data-engineering",
     "heading": null
    },
    {
     "topic": "Producer/consumer interceptors",
     "category": "Operations",
     "difficulty": "Expert",
-    "lesson": "articles:kafka/kafka-operations",
+    "lesson": "articles:kafka/kafka-real-time-data-engineering",
     "heading": null
    },
    {
     "topic": "Mirror Maker 2",
     "category": "Operations",
     "difficulty": "Intermediate",
-    "lesson": "articles:kafka/kafka-operations",
+    "lesson": "articles:kafka/kafka-real-time-data-engineering",
     "heading": null
    },
    {
     "topic": "Disaster recovery",
     "category": "Operations",
     "difficulty": "Advanced",
-    "lesson": "articles:kafka/kafka-operations",
+    "lesson": "articles:kafka/kafka-real-time-data-engineering",
     "heading": null
    },
    {
     "topic": "Cruise Control rebalancing",
     "category": "Operations",
     "difficulty": "Advanced",
-    "lesson": "articles:kafka/kafka-operations",
+    "lesson": "articles:kafka/kafka-real-time-data-engineering",
     "heading": null
    }
   ]

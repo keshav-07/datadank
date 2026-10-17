@@ -196,16 +196,17 @@ export async function trackerRows(tracker: string): Promise<TopicRow[]> {
 
 export type PlanTopic = {
   topic: string;
-  key?: string;
+  key: string;
   href?: string;
   ref?: string;
+  /** An outside practice site (opens in a new tab). */
+  external?: boolean;
 };
 export type PlanTask = {
   track: string;
   minutes: number;
   kind: "learn" | "practice" | "project" | "mock" | "revise";
   topics: PlanTopic[];
-  practice?: { title: string; url: string }[];
 };
 export type PlanDay = {
   day: number;
@@ -236,6 +237,12 @@ const PLAN_TRACKS: Record<string, string> = {
   kafka: "Kafka",
   project: "Project / lab",
   review: "Review",
+  "delta-lake": "Delta Lake",
+  "spark-streaming": "Spark Streaming",
+  "dev-tools": "Dev tools",
+  dbt: "dbt",
+  interview: "Interview",
+  practice: "Hands-on",
 };
 
 type RawPlan = {
@@ -255,7 +262,7 @@ type RawPlan = {
       track: string;
       minutes: number;
       kind: PlanTask["kind"];
-      items: { topic: string; ref?: string; tracker?: string }[];
+      items: { topic: string; ref?: string; tracker?: string; anchor?: string }[];
       practice?: { title: string; url: string }[];
     }[];
   }[];
@@ -281,22 +288,32 @@ export async function planDays(): Promise<PlanDay[]> {
     outcome: day.outcome,
     weekly: day.weekly,
     monthly: day.monthly,
+    // Every task is one checkable topic. Tracker topics share their tracker key (ticking one ticks it on the
+    // tracker page too); other tasks get a key unique to their day, and practice links one per problem.
     tasks: day.tasks.map((task) => ({
       track: PLAN_TRACKS[task.track] ?? task.track,
       minutes: task.minutes,
       kind: task.kind,
-      practice: task.practice,
-      topics: task.items.map((item) => {
-        const row = item.tracker ? lookup.get(keyOf(item.tracker, item.topic)) : undefined;
-        const page = item.ref ? byRef.get(item.ref) : undefined;
-        const trackerKey = item.tracker ? keyOf(item.tracker, item.topic) : undefined;
-        return {
-          topic: item.topic,
-          key: trackerKey ?? (item.ref ? `${task.track}:${slug(item.topic)}` : undefined),
-          ref: item.ref,
-          href: row?.href ?? page?.url,
-        };
-      }),
+      topics: [
+        ...task.items.map((item) => {
+          const row = item.tracker ? lookup.get(keyOf(item.tracker, item.topic)) : undefined;
+          const page = item.ref ? byRef.get(item.ref) : undefined;
+          const trackerKey = item.tracker ? keyOf(item.tracker, item.topic) : undefined;
+          const url = page && item.anchor ? `${page.url}#${item.anchor}` : page?.url;
+          return {
+            topic: item.topic,
+            key: trackerKey ?? `plan:d${day.day}:${task.track}:${slug(item.topic)}`,
+            ref: item.ref,
+            href: row?.href ?? url,
+          };
+        }),
+        ...(task.practice ?? []).map((practice) => ({
+          topic: `${practice.title} ↗`,
+          key: `sql-practice:${slug(practice.title)}`,
+          href: practice.url,
+          external: true,
+        })),
+      ],
     })),
   }));
 }

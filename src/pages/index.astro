@@ -31,10 +31,8 @@ const days = await planDays();
 const day1 = days[0];
 const planHours = days.reduce((a, d) => a + d.hours, 0);
 const topicCount = (await Promise.all(TRACKERS.map((t) => trackerRows(t.id)))).flat().length;
-const dayTopics = (day: PlanDay) =>
-  day.tasks.reduce((count, task) => count + task.topics.filter((item) => item.key).length, 0);
 const dayTaskCount = (day: PlanDay) =>
-  day.tasks.reduce((count, task) => count + task.topics.length + (task.practice?.length ?? 0), 0);
+  day.tasks.reduce((count, task) => count + task.topics.length, 0);
 ---
 
 <BaseLayout
@@ -111,11 +109,9 @@ const dayTaskCount = (day: PlanDay) =>
             <div class="day-card__bar">
               <p class="day-card__foot">
                 <span class="day-card__count js-only" data-dc-count>
-                  0/{dayTopics(day1)} topics · {dayTaskCount(day1)} tasks
+                  0/{dayTaskCount(day1)} tasks done
                 </span>
-                <span data-dc-foot>
-                  {day1.hours} h planned
-                </span>
+                <span data-dc-foot>{day1.hours} h planned</span>
               </p>
               <div class="day-card__controls js-only">
                 <button type="button" class="day-card__nav" data-dc-prev aria-label="Previous day">
@@ -145,7 +141,15 @@ const dayTaskCount = (day: PlanDay) =>
                   d: d.day,
                   th: d.theme,
                   h: d.hours,
-                  tasks: d.tasks,
+                  tasks: d.tasks.map((t) => ({
+                    track: t.track,
+                    topics: t.topics.map(({ topic, href, key, external }) => ({
+                      topic,
+                      href,
+                      key,
+                      ...(external ? { external } : {}),
+                    })),
+                  })),
                 })),
               ).replace(/</g, "\\u003c")}
             />

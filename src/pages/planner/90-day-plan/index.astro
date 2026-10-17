@@ -7,10 +7,8 @@ import { planDays, type PlanDay } from "../../../utils/curriculum";
 
 const days = await planDays();
 const hours = days.reduce((a, d) => a + d.hours, 0);
-const trackedTopicCount = (day: PlanDay) =>
-  day.tasks.reduce((count, task) => count + task.topics.filter((topic) => topic.key).length, 0);
 const taskCount = (day: PlanDay) =>
-  day.tasks.reduce((count, task) => count + task.topics.length + (task.practice?.length ?? 0), 0);
+  day.tasks.reduce((count, task) => count + task.topics.length, 0);
 const phases = [...new Set(days.map((d) => d.phase))];
 const goalOf = (phase: string) => days.find((d) => d.phase === phase)?.phaseGoal;
 const weeksOf = (phase: string) => {
@@ -25,10 +23,10 @@ const milestone = (week: number) => days.find((d) => d.week === week && d.weekly
 
 <ContentLayout
   title="90-Day Data Engineer Study Plan"
-  description="A prerequisite-first 90-day data-engineering interview plan with per-task time, hands-on exercises, interview questions and weekly milestones."
+  description="A 90-day Data Engineer study plan: 3 hours a day, topics from easy to hard, with SQL, DSA, Spark, Airflow, Kafka, projects and mock interviews."
   crumbs={[HOME, { label: "Study planner", href: "/planner/" }, { label: "90-day plan" }]}
   eyebrow="Study planner"
-  deck={`${days.length} days, ${hours} planned hours: 3 hours on weekdays and 6 at weekends. Build foundations first, then reliable pipelines and interview readiness. Every day includes a hands-on exercise, an interview question and a clear outcome.`}
+  deck={`${days.length} days, 3 hours a day (${hours} hours in all). Topics run from easy to hard: foundations first, then reliable pipelines, then streaming, system design and interview practice. Every day has 10 tasks (12 shorter ones at weekends), each with a checkbox.`}
   width="wide"
   indexable
 >
@@ -42,8 +40,8 @@ const milestone = (week: number) => days.find((d) => d.week === week && d.weekly
             <input type="date" data-pl-start />
           </label>
           <p class="muted" style="font-size: var(--fs-sm)">
-            Set a Saturday start date to align the 6-hour weekend and 3-hour weekday schedule with
-            calendar dates. Saved in this browser only.
+            Day 1 is a Monday, so pick a Monday to line the weekend project days up with your
+            calendar. Saved in this browser only.
           </p>
         </div>
       </div>
@@ -97,14 +95,11 @@ const milestone = (week: number) => days.find((d) => d.week === week && d.weekly
                       <span
                         class="day-card__count js-only"
                         data-pl-topic-count={d.day}
-                        data-total={trackedTopicCount(d)}
-                        data-tasks={taskCount(d)}
+                        data-total={taskCount(d)}
                       >
-                        0/{trackedTopicCount(d)} topics · {taskCount(d)} tasks
+                        0/{taskCount(d)} tasks done
                       </span>
-                      <span>
-                        {d.hours} h planned
-                      </span>
+                      <span>{d.hours} h planned</span>
                     </p>
                     <label class="day-card__done js-only">
                       <input
@@ -156,9 +151,8 @@ const milestone = (week: number) => days.find((d) => d.week === week && d.weekly
         'input[data-pl-key][data-pl-field="learn"]',
       );
       const total = Number(count.dataset.total) || 0;
-      const tasks = Number(count.dataset.tasks) || 0;
       const completed = checks ? [...checks].filter((check) => check.checked).length : 0;
-      count.textContent = `${completed}/${total} topics · ${tasks} tasks`;
+      count.textContent = `${completed}/${total} tasks done`;
     });
   }
 

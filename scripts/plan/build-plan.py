@@ -1,43 +1,107 @@
 #!/usr/bin/env python3
-"""Generate the human-readable 90-day curriculum plan from the topic inventory."""
+"""Generate the 90-day study plan (docs/curriculum/plan-90-days.json).
+
+Every day is 3 hours. Weekdays have 10 tasks, weekends 12 shorter ones (projects, mocks and reviews).
+Day 1 is a Monday. Each task is one checkable item linked to an existing page.
+
+Topics flow through four lanes, each in a hand-ordered, easy-to-hard sequence:
+- SQL: one lesson topic and one practice problem a day (plus SQL as a focus track in weeks 1-2).
+- DSA: two problems a weekday, three a weekend day; Easy before Medium inside each pattern group,
+  Hard problems only in the last days.
+- Focus: the day's main technology, in prerequisite order (Python and SQL, modeling, Spark, Delta,
+  Airflow, Snowflake, Kafka, streaming, system design, then revision).
+- Second: data-engineering concepts, dev tools, dbt and AWS.
+Weekends add project steps, system design (from week 5), a mock or interview set, and a weekly review.
+
+Run after `scripts/import-question-bank.py`, because interview tasks link to question-bank anchors.
+"""
 
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CURRICULUM = ROOT / "docs/curriculum/curriculum.json"
+BANKS = ROOT / "src/data/question-banks.json"
 OUTPUT = ROOT / "docs/curriculum/plan-90-days.json"
 
+DAYS = 90
+MINUTES = 180
+WEEKDAY_TASKS = 10
+WEEKEND_TASKS = 12
+
+
+def is_weekend(day: int) -> bool:
+    return (day - 1) % 7 in (5, 6)  # day 1 is a Monday
+
+
 PHASES = [
-    {"title": "Phase 1: Foundations", "goal": "Build SQL, DSA, Python and core data-engineering foundations; finish one batch project and begin applications."},
-    {"title": "Phase 2: Core pipelines", "goal": "Build reliable batch and CDC pipelines, practise cloud and warehouse work, and complete a second project."},
-    {"title": "Phase 3: Advanced and interview-ready", "goal": "Practise streaming, system design and mock interviews; finish a project demo, résumé and portfolio."},
+    {"title": "Phase 1: Foundations", "end": 28,
+     "goal": "SQL, Python and easy DSA; data-engineering concepts and data modeling; start Spark; build a tested CSV-to-warehouse pipeline."},
+    {"title": "Phase 2: Core pipelines", "end": 63,
+     "goal": "Spark, Delta Lake, Airflow, dbt and Snowflake; medium DSA; batch and analytics projects; begin system design."},
+    {"title": "Phase 3: Streaming, design and interviews", "end": 90,
+     "goal": "Kafka, Spark streaming, AWS services and system design; graph and DP problems; a streaming project, mocks and final revision."},
 ]
 
-MILESTONES = {
-    1: "Use SQL filtering, NULL handling and aggregation; solve 20 array/hash problems; explain core pipeline foundations; run the idempotent CSV loader locally.",
-    2: "Solve 20 more DSA problems; join data safely, explain common file formats, define warehouse grain, and describe basic S3/IAM access.",
-    3: "Build DataFrame transformations and explain lazy evaluation, SCD types and partitioning trade-offs.",
-    4: "Explain the system-design method and sketch a batch ingestion framework after learning the storage foundations.",
-    5: "Implement incremental, replay-safe loads; explain CDC and Airflow backfills; start the warehouse pipeline project.",
-    6: "Explain Delta Lake transactions and schema evolution, load data into a warehouse, and design a medallion lakehouse.",
-    7: "Explain Kafka delivery basics, data contracts and quality checks; design an idempotent CDC pipeline.",
-    8: "Tune Spark, describe CI/CD and observability, and complete two SQL/DSA or data-engineering mocks.",
-    9: "Explain streaming state and watermarks, complete a streaming project extension, and defend a clickstream design.",
-    10: "Solve timed SQL/DSA sets and design a governed pipeline with quality and observability controls.",
-    11: "Handle late data, retries and backfills in system-design interviews; explain operating costs and failure modes.",
-    12: "Complete two mocks, explain project trade-offs clearly, and identify remaining weak areas.",
-    13: "Finish the project demo, résumé and portfolio; complete final mocks and a focused revision plan.",
+WEEKLY = {
+    1: "Write filtered and aggregated SQL, use Python for files and functions, and solve easy array and hashing problems.",
+    2: "Join tables safely, structure Python with tests and logging, and explain file formats and batch vs streaming.",
+    3: "Design a star schema at the right grain, handle slowly changing dimensions, and load data idempotently.",
+    4: "Write window-function SQL, explain Spark's execution model, and finish the CSV-to-warehouse project.",
+    5: "Transform data with PySpark DataFrames, choose join strategies, and start system design with batch ingestion.",
+    6: "Diagnose shuffles and skew in Spark, explain Delta Lake transactions, and finish the large-scale batch project.",
+    7: "Write Airflow DAGs with safe retries and backfills, build dbt models, and design an ELT pipeline.",
+    8: "Schedule with sensors and assets in Airflow, test dbt models, and build the e-commerce analytics project.",
+    9: "Load and model data in Snowflake, use streams and tasks, and design analytics platforms.",
+    10: "Explain Kafka partitions, consumer groups and delivery guarantees; build the S3, PySpark and Snowflake pipeline.",
+    11: "Explain Kafka replication and exactly-once, use AWS ingestion services, and design streaming systems.",
+    12: "Build a watermarked Spark streaming job, design governed platforms, and run the streaming project end to end.",
+    13: "Revise every track, solve hard DSA problems, and finish your project demo, résumé and mocks.",
 }
 
+PHASE_REVIEW = {
+    28: "Phase 1 review: explain the CSV-to-warehouse project end to end, and re-solve five SQL and five DSA problems from weeks 1-4.",
+    63: "Phase 2 review: walk through the batch and analytics projects, and do one timed SQL and DSA round.",
+    90: "Final review: record your project demo, update your résumé, and list the topics to keep revising.",
+}
+
+# ---------------------------------------------------------------- SQL lessons (77, in learning order)
+SQL_TOPICS = [
+    "SELECT, WHERE & basic filtering", "Comparison & logical operators", "IN, BETWEEN, LIKE patterns",
+    "ORDER BY multi-column sorting", "LIMIT / TOP / FETCH FIRST", "Aliases and column naming",
+    "DISTINCT and de-duplication", "NULL handling with IS NULL / COALESCE", "CASE WHEN expressions",
+    "Aggregate functions (SUM, AVG, MIN, MAX)", "COUNT vs COUNT(DISTINCT)", "GROUP BY fundamentals",
+    "HAVING vs WHERE", "INNER JOIN basics", "LEFT JOIN basics", "String functions (CONCAT, SUBSTRING, TRIM)",
+    "Date functions basics", "CAST and data type conversion", "Arithmetic & rounding", "UNION vs UNION ALL",
+    "RIGHT JOIN & FULL OUTER JOIN", "Self Join patterns", "Multi-table joins", "Cross Join & cartesian products",
+    "Conditional aggregation", "Semi-join with EXISTS", "Anti-join (NOT EXISTS / LEFT JOIN NULL)",
+    "Subqueries in WHERE", "Subqueries in FROM (derived tables)", "Scalar subqueries", "Correlated subqueries",
+    "Common Table Expressions (CTEs)", "Multiple chained CTEs", "EXCEPT / INTERSECT set operations",
+    "Window function basics (OVER)", "PARTITION BY clause", "ROW_NUMBER()", "RANK() vs DENSE_RANK()",
+    "LAG() and LEAD()", "FIRST_VALUE / LAST_VALUE", "NTILE() bucketing", "Running totals with SUM OVER",
+    "Moving average with frame clause", "Percent of total", "Date truncation & bucketing",
+    "Generate date series / calendar table", "PIVOT rows to columns", "UNPIVOT columns to rows", "GROUPING SETS",
+    "ROLLUP and CUBE", "Top-N per group", "Deduplicate keeping latest record", "Month-over-month change",
+    "Year-over-year growth", "Rolling 7/30 day metrics", "Slowly changing dimension queries", "Gaps and Islands problem",
+    "Detecting consecutive streaks", "Sessionization of events", "Recursive CTEs", "Hierarchical / org-chart queries",
+    "Retention analysis", "Cohort analysis", "Funnel / conversion analysis", "JSON parsing in SQL",
+    "Array & nested data handling", "Median & percentile (PERCENTILE_CONT)", "Reading EXPLAIN / execution plans",
+    "Avoiding full table scans", "Query rewriting for performance", "Index design (B-tree, composite)",
+    "Partition pruning", "Columnar vs row storage", "Join algorithms (hash, merge, nested loop)",
+    "Handling skew in aggregations", "Isolation levels (ACID)", "Materialized views",
+]
+
+# Order of the LeetCode SQL 50 study plan, with the two Hard problems moved to the end.
 SQL_PRACTICE = [
-    (175, "Combine Two Tables", "combine-two-tables"),
+    (1757, "Recyclable and Low Fat Products", "recyclable-and-low-fat-products"),
     (584, "Find Customer Referee", "find-customer-referee"),
     (595, "Big Countries", "big-countries"),
     (1148, "Article Views I", "article-views-i"),
     (1683, "Invalid Tweets", "invalid-tweets"),
+    (175, "Combine Two Tables", "combine-two-tables"),
     (1378, "Replace Employee ID With The Unique Identifier", "replace-employee-id-with-the-unique-identifier"),
     (1068, "Product Sales Analysis I", "product-sales-analysis-i"),
     (1581, "Customer Who Visited but Did Not Make Any Transactions", "customer-who-visited-but-did-not-make-any-transactions"),
@@ -56,583 +120,537 @@ SQL_PRACTICE = [
     (1174, "Immediate Food Delivery II", "immediate-food-delivery-ii"),
     (550, "Game Play Analysis IV", "game-play-analysis-iv"),
     (2356, "Number of Unique Subjects Taught by Each Teacher", "number-of-unique-subjects-taught-by-each-teacher"),
+    (1141, "User Activity for the Past 30 Days I", "user-activity-for-the-past-30-days-i"),
     (1070, "Product Sales Analysis III", "product-sales-analysis-iii"),
     (596, "Classes More Than 5 Students", "classes-more-than-5-students"),
     (586, "Customer Placing the Largest Number of Orders", "customer-placing-the-largest-number-of-orders"),
     (610, "Triangle Judgment", "triangle-judgment"),
-    (1978, "Employees Whose Manager Left the Company", "employees-whose-manager-left-the-company"),
+    (511, "Game Play Analysis I", "game-play-analysis-i"),
     (1045, "Customers Who Bought All Products", "customers-who-bought-all-products"),
     (1731, "The Number of Employees Which Report to Each Employee", "the-number-of-employees-which-report-to-each-employee"),
     (1789, "Primary Department for Each Employee", "primary-department-for-each-employee"),
     (1741, "Find Total Time Spent by Each Employee", "find-total-time-spent-by-each-employee"),
-    (511, "Game Play Analysis I", "game-play-analysis-i"),
-    (176, "Second Highest Salary", "second-highest-salary"),
-    (1757, "Recyclable and Low Fat Products", "recyclable-and-low-fat-products"),
-    (1907, "Count Salary Categories", "count-salary-categories"),
-    (1667, "Fix Names in a Table", "fix-names-in-a-table"),
-    (1527, "Patients With a Condition", "patients-with-a-condition"),
-    (1517, "Find Users With Valid E-Mails", "find-users-with-valid-e-mails"),
-    (1327, "List the Products Ordered in a Period", "list-the-products-ordered-in-a-period"),
-    (262, "Trips and Users", "trips-and-users"),
-    (1084, "Sales Analysis III", "sales-analysis-iii"),
-    (1141, "User Activity for the Past 30 Days I", "user-activity-for-the-past-30-days-i"),
-    (1204, "Last Person to Fit in the Bus", "last-person-to-fit-in-the-bus"),
+    (180, "Consecutive Numbers", "consecutive-numbers"),
     (1164, "Product Price at a Given Date", "product-price-at-a-given-date"),
-    (1077, "Project Employees III", "project-employees-iii"),
-    (1321, "Restaurant Growth", "restaurant-growth"),
+    (1204, "Last Person to Fit in the Bus", "last-person-to-fit-in-the-bus"),
+    (1907, "Count Salary Categories", "count-salary-categories"),
+    (1978, "Employees Whose Manager Left the Company", "employees-whose-manager-left-the-company"),
     (1341, "Movie Rating", "movie-rating"),
+    (1321, "Restaurant Growth", "restaurant-growth"),
+    (1077, "Project Employees III", "project-employees-iii"),
     (1393, "Capital Gain/Loss", "capital-gainloss"),
     (1158, "Market Analysis I", "market-analysis-i"),
-    (180, "Consecutive Numbers", "consecutive-numbers"),
-    (182, "Duplicate Emails", "duplicate-emails"),
-    (184, "Department Highest Salary", "department-highest-salary"),
-    (185, "Department Top Three Salaries", "department-top-three-salaries"),
+    (1084, "Sales Analysis III", "sales-analysis-iii"),
+    (176, "Second Highest Salary", "second-highest-salary"),
+    (1667, "Fix Names in a Table", "fix-names-in-a-table"),
+    (1527, "Patients With a Condition", "patients-with-a-condition"),
     (196, "Delete Duplicate Emails", "delete-duplicate-emails"),
+    (182, "Duplicate Emails", "duplicate-emails"),
+    (1517, "Find Users With Valid E-Mails", "find-users-with-valid-e-mails"),
+    (1327, "List the Products Ordered in a Period", "list-the-products-ordered-in-a-period"),
+    (184, "Department Highest Salary", "department-highest-salary"),
+    (262, "Trips and Users", "trips-and-users"),
+    (185, "Department Top Three Salaries", "department-top-three-salaries"),
 ]
 
-PROJECTS = [
-    ("CSV to warehouse pipeline", "projects:csv-to-warehouse-pipeline"),
-    ("E-commerce analytics platform", "projects:ecommerce-analytics-platform"),
-    ("Change data capture pipeline", "projects:change-data-capture-pipeline"),
-    ("Fraud detection pipeline", "projects:fraud-detection-pipeline"),
-    ("Kafka/Spark/Delta streaming pipeline", "projects:kafka-spark-delta-streaming"),
-    ("Large-scale batch processing", "projects:large-scale-batch-processing"),
-    ("Real-time analytics pipeline", "projects:real-time-analytics-pipeline"),
-    ("S3/PySpark/Snowflake pipeline", "projects:s3-pyspark-snowflake-pipeline"),
+SQL_QUESTIONS = [  # standalone SQL interview problems, easiest first (after the LeetCode set)
+    "inner-vs-left-join", "sql-execution-order-where-vs-having", "customers-without-orders-anti-join",
+    "window-functions-vs-group-by", "remove-duplicate-records", "second-highest-salary", "join-fan-out-double-counting",
+    "top-n-per-group-department-salaries", "running-total-moving-average", "month-over-month-growth",
+    "index-not-used-explain", "scd-type-2-merge-sql", "optimize-slow-query",
 ]
 
-WEEK_TRACKS = {
-    1: ["python"],
-    2: ["aws", "data-modeling"],
-    3: ["pyspark", "data-modeling"],
-    4: ["pyspark", "snowflake", "airflow", "system-design"],
-    5: ["pyspark", "airflow", "aws"],
-    6: ["pyspark", "snowflake", "aws", "system-design"],
-    7: ["kafka", "snowflake", "airflow", "aws"],
-    8: ["kafka", "pyspark", "aws"],
-    9: ["spark-streaming", "kafka", "system-design"],
-    10: ["snowflake", "aws", "system-design"],
-    11: ["airflow", "kafka", "snowflake", "system-design"],
-    12: ["system-design", "data-modeling"],
-    13: ["system-design", "python"],
-}
-
-START_DAY = {
-    "python": 1,
-    "data-modeling": 10,
-    "aws": 11,
-    "pyspark": 15,
-    "snowflake": 24,
-    "airflow": 26,
-    "system-design": 27,
-    "kafka": 43,
-    "spark-streaming": 61,
-}
-
-SQL_PRIORITY = [
-    "SELECT, WHERE & basic filtering",
-    "NULL handling with IS NULL / COALESCE",
-    "Aggregate functions (SUM, AVG, MIN, MAX)",
-    "GROUP BY fundamentals",
-    "HAVING vs WHERE",
-    "DISTINCT and de-duplication",
-    "ORDER BY multi-column sorting",
-    "LIMIT / TOP / FETCH FIRST",
-    "CASE WHEN expressions",
-    "INNER JOIN basics",
-    "LEFT JOIN basics",
-    "RIGHT JOIN & FULL OUTER JOIN",
-    "Self Join patterns",
-    "Anti-join (NOT EXISTS / LEFT JOIN NULL)",
-    "Multi-table joins",
-    "Subqueries in WHERE",
-    "Subqueries in FROM (derived tables)",
-    "Correlated subqueries",
-    "Common Table Expressions (CTEs)",
-    "Multiple chained CTEs",
-    "PIVOT rows to columns",
-    "Window function basics (OVER)",
-    "PARTITION BY clause",
-    "ROW_NUMBER()",
-    "RANK() vs DENSE_RANK()",
-    "LAG() and LEAD()",
-    "Running totals with SUM OVER",
-    "Date truncation & bucketing",
-    "Gaps and islands",
-    "Top-N per group",
-    "Deduplicate keeping latest record",
+SQL_CASES = [  # SQL case studies, easiest first
+    "Daily Active Users", "Monthly Revenue", "Average Order Value", "Top Selling Products",
+    "New vs Returning Customers", "Customer Lifetime Value", "Churn Rate", "Conversion Funnel",
+    "Inventory Turnover", "Session Duration", "Employee Hierarchy", "A/B Test Results",
+    "Subscription Renewals", "Refund Analysis", "Lead Scoring", "Fraud Pattern Detection",
 ]
 
-DE_PRIORITY = [
-    "Data lifecycle and ownership",
-    "OLTP and OLAP workloads",
-    "Batch versus streaming",
-    "ETL versus ELT",
-    "Python functions and reusable code",
-    "Python iterators and generators",
-    "Python CSV validation",
-    "CSV and JSON trade-offs",
-    "Parquet and columnar storage",
-    "Avro and schema evolution",
-    "Partitioning and data layout",
-    "Warehouse grain and star schemas",
-    "Fact and dimension tables",
-    "Slowly changing dimensions",
-    "Incremental loading and watermarks",
-    "Idempotent pipeline writes",
-    "Change data capture patterns",
-    "Data quality checks and contracts",
-    "Testing pipelines and CI/CD",
-    "Retries and failure recovery",
-    "Pipeline observability",
-    "Late data and backfills",
+# ---------------------------------------------------------------- DSA (205 of 248)
+DSA_GROUPS = [
+    ["Arrays", "Hashing", "Strings", "Bit Manipulation", "Two Pointers", "Queue", "Sliding Window"],
+    ["Stack", "Binary Search", "Linked List", "Trees", "BST"],
+    ["Heap", "Greedy", "Backtracking", "Graph", "Dynamic Programming"],
+]
+DSA_SKIP = {  # Mediums that repeat a pattern already covered; left for extra practice
+    "Maximum Subarray Sum with One Deletion", "Maximum Absolute Sum of Any Subarray", "Subarray Sums Divisible by K",
+    "String to Integer (atoi)", "Single Number III", "Triplets with Smaller Sum", "4Sum",
+    "Longest K unique characters substring", "Remove All Adjacent Duplicates in String II",
+    "Remove Nodes From Linked List", "Aggressive Cows", "Maximum Candies Allocated to K Children",
+    "Minimum Number of Days to Make m Bouquets", "Circular Array Loop", "Rotate List",
+    "Extra Characters in a String", "Insert into a BST", "Min Cost to Connect Ropes", "Maximum Sum Combination",
+    "Merge Triplets to Form Target", "Remove Duplicate Letters", "Letter Case Permutation",
+    "Number of Closed Islands", "Path With Minimum Effort", "Count Subsets with Sum",
+}
+DSA_HARD = [  # the classic Hard problems, last
+    "Trapping Rain Water", "Minimum Window Substring", "Sliding Window Maximum", "Largest Rectangle in Histogram",
+    "Median of Two Sorted Arrays", "Merge k Sorted Lists", "Binary Tree Maximum Path Sum",
+    "Serialize and Deserialize Binary Tree", "Find Median from Data Stream", "Word Ladder",
 ]
 
-# Keep the milestone claims tied to topics that actually appear in their weeks.
-# Each entry is (tracker, exact inventory topics); weekend entries are folded into
-# the lab block so the daily hour totals remain unchanged.
-MAIN_OVERRIDES = {
-    10: ("data-modeling", ["Grain definition"]),
-    13: ("data-modeling", ["Star Schema"]),
-    14: ("data-modeling", ["Fact tables"]),
-    15: ("pyspark", ["DataFrame API basics"]),
-    16: ("pyspark", ["Spark architecture (driver/executor)"]),
-    17: ("pyspark", ["Lazy evaluation & DAG"]),
-    18: ("pyspark", ["Joins in Spark SQL"]),
-    19: ("pyspark", ["Reading/writing Parquet"]),
-    20: ("data-modeling", ["SCD Type 2 (history)"]),
-    21: ("pyspark", ["Partitions & parallelism"]),
-    24: ("snowflake", ["Three-layer architecture"]),
-    25: ("snowflake", ["File formats & staging", "COPY INTO command"]),
-    26: ("airflow", ["DAG fundamentals"]),
-    27: ("system-design", ["Design a batch ingestion framework"]),
-    28: ("pyspark", ["Joins in Spark SQL", "Reading/writing Parquet"]),
-    31: ("airflow", ["Retries & alerting"]),
-    32: ("aws", ["Glue bookmarks"]),
-    33: ("aws", ["Glue Data Quality"]),
-    34: ("airflow", ["Backfills & reruns"]),
-    35: ("airflow", ["Testing DAGs", "CI/CD for DAGs"]),
-    36: ("pyspark", ["Delta Lake architecture", "ACID transactions on Delta"]),
-    37: ("pyspark", ["Schema evolution", "MERGE / upsert"]),
-    38: ("snowflake", ["COPY INTO command"]),
-    39: ("snowflake", ["Snowpipe continuous ingestion"]),
-    40: ("aws", ["Glue ETL jobs (Spark)"]),
-    41: ("aws", ["Athena basics"]),
-    42: ("system-design", ["Design a Lakehouse (bronze/silver/gold)"]),
-    43: ("kafka", ["Topic fundamentals"]),
-    44: ("kafka", ["At-least-once"]),
-    45: ("snowflake", ["CDC with streams"]),
-    46: ("snowflake", ["Scheduled tasks (CRON)"]),
-    47: ("airflow", ["XCom push/pull", "TaskFlow API"]),
-    48: ("aws", ["Redshift architecture", "Redshift Spectrum"]),
-    49: ("kafka", ["Partition keys & ordering"]),
-    50: ("kafka", ["Exactly-once semantics (EOS)"]),
-    51: ("kafka", ["Connect framework", "Source vs sink connectors"]),
-    52: ("pyspark", ["AQE (Adaptive Query Execution)"]),
-    53: ("pyspark", ["Persistence & caching levels"]),
-    54: ("aws", ["EMR clusters", "Lambda + S3/Kinesis"]),
-    55: ("kafka", ["Debezium CDC"]),
-    56: ("aws", ["Kinesis Data Streams", "Metrics & alarms"]),
-    57: ("system-design", ["Design a GDPR/PII compliant pipeline"]),
-    58: ("kafka", ["Consumer lag", "Rebalancing protocols"]),
-    59: ("system-design", ["Design a data quality framework"]),
-    60: ("system-design", ["Design a data observability system"]),
-    61: ("pyspark", ["Structured Streaming model"]),
-    62: ("pyspark", ["Watermarking"]),
-    63: ("pyspark", ["Stateful aggregations", "Exactly-once in streaming"]),
-    64: ("snowflake", ["RBAC model", "Column-level security / masking"]),
-    65: ("aws", ["Lake Formation basics", "LF-Tags"]),
-    66: ("system-design", ["Design a data catalog & lineage system"]),
-    67: ("system-design", ["Design a data observability system"]),
-    68: ("snowflake", ["Time Travel basics", "Credit consumption analysis"]),
-    69: ("aws", ["Cost Explorer & budgets"]),
-    70: ("system-design", ["Design a data SLA & freshness monitoring system"]),
-    71: ("airflow", ["LocalExecutor", "CeleryExecutor"]),
-    72: ("airflow", ["Backfills & reruns", "Retries & alerting"]),
-    73: ("kafka", ["Consumer lag"]),
-    74: ("kafka", ["Rebalancing protocols"]),
-    75: ("snowflake", ["Time Travel basics", "Warehouse right-sizing"]),
-    76: ("system-design", ["Design a backfill & late-data handling system"]),
-    77: ("airflow", ["CI/CD for DAGs"]),
-    78: ("system-design", ["Design a multi-tenant data platform"]),
-    79: ("system-design", ["Design a data mesh architecture"]),
-    80: ("system-design", ["Design a unified batch + streaming (Lambda/Kappa)"]),
-    81: ("system-design", ["Design a feature store"]),
-    82: ("system-design", ["Design a cost-optimized warehouse strategy"]),
-    83: ("system-design", ["Design a self-serve analytics platform"]),
-    84: ("system-design", ["Design a schema registry & contract system"]),
-    85: ("system-design", ["Design a financial reconciliation pipeline"]),
-    86: ("system-design", ["Design a near-zero downtime migration"]),
-    87: ("system-design", ["Design a financial reconciliation pipeline"]),
-    88: ("system-design", ["Design a data SLA & freshness monitoring system"]),
-    89: ("system-design", ["Design a data quality framework"]),
-    90: ("system-design", ["Design a batch ingestion framework"]),
-}
-
-CONCEPT_OVERRIDES = {
-    29: "Incremental loading and watermarks",
-    30: "Idempotent pipeline writes",
-    31: "Change data capture patterns",
-    32: "Data quality checks and contracts",
-    33: "Retries and failure recovery",
-    34: "Late data and backfills",
-    35: "Testing pipelines and CI/CD",
-    43: "Data quality checks and contracts",
-    44: "Idempotent pipeline writes",
-    45: "Change data capture patterns",
-    50: "Data quality checks and contracts",
-    51: "Testing pipelines and CI/CD",
-    52: "Pipeline observability",
-    53: "Retries and failure recovery",
-    54: "Change data capture patterns",
-    55: "Late data and backfills",
-    56: "Data quality checks and contracts",
-    71: "Late data and backfills",
-    72: "Retries and failure recovery",
-    73: "Pipeline observability",
-}
-
-ADDITIONAL_MAIN_OVERRIDES = {
-    28: ("airflow", ["Backfills & reruns", "Idempotent tasks"]),
-    63: ("system-design", ["Design a clickstream analytics pipeline"]),
-}
-
-WEEKEND_DESIGN_OVERRIDES = {
-    63: "Design a clickstream analytics pipeline",
-    64: "Design a GDPR/PII compliant pipeline",
-}
-
-PYTHON_TOPICS = [
+# ---------------------------------------------------------------- focus lane
+PYTHON = [
     ("Python for data engineering", "articles:python/python-for-data-engineering"),
+    ("Python data structures", "articles:python/data-structures-for-interviews"),
     ("Reusable functions and modules", "articles:python/functions-modules-reusable-code"),
     ("CSV and JSON file handling", "articles:python/file-io-csv-json"),
     ("Iterators and generators", "articles:python/iterators-generators"),
     ("Error handling and logging", "articles:python/error-handling-logging"),
-    ("Idempotent CSV loader", "articles:python/idempotent-csv-loader"),
     ("Testing with pytest", "articles:python/testing-with-pytest"),
-    ("Paginated API ingestion", "articles:python/working-with-apis"),
     ("Pandas for data engineers", "articles:python/pandas-for-data-engineers"),
-    ("Python data structures", "articles:python/data-structures-for-interviews"),
+    ("Paginated API ingestion", "articles:python/working-with-apis"),
+    ("Idempotent CSV loader", "articles:python/idempotent-csv-loader"),
+]
+MODELING = [
+    "Kimball dimensional modeling", "Fact tables", "Dimension tables", "Star Schema", "Grain definition",
+    "Snowflake Schema", "Normalization (1NF-3NF/BCNF)", "Denormalization trade-offs", "Natural vs surrogate keys",
+    "SCD Type 1 (overwrite)", "SCD Type 2 (history)", "Conformed dimensions",
+    "Additive/semi-additive/non-additive measures", "Transaction vs periodic snapshot vs accumulating snapshot",
+    "Late arriving dimensions", "Medallion architecture (bronze/silver/gold)",
+]
+SPARK = [
+    "Spark architecture (driver/executor)", "SparkSession & SparkContext", "DataFrame API basics",
+    "Schema definition (StructType)", "select / withColumn / filter", "Handling nulls (na.fill/drop)",
+    "groupBy & aggregations", "Joins in Spark SQL", "Window functions in Spark", "Reading/writing JSON & CSV",
+    "Reading/writing Parquet", "Lazy evaluation & DAG", "RDD transformations vs actions",
+    "Narrow vs wide transformations", "Job/stage/task hierarchy", "Partitions & parallelism",
+    "Understanding shuffle cost", "Repartition vs coalesce", "Broadcast hash join", "Join strategy selection",
+    "Persistence & caching levels", "UDFs and pandas UDFs", "Catalyst optimizer", "Predicate & projection pushdown",
+    "AQE (Adaptive Query Execution)", "Detecting data skew", "Salting for skew", "Small files problem",
+]
+DELTA = [
+    "Delta Lake architecture", "Transaction log (_delta_log)", "ACID transactions on Delta", "Schema enforcement",
+    "MERGE / upsert", "Time travel & versioning", "Schema evolution", "OPTIMIZE & compaction",
+]
+AIRFLOW = [
+    "DAG fundamentals", "Tasks & dependencies", "PythonOperator", "TaskFlow API", "Schedule intervals & cron",
+    "Execution date vs logical date", "Catchup & start_date pitfalls", "Idempotent tasks", "Avoiding top-level code",
+    "XCom push/pull", "Variables & Connections", "Hooks", "Sensor basics", "Deferrable operators & triggers",
+    "Retries & alerting", "Backfills & reruns", "Data-aware scheduling (Datasets)", "Testing DAGs",
+]
+SNOWFLAKE = [
+    "Three-layer architecture", "Separation of storage & compute", "Virtual warehouse sizing",
+    "Scaling up vs scaling out", "Auto-suspend & auto-resume", "Micro-partitions deep dive",
+    "Internal vs external stages", "COPY INTO command", "Snowpipe continuous ingestion", "Semi-structured (VARIANT)",
+    "FLATTEN function", "Stream object basics", "Task fundamentals", "Task + Stream pattern", "Time Travel basics",
+    "Zero-copy cloning", "Clustering keys", "RBAC model",
+]
+KAFKA = [
+    "Topic fundamentals", "Partitions & parallelism", "Partition keys & ordering", "Producer API", "acks (0/1/all)",
+    "Consumer API", "Poll loop", "Consumer group basics", "Offset management", "Auto vs manual commit",
+    "Rebalancing protocols", "Leader & followers", "In-Sync Replicas (ISR)", "At-least-once",
+    "Idempotent producer", "Exactly-once semantics (EOS)", "Consumer lag", "Schema Registry basics",
+]
+STREAMING = [
+    "Structured Streaming model", "Input sources (Kafka/files)", "Output sinks & modes", "Triggers & micro-batch",
+    "Event-time vs processing-time", "Watermarking", "Checkpointing in streaming", "Stateful aggregations",
+]
+DESIGN_WEEKDAY = [
+    "Design a metrics / KPI platform", "Design a GDPR/PII compliant pipeline", "Design a data catalog & lineage system",
+    "Design a schema registry & contract system", "Design a data SLA & freshness monitoring system",
+    "Design a payment events pipeline (exactly-once)", "Design a fraud detection pipeline",
+    "Design a multi-tenant data platform",
+]
+DESIGN_WEEKEND = [
+    "Design a batch ingestion framework", "Design a Data Lake on cloud object storage",
+    "Design a Lakehouse (bronze/silver/gold)", "Design an idempotent reprocessing system",
+    "Design an ELT pipeline with dbt", "Design a slowly changing dimension framework",
+    "Design a data quality framework", "Design a backfill & late-data handling system",
+    "Design an analytics / BI platform", "Design a data warehouse for a SaaS product",
+    "Design a CDC pipeline from OLTP to warehouse", "Design an event-driven architecture",
+    "Design a clickstream analytics pipeline", "Design a streaming ETL with Kafka + Spark",
+    "Design a real-time streaming platform", "Design a data observability system",
+    "Design a unified batch + streaming (Lambda/Kappa)",
+]
+REVISION = [  # week 13: (task, ref, anchor)
+    ("Revise SQL: window functions and Top-N queries", "articles:sql/window-functions", None),
+    ("Revise SQL: answer the advanced section of the Top 50 SQL questions", "articles:sql/sql-interview-questions", "advanced-sql-interview-questions-experienced"),
+    ("Revise Python: answer the intermediate Python questions aloud", "articles:python/python-interview-questions", "intermediate-python-interview-questions"),
+    ("Revise data modeling: draw a star schema with an SCD Type 2 dimension", "articles:data-warehousing/slowly-changing-dimensions", None),
+    ("Revise Spark: explain shuffles, skew and join strategies", "articles:pyspark/pyspark-interview-questions", "intermediate-pyspark-and-spark-interview-questions"),
+    ("Revise Airflow: retries, backfills and idempotent tasks", "articles:airflow/airflow-interview-questions", "intermediate-airflow-interview-questions"),
+    ("Revise Snowflake: warehouses, micro-partitions and cost", "articles:snowflake/snowflake-interview-questions", "intermediate-snowflake-interview-questions"),
+    ("Revise Kafka: partitions, consumer groups and delivery guarantees", "articles:kafka/kafka-interview-questions", "intermediate-kafka-interview-questions"),
+    ("Revise dbt: models, tests and incremental strategies", "articles:dbt/dbt-interview-questions", "intermediate-dbt-interview-questions"),
+    ("Revise data-engineering concepts: CDC, idempotency and late data", "articles:career/data-engineering-interview-questions", "intermediate-data-engineering-interview-questions"),
+    ("Revise system design: practise three scenario questions out loud", "articles:career/scenario-based-data-engineering-interview-questions", "advanced-scenario-based-questions-experienced"),
+    ("Revise behavioral: prepare five STAR stories", "articles:career/behavioral-interview-questions", None),
+    ("Revise AWS: S3, IAM, Glue and Athena in one diagram", "articles:aws/aws-for-data-engineers", None),
+    ("Revise Delta Lake: MERGE, time travel and OPTIMIZE", "articles:databricks/databricks-interview-questions", "intermediate-databricks-interview-questions"),
+    ("Re-solve the three DSA problems you found hardest", "articles:dsa/dsa-for-data-engineers", None),
+    ("Re-solve the three SQL problems you found hardest", "articles:sql/sql-interview-questions", None),
 ]
 
+EXERCISE = {  # the weekday hands-on task, by focus track
+    "python": "Practice: write a short script that uses {t} on a small CSV",
+    "sql": "Practice: write three queries using {t} on a sample table",
+    "data-modeling": "Practice: model {t} for an orders dataset on paper",
+    "pyspark": "Practice: try {t} in a local PySpark session on sample data",
+    "delta-lake": "Practice: try {t} on a local Delta table",
+    "airflow": "Practice: use {t} in a small local DAG and run it with dag.test()",
+    "snowflake": "Practice: try {t} in a Snowflake trial account or write the SQL you would run",
+    "kafka": "Practice: show {t} with the Kafka console tools or a short Python client",
+    "spark-streaming": "Practice: try {t} in a small streaming job on a file source",
+}
 
-def ref_of(item: dict) -> str | None:
-    return item.get("question") or item.get("design") or item.get("lesson")
+# ---------------------------------------------------------------- second lane
+CONCEPTS = [
+    "Data lifecycle and ownership", "OLTP and OLAP workloads", "Batch versus streaming", "ETL versus ELT",
+    "Storage layers and raw landing", "CSV and JSON trade-offs", "Parquet and columnar storage",
+    "Avro and schema evolution", "Partitioning and data layout", "Lake, warehouse and lakehouse",
+    "Incremental loading and watermarks", "Idempotent pipeline writes", "Change data capture patterns",
+    "Retries and failure recovery", "Data quality checks and contracts", "Testing pipelines and CI/CD",
+    "Pipeline observability", "Late data and backfills", "Replay-safe event processing",
+    "Secure data access and PII", "Cost and freshness trade-offs",
+]
+DEV_TOOLS = [
+    ("Dev tools for data engineers", "articles:dev-tools/dev-tools-for-data-engineers"),
+    ("Command line for data work", "articles:dev-tools/command-line-for-data-work"),
+    ("Git for data engineers", "articles:dev-tools/git-for-data-engineers"),
+    ("Python environments and packaging", "articles:dev-tools/python-environments-packaging"),
+    ("Shell scripting for pipelines", "articles:dev-tools/shell-scripting-for-pipelines"),
+    ("Docker for data engineers", "articles:dev-tools/docker-for-data-engineers"),
+    ("Makefiles and pre-commit", "articles:dev-tools/makefiles-pre-commit-data-repos"),
+]
+DBT = [
+    ("dbt for data engineers", "articles:dbt/dbt-for-data-engineers"),
+    ("dbt models, ref and sources", "articles:dbt/models-ref-and-sources"),
+    ("dbt materializations", "articles:dbt/materializations"),
+    ("dbt tests and data quality", "articles:dbt/tests-and-data-quality"),
+    ("dbt incremental models", "articles:dbt/incremental-models"),
+    ("dbt snapshots (SCD Type 2)", "articles:dbt/snapshots-scd-type-2"),
+    ("dbt Jinja, macros and packages", "articles:dbt/jinja-macros-and-packages"),
+    ("dbt deployment, CI/CD and governance", "articles:dbt/deployment-ci-cd-and-governance"),
+]
+AWS = [
+    "S3 buckets & objects", "Storage classes", "S3 partitioning for analytics", "IAM users/groups/roles",
+    "Policies (identity/resource)", "Least privilege", "Assume role & STS", "Glue Data Catalog", "Glue Crawlers",
+    "Glue ETL jobs (Spark)", "Athena basics", "Querying S3 with SQL", "Partition projection", "Lambda fundamentals",
+    "Triggers & event sources", "State machines", "Redshift architecture", "Distribution styles", "Sort keys",
+    "Spark on EMR", "Kinesis Data Streams", "Kinesis Firehose", "Metrics & alarms", "Secrets Manager",
+]
 
-
-def named_items(track: str, names: list[str], inventory: dict) -> list[dict]:
-    by_name = {item["topic"]: item for item in inventory.get(track, [])}
-    missing = [name for name in names if name not in by_name]
-    if missing:
-        raise ValueError(f"Unknown {track} plan topic(s): {', '.join(missing)}")
-    return [by_name[name] for name in names]
-
-
-def plan_item(track: str, item: dict) -> dict:
-    return {
-        "topic": item["topic"],
-        "ref": ref_of(item),
-        "tracker": track if track in {"sql", "dsa", "de-concepts", "data-modeling", "pyspark", "snowflake", "airflow", "aws", "kafka", "system-design"} else None,
-    }
-
-
-def choose_track(day: int, week: int, cursors: dict[str, int], inventory: dict) -> str:
-    candidates = [t for t in WEEK_TRACKS[week] if day >= START_DAY.get(t, 1)]
-    if not candidates:
-        return "python"
-    track = candidates[(day + week) % len(candidates)]
-    source = "pyspark" if track == "spark-streaming" else track
-    items = inventory.get(source, [])
-    if track == "spark-streaming":
-        items = [item for item in items if item.get("category") == "Streaming"]
-    if items:
-        cursors[track] = cursors.get(track, 0) % len(items)
-    return track
-
-
-def question_for(track: str, topic: str) -> str:
-    prompts = {
-        "sql": f"How would you write and validate a query for {topic}, including NULLs and duplicate rows?",
-        "dsa": f"What is the optimal time and space complexity for {topic}, and how would you test edge cases?",
-        "de-concepts": f"When would you use {topic}, and how would you make the pipeline reliable when data is late or repeated?",
-        "python": f"How would you implement {topic} so it handles malformed input, retries and repeat runs safely?",
-        "data-modeling": f"How would you apply {topic} to a warehouse with changing business requirements?",
-        "pyspark": f"How does {topic} affect execution, partitioning and failure recovery in Spark?",
-        "snowflake": f"How would you use {topic} while controlling query performance, access and cost?",
-        "airflow": f"How would you apply {topic} to a pipeline that must recover safely after a task failure?",
-        "aws": f"How would you design access, retries and monitoring around {topic} in an AWS data pipeline?",
-        "kafka": f"How would you use {topic} and explain its ordering, delivery and replay guarantees?",
-        "system-design": f"How would you design a production data platform for {topic}, including scale, failure handling and trade-offs?",
-    }
-    return prompts.get(track, f"How would you explain and apply {topic} in a production data-engineering workflow?")
-
-
-def build() -> list[dict]:
-    curriculum = json.loads(CURRICULUM.read_text(encoding="utf-8"))
-    inventory = {key: value.get("items", []) for key, value in curriculum.items()}
-    inventory["python"] = [{"topic": title, "lesson": ref} for title, ref in PYTHON_TOPICS]
-    inventory["pyspark"] = sorted(
-        inventory["pyspark"],
-        key=lambda item: (
-            0 if "dataframe" in item["topic"].lower() else
-            1 if "architecture" in item["topic"].lower() or "lazy evaluation" in item["topic"].lower() else
-            3 if "rdd" in item["topic"].lower() else 2
-        ),
-    )
-    design_order = [
-        "Design a batch ingestion framework",
-        "Design a Data Lake on cloud object storage",
+# ---------------------------------------------------------------- weekends
+PROJECT_STEPS = [  # two per weekend day, in order: (task, ref, anchor)
+    ("Lab: create a project folder with a virtual environment and Git", "articles:dev-tools/python-environments-packaging", None),
+    ("Lab: read and validate an orders CSV, writing rejects to a file", "articles:python/file-io-csv-json", None),
+    ("Lab: add logging and clear error messages to the CSV reader", "articles:python/error-handling-logging", None),
+    ("Lab: write pytest tests for the CSV reader", "articles:python/testing-with-pytest", None),
+    ("Lab: load the CSV into local Postgres", "articles:python/idempotent-csv-loader", None),
+    ("Lab: rerun the load and prove it creates no duplicates", "articles:python/idempotent-csv-loader", None),
+    ("Lab: page through a public API and save the results", "articles:python/working-with-apis", None),
+    ("Lab: commit the week's code with a short README", "articles:dev-tools/git-for-data-engineers", None),
+] + [
+    (f"CSV-to-warehouse project, {t}", "projects:csv-to-warehouse-pipeline", a) for t, a in [
+        ("step 1: generate the data", "step-1-generate-the-data"),
+        ("step 2: staging, rejects and audit tables", "step-2-staging-rejects-and-audit-tables"),
+        ("step 3: an idempotent loader", "step-3-an-idempotent-loader"),
+        ("step 4: the star schema", "step-4-the-star-schema"),
+        ("step 5: data-quality checks", "step-5-data-quality-checks"),
+        ("step 6: tests", "step-6-tests"),
+        ("write the README with design decisions", "architecture"),
+        ("practise explaining it in an interview", "explaining-it-in-an-interview"),
     ]
-    inventory["system-design"] = sorted(
-        inventory["system-design"],
-        key=lambda item: design_order.index(item["topic"]) if item["topic"] in design_order else len(design_order),
-    )
-    sql_by_name = {item["topic"]: item for item in inventory["sql"]}
-    sql_topics = [sql_by_name[name] for name in SQL_PRIORITY if name in sql_by_name]
-    sql_topics.extend(item for item in inventory["sql"] if item not in sql_topics)
-    sql_topics = sql_topics[:100]
-    if len(sql_topics) != 100:
-        raise ValueError("SQL curriculum must contain at least 100 ordered topics")
-    dsa_topics = inventory["dsa"]
-    if len(dsa_topics) != 248:
-        raise ValueError(f"Expected the repository's 248 DSA problems, found {len(dsa_topics)}")
-    de_topics = inventory["de-concepts"]
-    if not de_topics:
-        raise ValueError("Add the DE Concepts tracker inventory before building the plan")
-    de_by_name = {item["topic"]: item for item in de_topics}
-    de_topics = [de_by_name[name] for name in DE_PRIORITY if name in de_by_name]
-    de_topics.extend(item for item in inventory["de-concepts"] if item not in de_topics)
+] + [
+    (f"Large-scale batch project, {t}", "projects:large-scale-batch-processing", a) for t, a in [
+        ("step 1: get the data", "step-1-get-the-data"),
+        ("step 2: write the job as testable functions", "step-2-write-the-job-as-testable-functions"),
+        ("step 3: choose the join strategy and prove it", "step-3-choose-the-join-strategy-and-prove-it"),
+        ("step 4: find the skew", "step-4-find-the-skew"),
+        ("step 5: fix the skew", "step-5-fix-the-skew"),
+        ("step 6: write idempotently and prove it", "step-6-write-idempotently-and-prove-it"),
+        ("step 7: unit tests", "step-7-unit-tests"),
+        ("write the performance analysis", "writing-the-performance-analysis"),
+    ]
+] + [
+    (f"E-commerce analytics project, {t}", "projects:ecommerce-analytics-platform", a) for t, a in [
+        ("step 0: definitions before SQL", "step-0-definitions-before-sql"),
+        ("step 1: generate and load raw data", "step-1-generate-and-load-raw-data"),
+        ("step 2: staging models", "step-2-staging-one-model-per-source-table"),
+        ("step 3: the star schema", "step-3-the-star-schema"),
+        ("step 4: certified metrics", "step-4-certified-metrics-defined-once"),
+        ("step 5: tests", "step-5-tests"),
+        ("step 6: port it to dbt", "step-6-port-it-to-dbt"),
+        ("practise explaining it in an interview", "explaining-it-in-an-interview"),
+    ]
+] + [
+    (f"S3, PySpark and Snowflake project, {t}", "projects:s3-pyspark-snowflake-pipeline", a) for t, a in [
+        ("step 1: generate raw files", "step-1-generate-raw-files"),
+        ("step 2: the job, parameterised by date", "step-2-the-job-parameterised-by-date"),
+        ("step 3: write curated Parquet idempotently", "step-3-write-curated-parquet-idempotently"),
+        ("step 4: unit-test the transformation", "step-4-unit-test-the-transformation"),
+        ("step 5: load the warehouse idempotently", "step-5-load-the-warehouse-idempotently"),
+        ("step 6: reconcile and schedule", "step-6-reconcile-and-schedule"),
+        ("security and cost notes for the README", "security-and-cost-notes-for-the-readme"),
+        ("practise explaining it in an interview", "explaining-it-in-an-interview"),
+    ]
+] + [
+    (f"Kafka, Spark and Delta streaming project, {t}", "projects:kafka-spark-delta-streaming", a) for t, a in [
+        ("step 1: run Kafka locally", "step-1-run-kafka-locally"),
+        ("step 2: the producer", "step-2-the-producer"),
+        ("step 3: develop the logic on a local stream", "step-3-develop-the-logic-on-a-local-stream"),
+        ("step 4: land raw events idempotently", "step-4-land-raw-events-idempotently"),
+        ("step 5: watermarked, deduplicated aggregates", "step-5-watermarked-deduplicated-aggregates"),
+        ("step 6: prove recovery and replay", "step-6-prove-recovery-and-replay"),
+        ("step 7: switch the source to Kafka", "step-7-switch-the-source-to-kafka"),
+        ("practise explaining it in an interview", "explaining-it-in-an-interview"),
+    ]
+] + [
+    ("Record a five-minute demo of your best project", "articles:career/explain-a-data-engineering-project", None),
+    ("Update your résumé and portfolio README", "roadmaps:resume-and-project-selection", None),
+]
 
-    cursors: dict[str, int] = {}
+FOUNDATION_LABS = {  # weekend system-design slot in weeks 1-4 (no design yet): a hands-on concept lab
+    6: ("Lab: trace one pipeline from source to dashboard and name each stage's owner", "Data lifecycle and ownership"),
+    7: ("Lab: write one OLTP and one OLAP query against the same orders table", "OLTP and OLAP workloads"),
+    13: ("Lab: save the same data as CSV, JSON and Parquet and compare size and read time", "Parquet and columnar storage"),
+    14: ("Lab: write a dt=YYYY-MM-DD partitioned folder layout and read one partition", "Partitioning and data layout"),
+    20: ("Lab: load only new rows using a watermark column, then run it twice", "Incremental loading and watermarks"),
+    21: ("Lab: make a daily load idempotent with delete-and-insert in one transaction", "Idempotent pipeline writes"),
+    27: ("Lab: add row-count, null and duplicate checks to your loader", "Data quality checks and contracts"),
+    28: ("Lab: backfill one missed day safely and check the totals", "Late data and backfills"),
+}
+
+MOCKS = {  # weekend mock/interview-set slot by week: (Saturday, Sunday) bank hubs or mock types
+    1: ("sql", "python"), 2: ("sql", "data-engineering"), 3: ("data-engineering", "sql"),
+    4: ("mock:project", "pyspark"), 5: ("pyspark", "mock:sql-dsa"), 6: ("databricks", "mock:project"),
+    7: ("airflow", "dbt"), 8: ("mock:sql-dsa", "dbt"), 9: ("snowflake", "mock:design"),
+    10: ("kafka", "mock:behavioral"), 11: ("mock:sql-dsa", "scenario-based"), 12: ("mock:design", "behavioral"),
+    13: ("mock:full",),
+}
+MOCK_TASKS = {
+    "mock:project": ("Mock: explain your latest project in five minutes, then answer follow-ups", "articles:career/explain-a-data-engineering-project"),
+    "mock:sql-dsa": ("Mock: a timed 45-minute round with one SQL and one DSA problem", "roadmaps:interview-preparation-roadmap"),
+    "mock:design": ("Mock: a 45-minute data system design round out loud", "roadmaps:system-design-interview-roadmap"),
+    "mock:behavioral": ("Mock: answer three behavioral questions with STAR stories", "articles:career/behavioral-interview-data-engineers"),
+    "mock:full": ("Mock: a full interview loop (SQL, DSA, design and behavioral)", "roadmaps:interview-preparation-roadmap"),
+}
+# ---------------------------------------------------------------------------------------------------
+
+
+def slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+
+
+def main() -> None:
+    curriculum = json.loads(CURRICULUM.read_text(encoding="utf-8"))
+    banks = {b["hub"]: b for b in json.loads(BANKS.read_text(encoding="utf-8"))}
+
+    def tracker_item(tracker: str, topic: str) -> dict:
+        rows = {row["topic"]: row for row in curriculum[tracker]["items"]}
+        if topic not in rows:
+            raise SystemExit(f"{tracker}: unknown topic {topic!r}")
+        row = rows[topic]
+        ref = row.get("question") if tracker == "dsa" else (row.get("lesson") or row.get("question") or row.get("design"))
+        return {"topic": topic, "ref": ref, "tracker": tracker}
+
+    # --- lanes -------------------------------------------------------------------------------------
+    sql_topics = [tracker_item("sql", t) for t in SQL_TOPICS]
+    assert len(set(SQL_TOPICS)) == len(SQL_TOPICS) == 77
+
+    dsa_rows = curriculum["dsa"]["items"]
+    dsa: list[dict] = []
+    for group in DSA_GROUPS:
+        for level in ("Easy", "Medium"):
+            for cat in group:
+                dsa += [r for r in dsa_rows if r["category"] == cat and r["difficulty"] == level and r["topic"] not in DSA_SKIP]
+    dsa += [next(r for r in dsa_rows if r["topic"] == t) for t in DSA_HARD]
+    dsa = [tracker_item("dsa", r["topic"]) for r in dsa]
+
+    def lesson_items(pairs, track):
+        return [{"topic": t, "ref": r, "track": track} for t, r in pairs]
+
+    def tracked(tracker, names, track=None):
+        return [{**tracker_item(tracker, n), "track": track or tracker} for n in names]
+
+    py = lesson_items(PYTHON, "python")
+    # SQL is also a focus track in weeks 1-2. Both slots draw from one ordered SQL stream, so topics
+    # arrive in sequence: placeholders in the focus lane take the next SQL topic when they are reached.
+    SQL_NEXT = {"placeholder": "sql"}
+    sql_lane = sql_topics
+    focus = [x for pair in zip(py, [SQL_NEXT] * 10) for x in pair] + [SQL_NEXT] * 2
+    focus += tracked("data-modeling", MODELING) + tracked("pyspark", SPARK)
+    focus += tracked("pyspark", DELTA, "delta-lake") + tracked("airflow", AIRFLOW)
+    focus += tracked("snowflake", SNOWFLAKE) + tracked("kafka", KAFKA)
+    focus += tracked("pyspark", STREAMING, "spark-streaming") + tracked("system-design", DESIGN_WEEKDAY)
+    second = tracked("de-concepts", CONCEPTS) + lesson_items(DEV_TOOLS, "dev-tools") + lesson_items(DBT, "dbt")
+    second += tracked("aws", AWS)
+    revision = [{"topic": t, "ref": r, "anchor": a, "track": "review"} for t, r, a in REVISION]
+
+    weekdays = [d for d in range(1, DAYS + 1) if not is_weekend(d)]
+    weekends = [d for d in range(1, DAYS + 1) if is_weekend(d)]
+    focus_slots = 2 * len(weekdays) + len(weekends)
+    content_focus = focus_slots - 11  # the last 11 focus slots (from day 85) are revision
+    assert len(focus) == content_focus, f"focus lane has {len(focus)} topics for {content_focus} slots"
+    assert len(second) == len(weekdays) - 5, f"second lane has {len(second)} for {len(weekdays) - 5} slots"
+    focus += revision[:11]
+    second += revision[11:]
+    assert len(dsa) == 2 * len(weekdays) + 3 * len(weekends) == 205
+
+    sql_practice_total = len(weekdays) + len(weekends)
+    case_rows = {c["scenario"]: c["ref"] for c in curriculum["sql"]["caseStudies"]}
+    def page_exists(ref: str) -> bool:
+        collection, name = ref.split(":")
+        return any((ROOT / "src/content" / collection / name).parent.glob(f"{Path(name).name}.md*"))
+
+    # Technique drills, skipping the few whose case-study page has not been written yet.
+    technique = [r for r in curriculum["sql"]["items"] if r.get("technique") and page_exists(r["question"])]
+    seen_tech: set[str] = set()
+    tech_pick = []
+    for band in ("Intermediate", "Advanced", "Expert"):
+        for r in technique:
+            if r["difficulty"] == band and r["technique"] not in seen_tech:
+                seen_tech.add(r["technique"])
+                tech_pick.append(r)
+    sql_practice = [{"topic": f"LeetCode {n}. {t}", "url": f"https://leetcode.com/problems/{s}/", "track": "sql"} for n, t, s in SQL_PRACTICE]
+    for name in SQL_QUESTIONS:
+        page = next((ROOT / "src/content/interview-questions/sql").glob(f"{name}.md*"))
+        title = re.search(r'^title:\s*"(.*)"', page.read_text(encoding="utf-8"), re.M).group(1)
+        sql_practice.append({"topic": f"SQL problem: {title}", "ref": f"interview-questions:sql/{name}", "track": "sql"})
+    tech_needed = sql_practice_total - len(sql_practice)
+    sql_practice += [{**tracker_item("sql", r["topic"]), "track": "sql"} for r in tech_pick[:tech_needed]]
+    assert len(sql_practice) == sql_practice_total
+
+    weekend_sql = [{"topic": "SQL recap: re-solve this week's practice problems without notes", "ref": "articles:sql/sql-fundamentals", "track": "sql"}] * 4
+    weekend_sql += [{"topic": f"SQL case study: {c}", "ref": case_rows[c], "track": "sql"} for c in SQL_CASES]
+    extra_tech = tech_pick[tech_needed:]
+    weekend_sql += [{**tracker_item("sql", r["topic"]), "track": "sql"} for r in extra_tech[: len(weekends) - len(weekend_sql)]]
+    assert len(weekend_sql) == len(weekends)
+
+    bank_cursor = {hub: 0 for hub in banks}
+    bank_order = {hub: sorted(b["questions"], key=lambda q: (["Beginner", "Intermediate", "Advanced"].index(q["level"]), q["n"]))
+                  for hub, b in banks.items()}
+
+    def bank_question(hub: str, verb="Interview question") -> dict:
+        q = bank_order[hub][bank_cursor[hub]]
+        bank_cursor[hub] += 1
+        return {"topic": f"{verb}: {q['title']}", "ref": banks[hub]["ref"], "anchor": q["anchor"], "track": "interview"}
+
+    BANK_FOR = {"python": "python", "sql": "sql", "data-modeling": "data-engineering", "pyspark": "pyspark",
+                "delta-lake": "databricks", "airflow": "airflow", "snowflake": "snowflake", "kafka": "kafka",
+                "spark-streaming": "pyspark", "system-design": "scenario-based", "review": "behavioral"}
+
+    # --- days --------------------------------------------------------------------------------------
+    cur = {"sql": 0, "prac": 0, "dsa": 0, "focus": 0, "second": 0, "wsql": 0, "proj": 0, "design": 0, "wd": 0}
+
+    def take(lane_name, lane, n=1):
+        out = lane[cur[lane_name]: cur[lane_name] + n]
+        cur[lane_name] += n
+        assert len(out) == n, f"{lane_name} ran out"
+        return out
+
+    def task(track, minutes, kind, item):
+        it = {k: v for k, v in item.items() if k not in ("track",) and v is not None}
+        return {"track": track, "minutes": minutes, "kind": kind, "items": [it]}
+
+    history: list[dict] = []  # focus topics already studied, for spaced recall
     days = []
-    sql_cursor = dsa_cursor = concept_cursor = practice_cursor = weekend_cursor = project_cursor = 0
-    for day in range(1, 91):
+    for day in range(1, DAYS + 1):
         week = (day - 1) // 7 + 1
-        phase = min((day - 1) // 30 + 1, 3)
-        weekend = (day - 1) % 7 in (0, 1)  # The 90-day calendar starts on Saturday.
-        hours = 6 if weekend else 3
+        phase = next(i for i, p in enumerate(PHASES, 1) if day <= p["end"])
         tasks = []
 
-        sql_count = 2 if day in (1, 2) or 8 <= day <= 15 else 1
-        sql_items = sql_topics[sql_cursor : sql_cursor + sql_count]
-        sql_cursor += len(sql_items)
-        practice = []
-        if practice_cursor < len(SQL_PRACTICE):
-            number, title, slug = SQL_PRACTICE[practice_cursor]
-            practice = [{"title": f"{number}. {title}", "url": f"https://leetcode.com/problems/{slug}/"}]
-            practice_cursor += 1
-        sql_task = {
-            "track": "sql",
-            "minutes": 60 if weekend else 30,
-            "kind": "practice" if weekend else "learn",
-            "items": [{"topic": item["topic"], "ref": ref_of(item), "tracker": "sql"} for item in sql_items],
-        }
-        if weekend:
-            cases = curriculum["sql"].get("caseStudies", [])
-            if cases:
-                case = cases[weekend_cursor % len(cases)]
-                sql_task["items"].append({"topic": f"{case['scenario']} case study", "ref": case["ref"]})
-            weekend_cursor += 1
-        if practice:
-            sql_task["practice"] = practice
-        tasks.append(sql_task)
+        def practice_task(minutes):
+            p = take("prac", sql_practice)[0]
+            if "url" in p:
+                return {"track": "sql", "minutes": minutes, "kind": "practice", "items": [],
+                        "practice": [{"title": p["topic"].removeprefix("LeetCode "), "url": p["url"]}]}
+            return task("sql", minutes, "practice", p)
 
-        dsa_count = 2 if not weekend else (5 if weekend_cursor <= 16 else 4)
-        dsa_items = dsa_topics[dsa_cursor : dsa_cursor + dsa_count]
-        dsa_cursor += len(dsa_items)
-        tasks.append({
-            "track": "dsa",
-            "minutes": 90 if weekend else 45,
-            "kind": "practice",
-            "items": [{"topic": item["topic"], "ref": ref_of(item), "tracker": "dsa"} for item in dsa_items],
-        })
+        def next_focus(n):
+            out = []
+            for x in take("focus", focus, n):
+                out.append({**take("sql", sql_lane)[0], "track": "sql"} if x.get("placeholder") else x)
+            return out
 
-        concept = de_by_name.get(CONCEPT_OVERRIDES.get(day), de_topics[concept_cursor % len(de_topics)])
-        concept_cursor += 1
-        concept_kind = "learn" if day <= len(de_topics) else "revise"
-        tasks.append({
-            "track": "de-concepts",
-            "minutes": 30,
-            "kind": concept_kind,
-            "items": [{"topic": concept["topic"], "ref": ref_of(concept), "tracker": "de-concepts"}],
-        })
-
-        if weekend:
-            project_title, project_ref = PROJECTS[project_cursor % len(PROJECTS)]
-            lab_item = {"topic": f"{project_title}: day {day} lab", "ref": project_ref}
-            lab_track = "project"
-            if day == 85:
-                lab_item = {"topic": "Record the final project demo and walkthrough", "ref": project_ref}
-            elif day == 86:
-                lab_item = {"topic": "Polish the resume, portfolio and project README", "ref": project_ref}
-            if day == 1:
-                lab_item = {"topic": "Idempotent CSV loader setup and replay check", "ref": "articles:python/idempotent-csv-loader"}
-                lab_track = "python"
-            elif day == 2:
-                lab_item = {"topic": "Local Postgres setup and CSV load", "ref": "articles:python/idempotent-csv-loader"}
-                lab_track = "python"
-            elif day in (8, 9):
-                lab_item = {"topic": "Compare file formats and inspect a partitioned data layout", "ref": "articles:etl-elt/modern-data-pipelines"}
-            elif day in (22, 23):
-                lab_item = {"topic": "Declare a warehouse grain and sketch a star schema", "ref": "articles:data-warehousing/star-schema"}
-            elif day in (15, 16):
-                lab_track = "pyspark"
-                item = inventory[lab_track][cursors.get(lab_track, 0) % len(inventory[lab_track])]
-                lab_item = {"topic": item["topic"], "ref": ref_of(item), "tracker": lab_track}
-                cursors[lab_track] = cursors.get(lab_track, 0) + 1
-            elif day == 43:
-                lab_track = "kafka"
-                item = inventory[lab_track][cursors.get(lab_track, 0) % len(inventory[lab_track])]
-                lab_item = {"topic": item["topic"], "ref": ref_of(item), "tracker": lab_track}
-                lab_project = {"topic": "Add a Kafka CDC lab to the warehouse pipeline", "ref": "projects:csv-to-warehouse-pipeline"}
-                cursors[lab_track] = cursors.get(lab_track, 0) + 1
-            if day >= 29 and day != 43:
-                project_cursor += 1
-            lab_items = [lab_item, lab_project] if day == 43 else [lab_item]
-            override = MAIN_OVERRIDES.get(day)
-            if override:
-                lab_track, names = override
-                selected = [plan_item(lab_track, item) for item in named_items(lab_track, names, inventory)]
-                lab_items = ([lab_item] if day >= 29 else []) + [
-                    item for item in selected if item["topic"] != lab_item["topic"]
-                ]
-                if day == 43:
-                    lab_items.append(lab_project)
-            tasks.append({"track": lab_track, "minutes": 90, "kind": "project", "items": lab_items})
-            if day >= 27:
-                track = "system-design"
-                design_override = WEEKEND_DESIGN_OVERRIDES.get(day)
-                if design_override:
-                    item = named_items(track, [design_override], inventory)[0]
-                else:
-                    item_list = inventory[track]
-                    item = item_list[cursors.get(track, 0) % len(item_list)]
-                    cursors[track] = cursors.get(track, 0) + 1
-                tasks.append({"track": track, "minutes": 60, "kind": "practice", "items": [{"topic": item["topic"], "ref": ref_of(item), "tracker": track}]})
+        if not is_weekend(day):
+            sql_today = take("sql", sql_lane)[0]
+            a, b = next_focus(2)
+            s = take("second", second)[0]
+            tasks.append(task("sql", 15, "learn", sql_today))
+            tasks.append(practice_task(20))
+            for p in take("dsa", dsa, 2):
+                tasks.append(task("dsa", 20, "practice", p))
+            tasks.append(task(a["track"], 25, "learn", a))
+            tasks.append(task(b["track"], 25, "learn", b))
+            tasks.append(task(s["track"], 20, "learn", s))
+            hub = "sql" if cur["wd"] % 2 == 0 else BANK_FOR.get(a["track"], "data-engineering")
+            if a["track"] == "review":
+                hub = "behavioral" if bank_cursor["behavioral"] < len(bank_order["behavioral"]) else "scenario-based"
+            cur["wd"] += 1
+            tasks.append(task("interview", 10, "mock", bank_question(hub)))
+            if a["track"] == "system-design":
+                ex = f"Sketch it: draw sources, storage, processing and serving for “{a['topic'].removeprefix('Design ')}”"
+            elif a["track"] == "review":
+                ex = "Re-do one exercise from this week's weakest topic without notes"
             else:
-                tasks.append({"track": "de-concepts", "minutes": 60, "kind": "project", "items": [{"topic": f"Foundations lab: {concept['topic']}", "ref": ref_of(concept)}]})
-            tasks.append({"track": "review", "minutes": 30, "kind": "mock" if day >= 28 else "revise", "items": [{"topic": "Weekly review and interview recall", "ref": "articles:career/explain-a-data-engineering-project"}]})
-            main_track = lab_track
-            main_topic = next((item["topic"] for item in lab_items if item.get("tracker")), lab_item["topic"])
-            if day == 85:
-                exercise = "Record a short demo showing the pipeline, its data quality checks and one replay-safe run."
-            elif day == 86:
-                exercise = "Write three résumé bullets and a portfolio README that describe the project and its trade-offs."
-            elif lab_track == "pyspark":
-                exercise = f"Build a small DataFrame exercise for {main_topic} and verify the result on a local sample."
-            elif lab_track == "kafka":
-                exercise = "Create a producer/consumer walkthrough, record the offset, then replay one message safely."
-            elif lab_track == "python":
-                exercise = "Load a CSV into local Postgres twice and show that the second run creates no duplicate rows."
+                ex = EXERCISE.get(a["track"], "Practice: work through the lesson's example for {t} yourself").format(t=a["topic"])
+            tasks.append(task("practice", 15, "project", {"topic": ex, "ref": a["ref"]}))
+            past = history[-10] if len(history) >= 10 else (history[-1] if history else None)
+            if past:
+                tasks.append(task("review", 10, "revise", {"topic": f"Recall: explain {past['topic']} without notes", "ref": past["ref"]}))
             else:
-                exercise = f"Extend the {project_title.lower()} with a tested, replay-safe step and record the result."
+                tasks.append(task("review", 10, "revise", {"topic": "Set your start date above and block 3 hours a day for the next 90 days", "ref": "roadmaps:data-engineer-roadmap"}))
+            history += [a, b]
+            theme, main = a["topic"], a
+            if a["track"] == "review":
+                theme = "Final revision: " + a["topic"].removeprefix("Revise ").split(":")[0]
         else:
-            override = MAIN_OVERRIDES.get(day)
-            if override:
-                track, names = override
-                task_items = [plan_item(track, item) for item in named_items(track, names, inventory)]
-                if day == 63:
-                    task_items.append({
-                        "topic": "Extend the clickstream project with watermarks and stateful aggregation",
-                        "ref": "projects:kafka-spark-delta-streaming",
-                    })
+            saturday = (day - 1) % 7 == 5
+            tasks.append(practice_task(15))
+            tasks.append(task("sql", 15, "practice", take("wsql", weekend_sql)[0]))
+            for p in take("dsa", dsa, 3):
+                tasks.append(task("dsa", 15, "practice", p))
+            f = next_focus(1)[0]
+            tasks.append(task(f["track"], 15, "learn", f))
+            for t, r, anc in take("proj", PROJECT_STEPS, 2):
+                tasks.append(task("project", 25, "project", {"topic": t, "ref": r, "anchor": anc}))
+            if day in FOUNDATION_LABS:
+                text, concept = FOUNDATION_LABS[day]
+                tasks.append(task("de-concepts", 20, "project", {"topic": text, "ref": tracker_item("de-concepts", concept)["ref"]}))
             else:
-                forced = {11: "aws", 24: "snowflake", 26: "airflow", 61: "spark-streaming"}
-                track = forced[day] if day in forced else choose_track(day, week, cursors, inventory)
-                source = "pyspark" if track == "spark-streaming" else track
-                if track == "spark-streaming":
-                    main_items = [entry for entry in inventory[source] if entry.get("category") == "Streaming"]
-                else:
-                    main_items = inventory[source]
-                item = main_items[cursors.get(track, 0) % len(main_items)]
-                cursors[track] = cursors.get(track, 0) + 1
-                task_track = "pyspark" if track == "spark-streaming" else track
-                task_items = [plan_item(task_track, item)]
-            task_track = track
-            extra = ADDITIONAL_MAIN_OVERRIDES.get(day)
-            tasks.append({
-                "track": task_track,
-                "minutes": 45 if extra else 60,
-                "kind": "learn",
-                "items": task_items,
-            })
-            if extra:
-                extra_track, extra_names = extra
-                tasks.append({
-                    "track": extra_track,
-                    "minutes": 15,
-                    "kind": "learn",
-                    "items": [plan_item(extra_track, item) for item in named_items(extra_track, extra_names, inventory)],
-                })
-            tasks.append({"track": "review", "minutes": 15, "kind": "revise", "items": [{"topic": "Recall yesterday's and last week's topics; answer one question aloud", "ref": "articles:career/explain-a-data-engineering-project"}]})
-            main_track = track
-            main_topic = task_items[0]["topic"]
-            exercise = f"Complete a hands-on exercise for {main_topic} and keep a short note of the result."
-            if day == 63:
-                exercise = "Extend the clickstream project with a watermark and stateful aggregation; record a replay test."
+                tasks.append(task("system-design", 20, "practice", tracker_item("system-design", take("design", DESIGN_WEEKEND)[0])))
+            mock = MOCKS[week][0 if saturday or len(MOCKS[week]) == 1 else 1]
+            if mock.startswith("mock:"):
+                text, ref = MOCK_TASKS[mock]
+                tasks.append(task("interview", 10, "mock", {"topic": text, "ref": ref}))
+            else:
+                q = bank_question(mock, "Answer aloud")
+                tasks.append(task("interview", 10, "mock", q))
+            if saturday:
+                tasks.append(task("review", 5, "revise", {"topic": "Weekly review: re-solve two of this week's DSA problems from memory", "ref": dsa[max(cur['dsa'] - 8, 0)]["ref"]}))
+                tasks.append(task("review", 5, "revise", {"topic": "Note three weak topics from this week", "ref": "roadmaps:data-engineer-roadmap"}))
+            else:
+                last = history[-1] if history else f
+                tasks.append(task("review", 5, "revise", {"topic": f"Weekly review: explain this week's {last['track'].replace('-', ' ')} topics in your own words", "ref": last["ref"]}))
+                tasks.append(task("review", 5, "revise", {"topic": "Plan next week: schedule time for your three weak topics", "ref": "roadmaps:data-engineer-roadmap"}))
+            history.append(f)
+            theme, main = f["topic"], f
+            if f["track"] == "review":
+                theme = "Final revision: " + f["topic"].removeprefix("Revise ").split(":")[0]
 
-        milestone = MILESTONES.get(week) if day == min(week * 7, 90) else None
-        monthly = None
-        if day == 30:
-            monthly = "Month review and Mock 1: explain the batch project, SQL and DSA foundations; make a realistic application plan."
-        elif day == 60:
-            monthly = "Mocks 2 and 3: complete SQL/DSA and data-engineering design rounds; review gaps from the pipeline project."
-        elif day == 90:
-            milestone = MILESTONES[13]
-            monthly = "Finish the project demo, resume and portfolio; complete final mocks and a focused revision plan."
-
-        outcome = f"You can explain {main_topic}, complete today's SQL and DSA practice, and show the result of the hands-on exercise."
+        want = WEEKEND_TASKS if is_weekend(day) else WEEKDAY_TASKS
+        count = sum(len(t["items"]) + len(t.get("practice", [])) for t in tasks)
+        assert count == want, f"day {day}: {count} tasks"
+        assert sum(t["minutes"] for t in tasks) == MINUTES, f"day {day}: minutes"
+        exercise = next((t["items"][0]["topic"] for t in tasks if t["track"] in ("practice", "project")), "")
+        iq = next(t["items"][0]["topic"] for t in tasks if t["track"] == "interview")
         days.append({
-            "day": day,
-            "phase": phase,
-            "week": week,
-            "hours": hours,
-            "theme": main_topic,
-            "tasks": tasks,
+            "day": day, "phase": phase, "week": week, "hours": MINUTES // 60, "theme": theme, "tasks": tasks,
             "exercise": exercise,
-            "interviewQuestion": question_for(main_track, main_topic),
-            "outcome": outcome,
-            **({"weekly": milestone} if milestone else {}),
-            **({"monthly": monthly} if monthly else {}),
+            "interviewQuestion": iq.split(": ", 1)[-1],
+            "outcome": f"You can explain {main['topic']}, and you solved today's SQL and DSA problems without hints.",
+            **({"weekly": WEEKLY[week]} if day == min(week * 7, DAYS) else {}),
+            **({"monthly": PHASE_REVIEW[day]} if day in PHASE_REVIEW else {}),
         })
-    # Keep the opening homepage/planner cards visually balanced at exactly ten tiles.
-    # Move existing lessons between days so every topic remains scheduled once.
-    opening_moves = [
-        (1, 3, "dsa", "Product of Array Except Self"),
-        (1, 4, "sql", "NULL handling with IS NULL / COALESCE"),
-        (1, 5, "de-concepts", "Foundations lab: Data lifecycle and ownership"),
-        (2, 3, "dsa", "Contiguous Array"),
-        (2, 4, "dsa", "Shortest Subarray with Sum at Least K"),
-        (2, 5, "de-concepts", "OLTP and OLAP workloads"),
-        (6, 3, "dsa", "Find All Numbers Disappeared in an Array"),
-        (7, 4, "dsa", "Find All Duplicates in an Array"),
-        (8, 5, "de-concepts", "CSV and JSON trade-offs"),
-    ]
-    for source_day, target_day, track, topic in opening_moves:
-        source = next(
-            task for task in days[source_day - 1]["tasks"]
-            if task["track"] == track and any(item["topic"] == topic for item in task["items"])
-        )
-        item = next(item for item in source["items"] if item["topic"] == topic)
-        source["items"].remove(item)
-        target = next(task for task in days[target_day - 1]["tasks"] if task["track"] == track)
-        target["items"].append(item)
 
-    for day in days:
-        for task in [task for task in day["tasks"] if not task["items"] and not task.get("practice")]:
-            recipient = next(
-                (other for other in day["tasks"] if other is not task and other["kind"] == task["kind"]),
-                None,
-            ) or next(other for other in day["tasks"] if other is not task and other["track"] == task["track"])
-            recipient["minutes"] += task["minutes"]
-            day["tasks"].remove(task)
-
-    if sql_cursor != 100 or dsa_cursor != 248 or practice_cursor != 55:
-        raise ValueError(f"Coverage mismatch: SQL={sql_cursor}, DSA={dsa_cursor}, SQL practice={practice_cursor}")
-    return days
+    assert cur["dsa"] == len(dsa) and cur["prac"] == len(sql_practice) and cur["proj"] == len(PROJECT_STEPS)
+    assert cur["design"] == len(DESIGN_WEEKEND), cur["design"]
+    document = {"version": 3, "phases": [{"title": p["title"], "goal": p["goal"]} for p in PHASES], "days": days}
+    OUTPUT.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"Wrote {len(days)} days to {OUTPUT.relative_to(ROOT)}")
 
 
 if __name__ == "__main__":
-    document = {"version": 2, "phases": PHASES, "days": build()}
-    OUTPUT.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"Wrote {len(document['days'])} days to {OUTPUT.relative_to(ROOT)}")
+    main()

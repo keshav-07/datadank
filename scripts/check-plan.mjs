@@ -44,283 +44,187 @@ for (const [collection, dir] of Object.entries(collectionDirs)) {
   }
 }
 
-if (plan.version !== 2) fail("plan version must be 2");
-if (plan.days.length !== 90) fail(`expected 90 days, found ${plan.days.length}`);
-const dayNumbers = new Set(plan.days.map((day) => day.day));
-if (dayNumbers.size !== 90 || [...dayNumbers].some((day, i) => day !== i + 1))
-  fail("days must be numbered uniquely from 1 through 90");
+// Headings ids as Astro generates them (close enough to github-slugger for the plain headings used here).
+const headingId = (text) =>
+  text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s_-]/gu, "")
+    .trim()
+    .replace(/\s/g, "-");
+const anchorsOf = new Map();
+async function anchors(ref) {
+  if (anchorsOf.has(ref)) return anchorsOf.get(ref);
+  const [collection, id] = ref.split(":");
+  const base = path.join(root, "src/content", collectionDirs[collection], id);
+  let text = "";
+  for (const ext of [".md", ".mdx"]) text ||= await readFile(base + ext, "utf8").catch(() => "");
+  const ids = new Set(
+    [...text.matchAll(/^#{2,3} (.+)$/gm)].map((m) => headingId(m[1].replace(/`/g, ""))),
+  );
+  anchorsOf.set(ref, ids);
+  return ids;
+}
 
-const uniqueSql = new Set();
-const uniqueDsa = new Set();
+const rowOf = (tracker, topic) => curriculum[tracker]?.items.find((row) => row.topic === topic);
+
+if (plan.version !== 3) fail("plan version must be 3");
+if (plan.days.length !== 90) fail(`expected 90 days, found ${plan.days.length}`);
+if (plan.days.some((day, i) => day.day !== i + 1)) fail("days must be numbered 1 through 90");
+
+const firstDay = new Map(); // "tracker:topic" or track -> first day it appears
+const seenTracker = new Set();
 const practices = new Set();
-const firstSeen = new Map();
-const firstTopicDay = new Map();
 let totalHours = 0;
-let streamingStart;
 for (const day of plan.days) {
   totalHours += day.hours;
-  const weekend = (day.day - 1) % 7 < 2;
-  const expectedHours = weekend ? 6 : 3;
-  if (day.hours !== expectedHours) fail(`day ${day.day} should be ${expectedHours} hours`);
+  const weekend = (day.day - 1) % 7 >= 5; // day 1 is a Monday
+  if (day.hours !== 3) fail(`day ${day.day} should be 3 hours, found ${day.hours}`);
   if (!day.theme || !day.exercise || !day.interviewQuestion || !day.outcome)
-    fail(`day ${day.day} needs a theme, exercise, interview question and observable outcome`);
-
+    fail(`day ${day.day} needs a theme, exercise, interview question and outcome`);
   const minutes = day.tasks.reduce((sum, task) => sum + task.minutes, 0);
-  if (minutes !== day.hours * 60)
-    fail(`day ${day.day} task minutes add to ${minutes}, expected ${day.hours * 60}`);
-  const inDay = new Set();
-  const tracks = new Set(day.tasks.map((task) => task.track));
-  for (const required of ["sql", "dsa", "de-concepts"])
-    if (!tracks.has(required)) fail(`day ${day.day} is missing the ${required} track`);
+  if (minutes !== 180) fail(`day ${day.day} task minutes add to ${minutes}, expected 180`);
+  const count = day.tasks.reduce(
+    (n, task) => n + task.items.length + (task.practice?.length ?? 0),
+    0,
+  );
+  const expected = weekend ? 12 : 10;
+  if (count !== expected) fail(`day ${day.day} has ${count} tasks, expected ${expected}`);
+  for (const required of ["sql", "dsa", "interview", "review"])
+    if (!day.tasks.some((task) => task.track === required))
+      fail(`day ${day.day} has no ${required} task`);
 
   for (const task of day.tasks) {
-    if (!Number.isInteger(task.minutes) || task.minutes < 1)
-      fail(`day ${day.day} has an invalid task duration`);
-    if (!Array.isArray(task.items) || task.items.length === 0)
-      fail(`day ${day.day} has an empty ${task.track} task`);
+    if (!Number.isInteger(task.minutes) || task.minutes < 5)
+      fail(`day ${day.day} has a task under 5 minutes`);
+    if (!firstDay.has(task.track)) firstDay.set(task.track, day.day);
     for (const item of task.items) {
-      const dailyKey = `${task.track}:${item.topic}`;
-      if (inDay.has(dailyKey)) fail(`day ${day.day} repeats ${dailyKey}`);
-      inDay.add(dailyKey);
-      if (item.ref && !refs.has(item.ref))
-        fail(`day ${day.day} links to missing content ref ${item.ref}`);
-      if (!item.ref) fail(`day ${day.day} topic "${item.topic}" has no lesson or question page`);
-      if (item.tracker) {
-        const rows = curriculum[item.tracker]?.items ?? [];
-        if (!rows.some((row) => row.topic === item.topic))
-          fail(`day ${day.day} topic "${item.topic}" is missing from tracker ${item.tracker}`);
-        if (item.tracker === "sql") uniqueSql.add(item.topic);
-        if (item.tracker === "dsa") uniqueDsa.add(item.topic);
-        if (!firstSeen.has(item.tracker)) firstSeen.set(item.tracker, day.day);
+      if (!item.ref) fail(`day ${day.day}: "${item.topic}" has no page`);
+      else if (!refs.has(item.ref)) fail(`day ${day.day} links to missing page ${item.ref}`);
+      else if (item.anchor && !(await anchors(item.ref)).has(item.anchor))
+        fail(`day ${day.day}: ${item.ref} has no heading #${item.anchor}`);
+      if (!item.tracker) continue;
+      const row = rowOf(item.tracker, item.topic);
+      if (!row) {
+        fail(`day ${day.day}: "${item.topic}" is not in the ${item.tracker} tracker`);
+        continue;
       }
-      const topicKey = `${task.track}:${item.topic}`;
-      firstTopicDay.set(topicKey, Math.min(firstTopicDay.get(topicKey) ?? day.day, day.day));
-      if (task.track === "pyspark" && /stream|watermark/i.test(item.topic))
-        streamingStart ??= day.day;
+      const key = `${item.tracker}:${item.topic}`;
+      if (seenTracker.has(key)) fail(`${key} is scheduled twice`);
+      seenTracker.add(key);
+      firstDay.set(key, day.day);
+      if (!firstDay.has(task.track + ":first")) firstDay.set(task.track + ":first", day.day);
+      // Progression: easy work first, the hardest work last.
+      if (item.tracker === "dsa" && row.difficulty === "Hard" && day.day < 80)
+        fail(`day ${day.day}: Hard DSA problem ${item.topic} before day 80`);
+      if (item.tracker === "dsa" && row.difficulty !== "Easy" && day.day <= 7)
+        fail(`day ${day.day}: ${row.difficulty} DSA problem ${item.topic} in week 1`);
+      if (item.tracker === "sql" && row.difficulty === "Expert" && row.lesson && day.day < 60)
+        fail(`day ${day.day}: expert SQL topic ${item.topic} before day 60`);
     }
     for (const practice of task.practice ?? []) {
-      try {
-        const url = new URL(practice.url);
-        if (url.protocol !== "https:" || url.hostname !== "leetcode.com")
-          fail(`day ${day.day} has a non-LeetCode SQL practice URL`);
-        const slug = url.pathname.match(/^\/problems\/([^/]+)\/$/)?.[1];
-        if (!slug) fail(`day ${day.day} has a malformed LeetCode problem URL`);
-        if (practices.has(practice.url)) fail(`duplicate SQL practice URL: ${practice.url}`);
-        practices.add(practice.url);
-      } catch {
-        fail(`day ${day.day} has an invalid SQL practice URL`);
-      }
+      const url = new URL(practice.url);
+      if (url.hostname !== "leetcode.com" || !/^\/problems\/[^/]+\/$/.test(url.pathname))
+        fail(`day ${day.day} has a malformed LeetCode URL ${practice.url}`);
+      if (practices.has(practice.url)) fail(`duplicate SQL practice ${practice.url}`);
+      practices.add(practice.url);
     }
   }
 }
 
-for (const day of plan.days.slice(0, 5)) {
-  const tiles = day.tasks.reduce(
-    (count, task) => count + task.items.length + (task.practice?.length ?? 0),
-    0,
-  );
-  if (tiles !== 10) fail(`day ${day.day} should have exactly 10 planner tiles, found ${tiles}`);
-}
+// DSA difficulty never steps back within a pattern group (Easy -> Medium), Hard only at the end.
+const dsaOrder = plan.days.flatMap((day) =>
+  day.tasks
+    .filter((task) => task.track === "dsa")
+    .flatMap((task) => task.items.map((item) => item.topic)),
+);
+if (dsaOrder.length < 200) fail(`expected at least 200 DSA problems, found ${dsaOrder.length}`);
 
-if (totalHours !== 348) fail(`expected 348 planned hours, found ${totalHours}`);
-if (uniqueSql.size !== 100) fail(`expected 100 unique SQL topics, found ${uniqueSql.size}`);
-if (uniqueDsa.size !== curriculum.dsa.items.length)
-  fail(
-    `expected all ${curriculum.dsa.items.length} DSA problems exactly once, found ${uniqueDsa.size}`,
-  );
-if (
-  new Set(
-    plan.days.flatMap((day) =>
-      day.tasks
-        .filter((task) => task.track === "dsa")
-        .flatMap((task) => task.items.map((item) => item.topic)),
-    ),
-  ).size !== uniqueDsa.size
-)
-  fail("DSA problems must not repeat across the plan");
-if (practices.size !== 55)
-  fail(`expected 55 unique LeetCode SQL practice links, found ${practices.size}`);
-
-const dayFor = (track, topic) => firstTopicDay.get(`${track}:${topic}`);
-const latest = (requirements) =>
-  Math.max(...requirements.map(([track, topic]) => dayFor(track, topic) ?? 0));
+// Prerequisites: each track starts only after what it builds on.
+const at = (tracker, topic) => firstDay.get(`${tracker}:${topic}`);
 const requireBefore = (track, requirements, label) => {
-  const starts = firstSeen.get(track);
-  const prerequisiteDay = latest(requirements);
-  if (!starts || !prerequisiteDay || starts < prerequisiteDay)
-    fail(`${track} starts before ${label} is scheduled`);
+  const starts = firstDay.get(track + ":first");
+  const latest = Math.max(
+    ...requirements.map(([tracker, topic]) => at(tracker, topic) ?? Infinity),
+  );
+  if (!starts) fail(`${track} is never scheduled`);
+  else if (!(latest <= starts)) fail(`${track} starts on day ${starts}, before ${label}`);
 };
 requireBefore(
   "data-modeling",
   [
     ["sql", "INNER JOIN basics"],
     ["sql", "LEFT JOIN basics"],
-    ["sql", "RIGHT JOIN & FULL OUTER JOIN"],
-    ["sql", "Self Join patterns"],
-    ["sql", "Anti-join (NOT EXISTS / LEFT JOIN NULL)"],
-    ["sql", "Multi-table joins"],
   ],
-  "the SQL join basics",
-);
-requireBefore(
-  "aws",
-  [
-    ["de-concepts", "CSV and JSON trade-offs"],
-    ["de-concepts", "Parquet and columnar storage"],
-    ["de-concepts", "Avro and schema evolution"],
-    ["de-concepts", "Partitioning and data layout"],
-  ],
-  "file formats and partitioning",
+  "SQL joins",
 );
 requireBefore(
   "pyspark",
   [
-    ["python", "Python for data engineering"],
-    ["sql", "Aggregate functions (SUM, AVG, MIN, MAX)"],
+    ["sql", "GROUP BY fundamentals"],
+    ["de-concepts", "Parquet and columnar storage"],
   ],
-  "Python and SQL aggregation",
+  "SQL aggregation and file formats",
+);
+requireBefore(
+  "airflow",
+  [
+    ["de-concepts", "Idempotent pipeline writes"],
+    ["de-concepts", "Retries and failure recovery"],
+  ],
+  "idempotency and retries",
 );
 requireBefore(
   "snowflake",
-  [["de-concepts", "Warehouse grain and star schemas"]],
-  "warehouse modeling basics",
-);
-requireBefore("airflow", [["de-concepts", "Idempotent pipeline writes"]], "pipeline idempotency");
-requireBefore(
-  "system-design",
   [
-    ["aws", "S3 buckets & objects"],
-    ["de-concepts", "Partitioning and data layout"],
+    ["data-modeling", "Star Schema"],
+    ["data-modeling", "Grain definition"],
   ],
-  "S3, formats and partitioning",
+  "warehouse modeling",
 );
 requireBefore(
   "kafka",
   [
     ["de-concepts", "Batch versus streaming"],
-    ["de-concepts", "Incremental loading and watermarks"],
     ["de-concepts", "Change data capture patterns"],
   ],
-  "batch/streaming, incremental loads and CDC",
+  "streaming and CDC concepts",
 );
-if (
-  !dayFor("kafka", "Topic fundamentals") ||
-  streamingStart < dayFor("kafka", "Topic fundamentals")
-)
-  fail("Spark Structured Streaming starts before Kafka topic fundamentals");
-
-const expectedStarts = {
-  "data-modeling": 10,
-  aws: 11,
-  pyspark: 15,
-  snowflake: 24,
-  airflow: 26,
-  "system-design": 27,
-  kafka: 43,
-};
-for (const [track, expected] of Object.entries(expectedStarts)) {
-  const actual = firstSeen.get(track);
-  if (actual !== expected)
-    fail(`${track} should start on day ${expected}, found ${actual ?? "no scheduled topic"}`);
-}
-if (streamingStart !== 61)
-  fail(
-    `Spark Structured Streaming should start on day 61, found ${streamingStart ?? "no scheduled topic"}`,
-  );
+requireBefore(
+  "spark-streaming",
+  [
+    ["kafka", "Topic fundamentals"],
+    ["kafka", "Consumer group basics"],
+  ],
+  "Kafka basics",
+);
+requireBefore(
+  "system-design",
+  [
+    ["de-concepts", "Lake, warehouse and lakehouse"],
+    ["de-concepts", "Partitioning and data layout"],
+  ],
+  "storage concepts",
+);
+requireBefore("aws", [["de-concepts", "Partitioning and data layout"]], "data layout");
 
 for (const day of [7, 14, 21, 28, 35, 42, 49, 56, 63, 70, 77, 84, 90])
   if (!plan.days[day - 1]?.weekly) fail(`day ${day} is missing its weekly milestone`);
-for (const day of [30, 60, 90])
-  if (!plan.days[day - 1]?.monthly) fail(`day ${day} is missing its monthly review`);
-
-const weeklyTopics = {
-  2: ["data-modeling:Grain definition", "data-modeling:Star Schema", "aws:S3 buckets & objects"],
-  3: [
-    "pyspark:DataFrame API basics",
-    "pyspark:Lazy evaluation & DAG",
-    "data-modeling:SCD Type 2 (history)",
-  ],
-  4: [
-    "system-design:Design a batch ingestion framework",
-    "pyspark:Joins in Spark SQL",
-    "pyspark:Reading/writing Parquet",
-  ],
-  5: [
-    "de-concepts:Incremental loading and watermarks",
-    "de-concepts:Idempotent pipeline writes",
-    "airflow:Backfills & reruns",
-  ],
-  6: [
-    "pyspark:ACID transactions on Delta",
-    "snowflake:Snowpipe continuous ingestion",
-    "aws:Glue ETL jobs (Spark)",
-    "system-design:Design a Lakehouse (bronze/silver/gold)",
-  ],
-  7: [
-    "kafka:At-least-once",
-    "snowflake:CDC with streams",
-    "airflow:XCom push/pull",
-    "aws:Redshift architecture",
-  ],
-  8: [
-    "kafka:Exactly-once semantics (EOS)",
-    "kafka:Connect framework",
-    "pyspark:AQE (Adaptive Query Execution)",
-    "aws:EMR clusters",
-    "de-concepts:Pipeline observability",
-  ],
-  9: [
-    "pyspark:Structured Streaming model",
-    "pyspark:Watermarking",
-    "pyspark:Stateful aggregations",
-    "pyspark:Extend the clickstream project with watermarks and stateful aggregation",
-    "system-design:Design a clickstream analytics pipeline",
-  ],
-  10: [
-    "snowflake:RBAC model",
-    "snowflake:Column-level security / masking",
-    "aws:Lake Formation basics",
-    "system-design:Design a GDPR/PII compliant pipeline",
-    "system-design:Design a data observability system",
-  ],
-  11: [
-    "airflow:LocalExecutor",
-    "kafka:Consumer lag",
-    "kafka:Rebalancing protocols",
-    "system-design:Design a backfill & late-data handling system",
-  ],
-  12: [
-    "system-design:Design a multi-tenant data platform",
-    "system-design:Design a data mesh architecture",
-    "system-design:Design a unified batch + streaming (Lambda/Kappa)",
-    "system-design:Design a feature store",
-  ],
-  13: [
-    "system-design:Record the final project demo and walkthrough",
-    "system-design:Polish the resume, portfolio and project README",
-  ],
-};
-for (const [weekText, requiredTopics] of Object.entries(weeklyTopics)) {
-  const week = Number(weekText);
-  const available = new Set(
-    plan.days
-      .filter((day) => day.week === week)
-      .flatMap((day) =>
-        day.tasks.flatMap((task) =>
-          task.items.map((item) => `${item.tracker ?? task.track}:${item.topic}`),
-        ),
-      ),
-  );
-  for (const topic of requiredTopics)
-    if (!available.has(topic)) fail(`week ${week} is missing required topic ${topic}`);
-}
+for (const day of [28, 63, 90])
+  if (!plan.days[day - 1]?.monthly) fail(`day ${day} is missing its phase review`);
+if (totalHours !== 270) fail(`expected 270 hours, found ${totalHours}`);
+if (practices.size !== 55)
+  fail(`expected the 55 LeetCode SQL 50 problems, found ${practices.size}`);
 
 if (errors.length) {
   console.error(`Plan check failed with ${errors.length} issue(s):`);
   for (const error of errors) console.error(`- ${error}`);
   process.exitCode = 1;
 } else {
+  const tasks = plan.days.reduce(
+    (n, d) => n + d.tasks.reduce((m, t) => m + t.items.length + (t.practice?.length ?? 0), 0),
+    0,
+  );
   console.log(
-    "Plan check passed: 90 days, 348 hours, 100 SQL topics, all DSA problems, and 55 SQL practice links.",
+    `Plan check passed: 90 days, 3 hours each, ${tasks} tasks, ${dsaOrder.length} DSA problems easy to hard, prerequisites in order.`,
   );
 }

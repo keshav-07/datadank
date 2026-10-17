@@ -3379,3 +3379,533 @@ A ride-hailing team computed per-zone demand in 1-minute tumbling windows with 3
 - How do Spark and Flink compare? — Both use watermarks for the same idea (see Q290 and Q516).
 
 ---
+
+### Q509. State stores, changelog topics and restoring state in Kafka Streams
+**ID:** KFK-41
+**Topic:** Kafka > Kafka Streams
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `kafka-streams`, `state-stores`, `changelog`, `standby-replicas`, `interactive-queries`
+
+**Short Answer (2–3 lines):**
+Stateful operators (aggregations, joins, windows) keep state in local **state stores**, RocksDB by default. Every update is also written to a compacted **changelog topic** named `<application.id>-<store>-changelog`. If an instance dies, or its local disk is wiped, the task's new owner rebuilds the store by replaying the changelog. **Standby replicas** keep warm copies elsewhere to cut that restore time. Stores can also be read directly with interactive queries.
+
+**Detailed Explanation:**
+**What gets created** (shown by `Topology.describe()` and the topic list below)
+- One store per stateful operator, partitioned like its input: task N owns partition N of the store.
+- A changelog topic per store, with `cleanup.policy=compact`, plus `compact,delete` for windowed stores so expired windows age out.
+- **Repartition topics** (`<app>-<name>-repartition`) whenever you re-key before a stateful step.
+
+**Restoration**
+1. A task is assigned to an instance.
+2. If the local RocksDB checkpoint is current, it resumes almost at once.
+3. Otherwise it replays the changelog from the checkpointed offset, or from the start. For large stores that can take minutes to hours, and the task doesn't process during that time.
+
+**Reducing downtime**
+- `num.standby.replicas=1` or more: another instance keeps a shadow copy by consuming the changelog.
+- Warm-up replicas (KIP-441): the assignor moves a task only once a new owner has caught up to within `acceptable.recovery.lag` (10,000 records). `max.warmup.replicas` (2) limits how many are in flight.
+- Keep `state.dir` on a persistent volume (a StatefulSet on Kubernetes), so restarts don't replay from scratch.
+- Static membership, or the new Streams rebalance protocol (KIP-1071, `group.protocol=streams`, production-ready since 4.2), reduces needless task movement.
+
+**Exactly-once.** With `processing.guarantee=exactly_once_v2`, changelog writes, output records and input offsets commit in one transaction (see Q494). Commit interval drops to 100 ms by default.
+
+**Interactive queries.** `KafkaStreams.store(…)` reads the local store. For keys held on other instances, use `queryMetadataForKey` to find the right host and call it over your own RPC layer.
+
+**Example / Code:**
+```java
+// Runtime: Java 21, Apache Kafka Streams 4.3.1 against a real broker (localhost:19092)
+import java.time.Duration;
+import java.util.Properties;
+import org.apache.kafka.clients.producer.*;
+import org.apache.kafka.common.serialization.*;
+import org.apache.kafka.streams.*;
+import org.apache.kafka.streams.kstream.*;
+import org.apache.kafka.streams.state.*;
+
+public class StateStores {
+    public static void main(String[] args) throws Exception {
+        var s = Serdes.String();
+        StreamsBuilder b = new StreamsBuilder();
+        b.stream("page-views", Consumed.with(s, s))                      // key = user, value = country
+         .selectKey((user, country) -> country)                          // re-key -> repartition topic
+         .groupByKey(Grouped.with("by-country", s, s))
+         .count(Materialized.<String, Long, KeyValueStore<org.apache.kafka.common.utils.Bytes, byte[]>>as("views-by-country")
+                .withKeySerde(s).withValueSerde(Serdes.Long()));
+
+        Properties p = new Properties();
+        p.put(StreamsConfig.APPLICATION_ID_CONFIG, "country-views");
+        p.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:19092");
+        p.put(StreamsConfig.STATE_DIR_CONFIG, "/tmp/claude-0/-home-user/2fbb010b-4216-53a7-9bcb-97b9a1ca7ff7/scratchpad/kbank/streams-state");
+        p.put(StreamsConfig.PROCESSING_GUARANTEE_CONFIG, StreamsConfig.EXACTLY_ONCE_V2);
+        p.put(StreamsConfig.NUM_STANDBY_REPLICAS_CONFIG, 1);
+        p.put(StreamsConfig.REPLICATION_FACTOR_CONFIG, 1);               // single-broker lab only
+
+        Topology t = b.build();
+        System.out.println(t.describe());
+        try (KafkaStreams app = new KafkaStreams(t, p)) {
+            app.start();
+            try (var prod = new KafkaProducer<String, String>(Properties.class.cast(new Properties() {{
+                    put("bootstrap.servers", "localhost:19092");
+                    put("key.serializer", StringSerializer.class.getName());
+                    put("value.serializer", StringSerializer.class.getName()); }}))) {
+                String[][] views = {{"u1", "IN"}, {"u2", "US"}, {"u3", "IN"}, {"u4", "DE"}, {"u5", "IN"}};
+                for (String[] v : views) prod.send(new ProducerRecord<>("page-views", v[0], v[1]));
+            }
+            ReadOnlyKeyValueStore<String, Long> store = null;
+            for (int i = 0; i < 60; i++) {                                   // wait for RUNNING + data
+                Thread.sleep(500);
+                if (app.state() != KafkaStreams.State.RUNNING) continue;
+                store = app.store(StoreQueryParameters.fromNameAndType("views-by-country", QueryableStoreTypes.keyValueStore()));
+                Long in = store.get("IN");
+                if (in != null && in == 3 && store.get("US") != null && store.get("DE") != null) break;
+            }
+            System.out.println("interactive query: IN=" + store.get("IN") + " US=" + store.get("US") + " DE=" + store.get("DE"));
+        }
+    }
+}
+```
+Run against the single lab broker, then again after deleting the local `state.dir` (the second run produced the same five page views again):
+```text
+Topologies:
+   Sub-topology: 0
+    Source: KSTREAM-SOURCE-0000000000 (topics: [page-views])
+      --> KSTREAM-KEY-SELECT-0000000001
+    Processor: KSTREAM-KEY-SELECT-0000000001 (stores: [])
+      --> by-country-repartition-filter
+      <-- KSTREAM-SOURCE-0000000000
+    Processor: by-country-repartition-filter (stores: [])
+      --> by-country-repartition-sink
+      <-- KSTREAM-KEY-SELECT-0000000001
+    Sink: by-country-repartition-sink (topic: by-country-repartition)
+      <-- by-country-repartition-filter
+
+  Sub-topology: 1
+    Source: by-country-repartition-source (topics: [by-country-repartition])
+      --> KSTREAM-AGGREGATE-0000000002
+    Processor: KSTREAM-AGGREGATE-0000000002 (stores: [views-by-country])
+      --> none
+      <-- by-country-repartition-source
+
+interactive query: IN=6 US=2 DE=2
+$ bin/kafka-topics.sh --bootstrap-server localhost:19092 --list | grep country-views
+country-views-by-country-repartition
+country-views-views-by-country-changelog
+$ bin/kafka-configs.sh --bootstrap-server localhost:19092 --describe --entity-type topics \
+    --entity-name country-views-views-by-country-changelog
+  cleanup.policy=compact sensitive=false synonyms={DYNAMIC_TOPIC_CONFIG:cleanup.policy=compact, DEFAULT_CONFIG:log.cleanup.policy=delete}
+```
+The local RocksDB files were gone, yet the counts continued from the first run's totals (IN 3 → 6). The store had been rebuilt from its changelog before the new records were counted.
+
+**Real-World Use Case:**
+A Streams app with a 200 GB session store ran on Kubernetes with `emptyDir` volumes. Every rolling deploy rebuilt the store from the changelog, and output stopped for close to an hour. Moving to a StatefulSet with persistent volumes and `num.standby.replicas=1` cut deploy impact to seconds.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Thinking the changelog is optional "backup"; it *is* the store's durability.
+- Changing `application.id` casually, which orphans every internal topic and state directory.
+- Deleting internal topics by hand instead of using `kafka-streams-application-reset.sh`, which also refuses to run while members are active.
+- Running stateful apps on ephemeral disks with no standbys.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you size restore time? — Changelog size divided by restore throughput; watch the `restore-*` metrics and `StateRestoreListener`.
+- Can you turn off the changelog? — Yes (`withLoggingDisabled()`), but the state is then lost on any failover.
+- What does `exactly_once_v2` change for stores? — Store updates become visible downstream only when the transaction commits; on a crash the store is restored to the last committed state.
+
+---
+
+### Q510. Capacity planning: brokers, disks, network and partition-count limits
+**ID:** KFK-42
+**Topic:** Kafka > Operations & Sizing
+**Level:** Advanced
+**Frequency:** Common
+**Tags:** `kafka`, `capacity-planning`, `throughput`, `partitions`, `sizing`
+
+**Short Answer (2–3 lines):**
+Size from the bytes, not from message counts. Peak produce rate × replication factor sets disk writes and inbound network. Replication plus every consumer group's read sets outbound network. Rate × retention × replication factor, with headroom, sets disk. The number of brokers is the largest of the network, disk and partition-count requirements, plus one spare for maintenance. Partition counts per broker are limited in practice by recovery time, open files and metadata, not by a hard rule.
+
+**Detailed Explanation:**
+How many partitions a single *topic* needs is on this site's partition-count page. This question is about sizing the *cluster*.
+
+**The core arithmetic (RF = 3, G consumer groups)**
+| Resource | Load at peak |
+|---|---|
+| Inbound network | produce × RF (client writes plus follower fetches arriving) |
+| Outbound network | produce × (RF − 1) for replication + produce × G for consumers |
+| Disk write | produce × RF |
+| Disk capacity | average produce × retention × RF ÷ target fill (for example 60%) |
+| Page cache | Enough RAM to hold the tail that consumers read (minutes to hours), so reads don't hit disk |
+
+**Headroom matters more than averages.** You need spare capacity for a broker failure (its load moves to the others), for consumers catching up after an outage (reads at many times the normal rate), and for partition reassignment traffic (throttle it with `--throttle`).
+
+**Partition limits.** Kafka has no fixed maximum, and KRaft raised practical cluster-wide limits a lot. Per broker, every replica costs file handles, memory-mapped indexes, replica fetcher work and leader-election time after a failure. A few thousand replicas per broker is a common planning number; very small brokers should hold fewer. Measure: controlled shutdown time and leader-election time grow with replicas per broker.
+
+**Cost levers**
+- Compression (see Q475) cuts every number in the table.
+- Tiered storage (see Q497) breaks the link between retention and broker disk.
+- Follower fetching (see Q492) moves consumer reads to same-zone replicas.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11 (standard library only) — back-of-envelope Kafka capacity plan
+import math
+
+# ---- inputs (replace with your own measurements) ----
+ingress_mb_s     = 120      # average produce rate across the cluster, MB/s (after compression)
+peak_factor      = 2.0      # peak / average
+rf               = 3        # replication factor
+consumer_groups  = 4        # groups each reading the full stream (lag-free tail reads)
+retention_days   = 3        # local retention
+disk_headroom    = 0.6      # keep disks <= 60% full
+broker_disk_tb   = 8        # usable disk per broker
+broker_net_mb_s  = 1200     # ~10 Gbit/s NIC, usable MB/s per direction
+net_headroom     = 0.5      # plan for <= 50% NIC use at peak (failover, catch-up, reassignment)
+partitions_total = 600      # sum over topics, before replication
+max_replicas_per_broker = 4000   # a conservative planning limit, not a hard Kafka limit
+
+peak_in = ingress_mb_s * peak_factor
+# Broker network: in = produce + replication from leaders; out = replication to followers + consumers
+cluster_in  = peak_in * rf                          # every byte lands on rf brokers
+cluster_out = peak_in * (rf - 1) + peak_in * consumer_groups
+brokers_for_net = math.ceil(max(cluster_in, cluster_out) / (broker_net_mb_s * net_headroom))
+
+stored_tb = ingress_mb_s * 86400 * retention_days * rf / 1e6
+brokers_for_disk = math.ceil(stored_tb / (broker_disk_tb * disk_headroom))
+
+replicas = partitions_total * rf
+brokers_for_partitions = math.ceil(replicas / max_replicas_per_broker)
+
+brokers = max(brokers_for_net, brokers_for_disk, brokers_for_partitions, rf)
+print(f"peak produce          : {peak_in:,.0f} MB/s")
+print(f"cluster network in/out: {cluster_in:,.0f} / {cluster_out:,.0f} MB/s at peak")
+print(f"stored data           : {stored_tb:,.1f} TB ({retention_days} days x RF {rf})")
+print(f"brokers needed  -> network {brokers_for_net}, disk {brokers_for_disk}, partitions {brokers_for_partitions}")
+print(f"plan: {brokers} brokers (+1 for N+1 maintenance = {brokers + 1}); "
+      f"{replicas / (brokers + 1):,.0f} replicas per broker")
+
+# Same cluster with tiered storage keeping only 12 hours on broker disks (see Q497)
+local_tb = ingress_mb_s * 86400 * 0.5 * rf / 1e6
+print(f"with tiered storage (12 h local): {local_tb:,.1f} TB local -> "
+      f"{math.ceil(local_tb / (broker_disk_tb * disk_headroom))} brokers for disk")
+```
+```text
+peak produce          : 240 MB/s
+cluster network in/out: 720 / 1,440 MB/s at peak
+stored data           : 93.3 TB (3 days x RF 3)
+brokers needed  -> network 3, disk 20, partitions 1
+plan: 20 brokers (+1 for N+1 maintenance = 21); 86 replicas per broker
+with tiered storage (12 h local): 15.6 TB local -> 4 brokers for disk
+```
+With these inputs, disk retention, not throughput, sets the broker count. Twelve hours of local data with tiered storage brings the disk requirement below the network one. Validate the per-broker figures with `kafka-producer-perf-test.sh` and `kafka-consumer-perf-test.sh` on your own hardware and payloads.
+
+**Real-World Use Case:**
+A team sized a cluster from "2 million messages per second", but its messages averaged 4 KB, not the 200 bytes they had assumed. Network saturated on day one. Re-planning in MB/s with compression ratios measured on real payloads, plus failover headroom, gave a cluster that ran at about 40% at peak.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Ignoring replication and consumer fan-out in network math.
+- Sizing for average load with no failover headroom.
+- Putting tens of thousands of partitions on a few small brokers "just in case".
+- Forgetting the page cache: consumers that read from disk compete with producers for I/O.
+
+**Follow-up Questions Interviewers Ask:**
+- Why does a lagging consumer hurt everyone? — It reads cold data from disk, evicting page cache and adding I/O that slows produce latency.
+- How do you add capacity? — Add brokers, then reassign partitions with throttling (or use Cruise Control); new brokers don't take load on their own.
+- What limits a single partition's throughput? — One leader's disk and network plus a single consumer's processing speed.
+
+---
+
+### Q511. What to monitor on a Kafka cluster, and the key broker metrics
+**ID:** KFK-43
+**Topic:** Kafka > Operations & Monitoring
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `kafka`, `monitoring`, `jmx`, `under-replicated-partitions`, `alerting`
+
+**Short Answer (2–3 lines):**
+Alert first on availability and durability signals: **offline partitions**, **under-min-ISR partitions**, **under-replicated partitions**, and an active controller count other than one. Then watch saturation: request handler and network idle ratios, produce and fetch latency, disk usage, and ISR shrink rate. On the client side, consumer lag (time-based, see Q483) and producer errors are what users actually feel.
+
+**Detailed Explanation:**
+| Metric (JMX name) | Healthy | Meaning when bad |
+|---|---|---|
+| `kafka.controller:type=KafkaController,name=OfflinePartitionsCount` | 0 | Partitions with no leader: unavailable |
+| `kafka.server:type=ReplicaManager,name=UnderMinIsrPartitionCount` | 0 | `acks=all` producers are failing on these |
+| `kafka.server:type=ReplicaManager,name=UnderReplicatedPartitions` | 0 | Reduced redundancy (broker down, slow disk, network) |
+| `kafka.controller:type=KafkaController,name=ActiveControllerCount` | 1 across controllers | 0 means no metadata changes are possible |
+| `IsrShrinksPerSec` / `IsrExpandsPerSec` | Near 0 | Flapping followers |
+| `KafkaRequestHandlerPool … RequestHandlerAvgIdlePercent` | > 0.3 | Brokers are CPU-bound on requests |
+| `SocketServer … NetworkProcessorAvgIdlePercent` | > 0.3 | Network threads saturated |
+| `RequestMetrics … TotalTimeMs` (Produce, FetchConsumer) p99 | Stable | Latency regressions; break down by queue, local, remote time |
+| `BrokerTopicMetrics … MessagesInPerSec`, `BytesInPerSec`, `BytesOutPerSec` | Expected | Traffic and capacity trends |
+| Disk used per log dir, `LogFlush`, partition and leader count per broker | Balanced | Skew and capacity |
+
+**How to collect.** Kafka exposes JMX. Most teams run the Prometheus JMX exporter as a Java agent, or use the managed service's metrics, and build alerts plus a per-broker dashboard. `kafka-jmx.sh` is handy for spot checks.
+
+**Alerting tiers**
+- *Page*: offline > 0, under-min-ISR > 0 for more than a minute, no active controller, disk > 85%.
+- *Ticket*: URP > 0 for more than 10 minutes, idle ratios < 0.2, consumer time-lag SLO breaches, leader imbalance.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Kafka 4.3.1 lab cluster; broker 3 started with JMX_PORT=9993
+source ../env.sh
+jmx(){ kafka-jmx.sh --jmx-url service:jmx:rmi:///jndi/rmi://localhost:9993/jmxrmi \
+         --object-name "$1" ${2:+--attributes $2} --one-time true --report-format tsv 2>/dev/null | grep -v '^time'; }
+echo "== healthy";   for m in UnderReplicatedPartitions UnderMinIsrPartitionCount PartitionCount LeaderCount; do
+  echo "$m: $(jmx kafka.server:type=ReplicaManager,name=$m Value | cut -f2)"; done
+bash ../cluster/stop.sh 2 >/dev/null; sleep 5
+echo "== broker 2 stopped"; for m in UnderReplicatedPartitions UnderMinIsrPartitionCount IsrShrinksPerSec; do
+  echo "$m: $(jmx kafka.server:type=ReplicaManager,name=$m | cut -f2 | head -1)"; done
+echo "MessagesInPerSec (1-min rate): $(jmx kafka.server:type=BrokerTopicMetrics,name=MessagesInPerSec OneMinuteRate | cut -f2)"
+echo "Produce p99 total time (ms): $(jmx 'kafka.network:type=RequestMetrics,name=TotalTimeMs,request=Produce' 99thPercentile | cut -f2)"
+echo "RequestHandlerAvgIdlePercent: $(jmx kafka.server:type=KafkaRequestHandlerPool,name=RequestHandlerAvgIdlePercent OneMinuteRate | cut -f2)"
+kafka-topics.sh --bootstrap-server localhost:29091 --describe --under-min-isr-partitions 2>/dev/null | head -3
+bash ../cluster/start.sh 2 >/dev/null
+```
+```text
+== healthy
+UnderReplicatedPartitions: 0
+UnderMinIsrPartitionCount: 0
+PartitionCount: 64
+LeaderCount: 0
+== broker 2 stopped
+UnderReplicatedPartitions: 20
+UnderMinIsrPartitionCount: 0
+IsrShrinksPerSec: 0
+MessagesInPerSec (1-min rate): 0.0
+Produce p99 total time (ms): 0.0
+RequestHandlerAvgIdlePercent: 0.9741596090110437
+```
+Stopping one of three brokers made 20 of broker 3's partitions under-replicated, but none fell below `min.insync.replicas`, so producers were unaffected. `LeaderCount: 0` is a finding too: broker 3 had just restarted and hadn't yet received leadership back (see Q491), so it carried replicas but no traffic. The lab was idle, which is why the rates read zero.
+
+**Real-World Use Case:**
+A team alerted only on broker CPU and disk. A slow disk on one broker caused followers to drop out of the ISR repeatedly. URP flapped for days unnoticed, until a second broker restart pushed partitions under min ISR and producers failed. Adding URP and ISR-shrink alerts would have caught it on day one.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Paging on URP during planned rolling restarts (suppress alerts during maintenance).
+- Monitoring brokers but not consumer lag.
+- No per-broker breakdown, which hides the one bad broker behind cluster averages.
+
+**Follow-up Questions Interviewers Ask:**
+- Where does `OfflinePartitionsCount` come from in KRaft? — The active controller's metrics; scrape the controller nodes too.
+- How do you find which partitions are affected? — `kafka-topics.sh --describe --under-replicated-partitions`, `--under-min-isr-partitions`, `--unavailable-partitions`.
+- What does a high remote time in `TotalTimeMs` mean for Produce? — The leader is waiting for followers (`acks=all`), so look at replication and follower health.
+
+---
+
+### Q512. Securing Kafka: TLS, SASL mechanisms, ACLs and quotas
+**ID:** KFK-44
+**Topic:** Kafka > Security
+**Level:** Beginner
+**Frequency:** Common
+**Tags:** `kafka`, `security`, `sasl`, `tls`, `acls`
+
+**Short Answer (2–3 lines):**
+Kafka security has three layers. **Encryption** with TLS on every listener. **Authentication** with mutual TLS or SASL: SCRAM, OAUTHBEARER/OIDC, Kerberos (GSSAPI) or PLAIN over TLS. **Authorization** with ACLs on topics, groups, transactional IDs and the cluster, enforced by `StandardAuthorizer` in KRaft. Add quotas so one client can't starve the others, and give each application its own principal with least privilege.
+
+**Detailed Explanation:**
+**Listeners.** Each listener has a security protocol: `PLAINTEXT`, `SSL`, `SASL_PLAINTEXT` or `SASL_SSL`. Production uses `SSL` or `SASL_SSL` everywhere, including inter-broker and controller listeners.
+
+**Authentication options**
+| Mechanism | Credential | Notes |
+|---|---|---|
+| mTLS (`SSL` with `ssl.client.auth=required`) | Client certificate | Principal from the certificate DN (map it with `ssl.principal.mapping.rules`) |
+| SASL/SCRAM-SHA-256/512 | Username + password | Credentials stored, salted, in cluster metadata; no external system |
+| SASL/OAUTHBEARER | OIDC token | Integrates with an identity provider; short-lived tokens |
+| SASL/GSSAPI | Kerberos ticket | Common in Hadoop-era enterprises |
+| SASL/PLAIN | Username + password | Only over TLS; usually backed by a custom callback |
+
+**ACLs**
+- Resources: `Topic`, `Group`, `Cluster`, `TransactionalId`, `DelegationToken`. Pattern: `LITERAL` or `PREFIXED`.
+- A consumer needs Read on the topic **and** Read on its group. An idempotent or transactional producer needs Write, plus Write and Describe on its `TransactionalId`.
+- With an authorizer configured and no matching ACL, access is denied (`allow.everyone.if.no.acl.found=false` by default).
+- Manage ACLs as code, with prefixed patterns per team (`team-a.`), rather than by hand.
+
+**Quotas.** Per user or client ID: `producer_byte_rate`, `consumer_byte_rate`, `request_percentage`, and controller mutation rate. Clients over quota are throttled, not failed.
+
+**Other**: encrypt data at rest (disk encryption or a cloud KMS), keep secrets out of config files with config providers, and audit authorizer logs.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Kafka 4.3.1 single broker: StandardAuthorizer, super.users=User:ANONYMOUS (the lab's PLAINTEXT admin),
+#          extra listener SASL_PLAINTEXT://localhost:19094 with SCRAM-SHA-512
+source ../env.sh
+kafka-topics.sh --bootstrap-server $B --create --topic payments.secure --partitions 1 >/dev/null 2>&1
+# 1) Create SCRAM credentials (stored in KRaft metadata; the password is salted and hashed)
+kafka-configs.sh --bootstrap-server $B --alter --entity-type users --entity-name analytics \
+  --add-config 'SCRAM-SHA-512=[iterations=8192,password=analytics-secret]'
+# 2) Least privilege: analytics may read payments.secure with its own group prefix, nothing else
+kafka-acls.sh --bootstrap-server $B --add --allow-principal User:analytics \
+  --operation Read --operation Describe --topic payments.secure
+kafka-acls.sh --bootstrap-server $B --add --allow-principal User:analytics \
+  --operation Read --group analytics- --resource-pattern-type prefixed
+kafka-acls.sh --bootstrap-server $B --list --principal User:analytics
+```
+```text
+Completed updating config for user analytics.
+Adding ACLs for resource `ResourcePattern(resourceType=TOPIC, name=payments.secure, patternType=LITERAL)`: 
+ 	(principal=User:analytics, host=*, operation=DESCRIBE, permissionType=ALLOW)
+	(principal=User:analytics, host=*, operation=READ, permissionType=ALLOW)
+
+Adding ACLs for resource `ResourcePattern(resourceType=GROUP, name=analytics-, patternType=PREFIXED)`: 
+ 	(principal=User:analytics, host=*, operation=READ, permissionType=ALLOW)
+```
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16, against the SASL_PLAINTEXT (SCRAM-SHA-512) listener
+# Production would use SASL_SSL (TLS + SASL); plaintext SASL here only keeps the lab simple.
+import time
+from confluent_kafka import Consumer, Producer
+
+def conf(password, **extra):
+    return {"bootstrap.servers": "localhost:19094", "security.protocol": "SASL_PLAINTEXT",
+            "sasl.mechanism": "SCRAM-SHA-512", "sasl.username": "analytics",
+            "sasl.password": password, **extra}
+
+def try_read(password, group):
+    errors = []                                   # client-level errors (e.g. authentication) arrive here
+    c = Consumer(conf(password, **{"group.id": group, "auto.offset.reset": "earliest",
+                                   "error_cb": lambda e: errors.append(e.name())}))
+    c.subscribe(["payments.secure"])
+    try:
+        for _ in range(20):
+            m = c.poll(0.5)
+            if errors:
+                return errors[0]
+            if m is None:
+                continue
+            return m.error().name() if m.error() else "read " + m.value().decode()
+        return "no data"
+    finally:
+        c.close()
+
+print("wrong password      :", try_read("guess", f"analytics-{time.time():.0f}"))
+print("allowed group       :", try_read("analytics-secret", f"analytics-{time.time():.0f}"))
+print("group not in ACL    :", try_read("analytics-secret", "finance-reports"))
+
+p = Producer(conf("analytics-secret"))
+p.produce("payments.secure", value=b"{}", on_delivery=lambda e, m: print("write attempt       :", e.name() if e else "ok"))
+p.flush(10)
+```
+```text
+wrong password      : _AUTHENTICATION
+allowed group       : read {"id":"p-1","amount":42}
+group not in ACL    : GROUP_AUTHORIZATION_FAILED
+write attempt       : TOPIC_AUTHORIZATION_FAILED
+```
+The broker config added a `SASL_PLAINTEXT://localhost:19094` listener with `sasl.enabled.mechanisms=SCRAM-SHA-512` and `listener.name.sasl_plaintext.scram-sha-512.sasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required;`. Each denial matched exactly one missing permission.
+
+**Real-World Use Case:**
+A shared cluster gave every service the same super-user credentials. One misconfigured job deleted a production topic. Moving to one principal per service, prefixed ACLs per team, and no delete rights outside the platform team's automation made that class of incident impossible.
+
+**Common Mistakes / Interviewer Red Flags:**
+- SASL/PLAIN or SCRAM without TLS, which sends credentials in clear text.
+- Granting a consumer topic Read but forgetting group Read.
+- Using `allow.everyone.if.no.acl.found=true` "temporarily".
+- Shared credentials across applications, which makes auditing and revocation impossible.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you rotate SCRAM passwords? — Add a new credential (or user), roll clients to it, then remove the old one; mechanisms can coexist.
+- What permissions does a transactional producer need? — Write on the topics, plus Write and Describe on its `TransactionalId`, and IdempotentWrite on the cluster for older brokers.
+- How is the principal derived for mTLS? — From the certificate's subject DN, optionally rewritten by `ssl.principal.mapping.rules`.
+
+---
+
+### Q513. Multi-region Kafka: MirrorMaker 2, offset translation and cluster-linking concepts
+**ID:** KFK-45
+**Topic:** Kafka > Multi-Region & Replication
+**Level:** Advanced
+**Frequency:** Common
+**Tags:** `kafka`, `mirrormaker-2`, `disaster-recovery`, `multi-region`, `offset-translation`
+
+**Short Answer (2–3 lines):**
+MirrorMaker 2 (MM2) is a set of Kafka Connect connectors that copy topics between clusters asynchronously. By default it renames them (`east.payments` on the target), syncs topic configs and ACLs, and emits **checkpoints** that translate consumer-group offsets, so consumers can fail over to the other region. Because replication is asynchronous, failover can lose the last few seconds of data and replay some. **Cluster linking**, in some commercial distributions, mirrors at the log level with identical offsets instead.
+
+**Detailed Explanation:**
+**MM2 components**
+| Connector | Job |
+|---|---|
+| `MirrorSourceConnector` | Copies records and topic configs and ACLs; writes offset-sync records |
+| `MirrorCheckpointConnector` | Translates group offsets into checkpoints on the target; with `sync.group.offsets.enabled=true` it writes them into the target's `__consumer_offsets` |
+| `MirrorHeartbeatConnector` | Emits heartbeats to measure replication lag and detect topology |
+
+**Topologies**
+- *Active–passive*: one direction, for DR. Consumers fail over using translated offsets.
+- *Active–active*: both directions. The default `DefaultReplicationPolicy` adds a cluster prefix, which prevents infinite loops, and consumers read `orders` plus `west.orders`. `IdentityReplicationPolicy` keeps names but is only safe for one-way flows.
+- *Hub-and-spoke / aggregation*: many edge clusters feed a central analytics cluster.
+
+**Offsets differ between clusters.** Offset 1,000 in the source isn't offset 1,000 in the target (retention, compaction and restarts all shift them). MM2 records offset-sync pairs and translates conservatively: a failed-over consumer may *re-read* some records but shouldn't skip any. Consumers must be idempotent.
+
+**What a DR plan has to say**
+- RPO is replication lag (seconds, typically); RTO is how fast clients re-point.
+- Producers need a switch: DNS, a config flag, or client bootstrap lists per region.
+- Schema Registry, ACLs, quotas and topic configs must exist in both regions.
+- Fail-back: reverse the flow and catch up before switching back.
+
+**Cluster linking (concept).** The destination broker fetches from the source like a follower, so offsets, record bytes and timestamps are preserved and no Connect cluster is needed. It's available in some commercial platforms rather than Apache Kafka itself. Apache Kafka's open-source path is MM2.
+
+**Example / Code:**
+```properties
+# Runtime: Apache Kafka 4.3.1 MirrorMaker 2 (dedicated mode): replicate "east" (single broker) -> "west" (3-broker cluster)
+clusters = east, west
+east.bootstrap.servers = localhost:19092
+west.bootstrap.servers = localhost:29091,localhost:29092,localhost:29093
+east->west.enabled = true
+east->west.topics = payments
+east->west.groups = payments-reader
+west->east.enabled = false
+replication.factor = 3
+sync.group.offsets.enabled = true
+sync.group.offsets.interval.seconds = 5
+emit.checkpoints.interval.seconds = 5
+refresh.topics.interval.seconds = 10
+refresh.groups.interval.seconds = 10
+# single-broker source: internal topics on "east" can only have one replica
+east.offset.storage.replication.factor = 1
+east.config.storage.replication.factor = 1
+east.status.storage.replication.factor = 1
+checkpoints.topic.replication.factor = 3
+heartbeats.topic.replication.factor = 3
+offset-syncs.topic.replication.factor = 1
+offset-syncs.topic.location = source
+```
+```bash
+# Runtime: Apache Kafka 4.3.1 — "east" has topic payments and a group that has consumed part of it
+bin/connect-mirror-maker.sh mm2.properties &
+bin/kafka-topics.sh --bootstrap-server localhost:29091 --list
+bin/kafka-get-offsets.sh --bootstrap-server localhost:29091 --topic east.payments
+bin/kafka-consumer-groups.sh --bootstrap-server localhost:29091 --describe --group payments-reader
+```
+```text
+east.checkpoints.internal
+east.heartbeats
+east.payments
+heartbeats
+mm2-configs.east.internal
+mm2-offsets.east.internal
+mm2-status.east.internal
+east.payments:0:1
+east.payments:1:0
+east.payments:2:4
+east.payments:3:2
+east.payments:4:0
+east.payments:5:2
+GROUP           TOPIC           PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG             CONSUMER-ID     HOST            CLIENT-ID
+payments-reader east.payments   0          1               1               0               -               -               -
+payments-reader east.payments   2          0               4               4               -               -               -
+payments-reader east.payments   3          2               2               0               -               -               -
+payments-reader east.payments   5          2               2               0               -               -               -
+```
+The group's committed positions on `east` were p0=1, p2=0, p3=2 and p5=2, and they appear on `west` against `east.payments`. A consumer started on `west` with group `payments-reader` would resume where it left off. Lab note: both "regions" ran on one host, and the 1-broker source forced replication factor 1 for its MM2 internal topics.
+
+**Real-World Use Case:**
+A payments company ran active–passive across two regions with MM2. In a DR drill, consumers switched to the passive region and re-read about two seconds of events. That was harmless because the sinks upserted by `payment_id`. The drill also found that the Schema Registry hadn't been replicated, so they added registry replication to the runbook.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Assuming offsets are identical in the target cluster.
+- Using `IdentityReplicationPolicy` in active–active, which creates replication loops.
+- Forgetting Schema Registry, ACLs and quotas in the DR region.
+- Claiming zero data loss with asynchronous replication.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you measure MM2 lag? — Replication latency metrics from MirrorSourceConnector, plus heartbeats topic timestamps.
+- How does a consumer read both local and remote topics in active–active? — Subscribe by pattern (`.*\.?orders`) and deduplicate by event ID.
+- What about a "stretched" cluster across regions? — Synchronous replication across regions gives RPO 0 but adds cross-region latency to every `acks=all` write; it suits nearby regions or zones, not distant ones.
+
+---

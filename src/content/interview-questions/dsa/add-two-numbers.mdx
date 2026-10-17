@@ -25,7 +25,7 @@ Two non-negative integers are each stored as a linked list of decimal digits, **
 
 This is widely known as LeetCode 2 (Add Two Numbers). It checks that you can walk two lists of different lengths at once and handle a final carry.
 
-Constraints for this version: each list has 1 to 100 nodes, so the numbers can be far larger than 64-bit integers.
+Lists can be long enough that the numbers they represent overflow any fixed-width integer, so the solution must work digit by digit.
 
 ## Examples
 

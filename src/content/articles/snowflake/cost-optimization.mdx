@@ -1,7 +1,7 @@
 ---
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-17"
+reviewedDate: "2026-10-17"
 title: "Snowflake Cost Optimization: Credits, Right-Sizing and Storage Costs"
 seoTitle: "Snowflake Cost Optimization: Credits and Storage"
 description: "Find where Snowflake credits go with ACCOUNT_USAGE, right-size warehouses, tune auto-suspend, avoid spilling, and control storage and materialized view costs."
@@ -25,6 +25,7 @@ sources:
   - { label: "Snowflake documentation: QUERY_ATTRIBUTION_HISTORY view", url: "https://docs.snowflake.com/en/sql-reference/account-usage/query_attribution_history" }
   - { label: "Snowflake documentation: Queries too large to fit in memory", url: "https://docs.snowflake.com/en/user-guide/performance-query-warehouse-memory" }
   - { label: "Snowflake documentation: Storage costs for Time Travel and Fail-safe", url: "https://docs.snowflake.com/en/user-guide/data-cdp-storage-costs" }
+  - { label: "Snowflake documentation: Monitor credit usage with budgets", url: "https://docs.snowflake.com/en/user-guide/budgets" }
   - { label: "Snowflake documentation: Working with materialized views", url: "https://docs.snowflake.com/en/user-guide/views-materialized" }
 versionContext: "Written against the current Snowflake documentation (October 2026). The Snowflake SQL examples were not executed, because no Snowflake account is available in this environment. The cost-analysis analogue runs on PostgreSQL 16 against small hand-made stand-ins for two ACCOUNT_USAGE views; its output is shown and the numbers are illustrative, not real account data. No prices are quoted because they depend on edition, region and contract."
 ---
@@ -44,7 +45,7 @@ Before optimising, find out where credits go. The `SNOWFLAKE.ACCOUNT_USAGE` sche
 | `QUERY_ATTRIBUTION_HISTORY` | Credits attributed to each query (excluding idle time), with a parameterised hash to group repeated queries; latency up to about 8 hours |
 | `QUERY_HISTORY` | Per-query detail: elapsed time, bytes scanned, partitions scanned, spilling, queueing |
 | `TABLE_STORAGE_METRICS` / `STORAGE_USAGE` | Storage by table (active, Time Travel, Fail-safe, retained for clones) and by account |
-| `AUTOMATIC_CLUSTERING_HISTORY`, `MATERIALIZED_VIEW_REFRESH_HISTORY`, `SEARCH_OPTIMIZATION_HISTORY`, `PIPE_USAGE_HISTORY`, `SERVERLESS_TASK_HISTORY` | Credits used by each serverless feature |
+| `AUTOMATIC_CLUSTERING_HISTORY`, `MATERIALIZED_VIEW_REFRESH_HISTORY`, `SEARCH_OPTIMIZATION_HISTORY`, `PIPE_USAGE_HISTORY`, `SERVERLESS_TASK_HISTORY`, `QUERY_ACCELERATION_HISTORY` | Credits used by each serverless feature (query acceleration is switched on automatically for new Gen2 and multi-cluster warehouses, so check it when a warehouse's total cost rises without a size change) |
 
 ### Playbook: a cost investigation with ACCOUNT_USAGE
 
@@ -407,6 +408,28 @@ ALTER WAREHOUSE sandbox_wh SET RESOURCE_MONITOR = sandbox_monthly;
 ```
 
 (The quotas are examples; set them from your own budget.)
+
+### Budgets for everything else
+
+**Budgets** fill the gap. A budget sets a monthly spending limit in credits for the whole account (the account budget) or for a group of objects (a custom budget: warehouses, tables, pipes, tasks and other supported objects, added one by one or through a tag such as `cost_center = 'finance'`). It tracks serverless and AI spend as well as warehouses, sends a notification (email, a cloud queue or a webhook such as Slack) when spending is **forecast** to exceed the limit, and can run **custom actions**: stored procedures called at a percentage of the limit, projected or actual. A budget never suspends anything by itself; a custom action can.
+
+{/* noexec */}
+```sql
+-- Snowflake SQL (not executed here)
+CREATE SNOWFLAKE.CORE.BUDGET finops.budgets.finance_budget();
+CALL finops.budgets.finance_budget!SET_SPENDING_LIMIT(800);          -- credits per month
+
+-- Track every object tagged cost_center = 'finance', serverless costs included
+CALL finops.budgets.finance_budget!ADD_RESOURCE_TAG(
+  SELECT SYSTEM$REFERENCE('TAG', 'finops.tags.cost_center', 'SESSION', 'applybudget'), 'finance');
+
+-- At 90% of actual spend, call a procedure (for example: notify, or suspend sandbox warehouses)
+CALL finops.budgets.finance_budget!ADD_CUSTOM_ACTION(
+  SYSTEM$REFERENCE('PROCEDURE', 'finops.ops.on_budget_alert(string)'),
+  ARRAY_CONSTRUCT('finance'), 'ACTUAL', 90);
+```
+
+Use resource monitors for hard stops on warehouses, and budgets for forecasting, attribution by team and serverless spend.
 
 **Pitfalls**
 

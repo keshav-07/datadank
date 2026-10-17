@@ -1,7 +1,7 @@
 ---
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-09"
+reviewedDate: "2026-10-09"
 title: "House Robber: Maximum Non-Adjacent Sum with Take-or-Skip DP"
 seoTitle: "House Robber: Take-or-Skip DP"
 description: "Pick values from a row so no two chosen are adjacent and the total is largest, using take-or-skip dynamic programming in O(n) time and O(1) space, with tests."
@@ -27,14 +27,14 @@ as no two chosen houses are next to each other. Return the largest total you can
 This is widely known as LeetCode 198, "House Robber". In other words: the maximum sum of a subsequence with no two
 adjacent elements. [House Robber II](/interview/dsa/house-robber-ii/) puts the houses in a circle.
 
-Assume up to 100 houses with values up to 400.
+Inputs are short rows of small non-negative amounts, but the recursion without memoisation is already too slow at a few dozen houses.
 
 ## Examples
 
 ```text
 [6, 1, 2, 9]        -> 15   (6 + 9)
 [3, 10, 3, 1, 2]    -> 12   (10 + 2)
-[5, 5, 10, 100, 10, 5] -> 110 (5 + 100 + 5)
+[7, 1, 1, 9, 2]     -> 16   (7 + 9; neither "every other house" pattern finds it)
 [8]                 -> 8
 []                  -> 0
 ```
@@ -123,7 +123,7 @@ Starting both at 0 handles the base cases automatically: after the first house, 
 for fn in (rob, rob_table, rob_memo, rob_recursive):
     assert fn([6, 1, 2, 9]) == 15
     assert fn([3, 10, 3, 1, 2]) == 12
-    assert fn([5, 5, 10, 100, 10, 5]) == 110
+    assert fn([7, 1, 1, 9, 2]) == 16
     assert fn([8]) == 8                            # single house
     assert fn([]) == 0                             # empty
     assert fn([0, 0, 0]) == 0
@@ -145,7 +145,7 @@ for _ in range(40):
 
 ## Edge cases and pitfalls
 
-- **Greedy fails.** Taking every other house (all even or all odd positions) misses `[5, 5, 10, 100, 10, 5]`, and
+- **Greedy fails.** Taking every other house (all even or all odd positions) misses `[7, 1, 1, 9, 2]` (both patterns give 10, the answer is 16), and
   always grabbing the largest value can block two medium neighbours that sum to more.
 - **Empty and single-house inputs**: guard against indexing `nums[0]` or `nums[1]` blindly.
 - **Order of the tuple update.** In the space-optimised loop, compute the new value from the old `prev1` and `prev2`

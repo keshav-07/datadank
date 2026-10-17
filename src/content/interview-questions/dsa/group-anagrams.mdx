@@ -23,7 +23,7 @@ next: "interview-questions:dsa/longest-consecutive-sequence"
 
 You are given a list of lowercase words. Put the words into groups where every word in a group is an anagram of every other word in it (same letters, same counts). Return the groups in any order; the order of words inside a group does not matter either. This is widely known as LeetCode 49, Group Anagrams.
 
-Assume up to 10^4 words of up to 100 lowercase English letters each. The empty string is a valid word.
+Expect thousands of short lowercase words. The empty string is a valid word.
 
 ## Examples
 
@@ -56,7 +56,7 @@ def group_anagrams_brute(words):
     return groups
 ```
 
-**Complexity:** O(n² · k log k) time, because every pair of words may be compared. Fine for tiny inputs, too slow for 10^4 words.
+**Complexity:** O(n² · k log k) time, because every pair of words may be compared. Fine for tiny inputs, too slow for thousands of words.
 
 ## Approach 2: optimal
 

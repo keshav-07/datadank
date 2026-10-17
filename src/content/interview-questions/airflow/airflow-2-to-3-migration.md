@@ -1,7 +1,7 @@
 ---
 publishedDate: "2026-10-09"
-updatedDate: "2026-10-09"
-reviewedDate: "2026-10-09"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
 title: "What changed in Airflow 3, and how would you migrate Airflow 2 DAGs?"
 seoTitle: "Airflow 2 to 3 Migration: Interview Answer"
 description: "Interview answer: Airflow 2 to 3 migration, covering changes that break DAGs (imports, execution_date, SubDAGs, SLAs, catchup) and a safe step-by-step plan."
@@ -18,6 +18,7 @@ versionContext: "The rewritten DAG was parsed and its settings inspected on Apac
 sources:
   - { label: "Apache Airflow documentation: Upgrading to Airflow 3", url: "https://airflow.apache.org/docs/apache-airflow/stable/installation/upgrading_to_airflow3.html" }
   - { label: "Apache Airflow 3.0 release notes", url: "https://airflow.apache.org/docs/apache-airflow/stable/release_notes.html" }
+  - { label: "Apache Airflow documentation: Dag bundles", url: "https://airflow.apache.org/docs/apache-airflow/stable/administration-and-deployment/dag-bundles.html" }
   - { label: "Ruff documentation: Airflow (AIR) rules", url: "https://docs.astral.sh/ruff/rules/#airflow-air" }
 ---
 
@@ -43,6 +44,16 @@ sources:
 | `retry_exponential_backoff` | Boolean | Multiplier (0 disables) | No |
 
 The dangerous rows are the silent ones: a daily job that used `ds` to mean "yesterday" now processes "today", catchup no longer fills gaps, and SLA emails stop arriving.
+
+### What Airflow 3 adds that is worth mentioning
+
+Interviewers also want to hear why teams upgrade, not only what breaks:
+
+- **DAG versioning**: every run keeps the DAG version it was created with, so the UI shows the structure that actually ran; with a versioned bundle (`GitDagBundle`) the run's tasks also execute the code from its commit, and reruns and backfills choose between the original and the latest version.
+- **DAG bundles**: DAGs can come from a Git repository (or a folder, S3 or GCS) instead of only a local `dags_folder`.
+- **Scheduler-managed backfills** that appear in the UI and API and survive a CLI process dying.
+- **Task SDK and Task Execution API**: tasks talk to the API server instead of the metadata database, which is what makes remote and edge workers (`EdgeExecutor`) and future non-Python task SDKs possible.
+- **Event-driven scheduling** with `AssetWatcher`, and later in 3.x deadline alerts as the replacement for SLAs.
 
 ### A migration plan
 

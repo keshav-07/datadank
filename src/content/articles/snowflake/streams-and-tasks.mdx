@@ -1,7 +1,7 @@
 ---
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-17"
+reviewedDate: "2026-10-17"
 title: "Snowflake Streams and Tasks: Change Data Capture and Scheduling"
 seoTitle: "Snowflake Streams and Tasks: CDC and Scheduling"
 description: "Snowflake streams and tasks: capture inserts, updates and deletes, run processing on a schedule or trigger, with offsets, staleness, task graphs and errors."
@@ -99,7 +99,7 @@ Explain net changes with the insert-then-delete example, and say you would choos
 
 ## Insert-only streams
 
-**Insert-only** streams are the version for sources Snowflake does not manage, where it cannot see deletes reliably: **external tables** and **externally managed Iceberg tables** (and some other external formats). They track rows added by new files.
+**Insert-only** streams are the version for sources Snowflake does not manage, where it cannot see deletes reliably: **external tables**, **externally managed Iceberg tables** and Delta Direct tables without partition columns. They track rows added by new files.
 
 {/* noexec */}
 ```sql
@@ -561,7 +561,7 @@ AS
   CALL analytics.apply_customer_changes_proc();
 ```
 
-The `WHEN` condition is evaluated by cloud services. If the stream is empty, the run is skipped and no warehouse resumes, so a 5-minute schedule costs nothing during quiet periods. A **triggered task** has no `SCHEDULE`; it runs when the stream has data, at most every 30 seconds by default (`USER_TASK_MINIMUM_TRIGGER_INTERVAL_IN_SECONDS`, minimum 10). For a serverless triggered task, `TARGET_COMPLETION_INTERVAL` is required.
+The `WHEN` condition is evaluated by cloud services. If the stream is empty, the run is skipped and no warehouse resumes, so a 5-minute schedule costs nothing during quiet periods. A **triggered task** has no `SCHEDULE`; it runs when the stream has data, at most every 30 seconds by default (`USER_TASK_MINIMUM_TRIGGER_INTERVAL_IN_SECONDS`, minimum 10). For a serverless triggered task, `TARGET_COMPLETION_INTERVAL` is required. If a triggered task has not run for 12 hours, Snowflake schedules a health check on its stream so that a quiet source does not let the stream go stale; the check is skipped without compute if there are no changes, and its timing is not guaranteed, so keep monitoring `STALE_AFTER`.
 
 **3. Resume and test.**
 

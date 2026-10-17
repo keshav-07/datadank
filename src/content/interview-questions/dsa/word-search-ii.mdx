@@ -28,7 +28,7 @@ may not use the same cell twice within one word. The order of the returned words
 This is widely known as LeetCode 212, "Word Search II". It is the multi-word version of
 [Word Search](/interview/dsa/word-search/), and the point of the question is to share work between words.
 
-Assume the grid has up to 12 by 12 cells, there are up to a few thousand words, and each word has up to 10 letters.
+Grids are small, but the word list can be long and words share many prefixes, which is exactly what a trie exploits.
 
 ## Examples
 

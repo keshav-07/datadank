@@ -1755,3 +1755,512 @@ A company replaced a 6 a.m. cron on its revenue mart, which ran whether or not t
 - What is `AssetAlias`? — A placeholder whose concrete asset is chosen at run time, for example when the output path depends on the data (see Q539).
 
 ---
+
+### Q539. What do the `@asset` decorator, `Metadata` and `AssetAlias` add on top of plain asset outlets?
+**ID:** AF-21
+**Topic:** Airflow > Assets
+**Level:** Intermediate
+**Frequency:** Occasional
+**Tags:** `airflow`, `assets`, `asset-alias`, `lineage`
+
+**Short Answer (2–3 lines):**
+`@asset` is shorthand for a DAG with one task that produces one asset, all named after the function. A parameter named after another asset makes that asset an inlet. Yielding `Metadata` attaches extra data to the event the task emits. `AssetAlias` lets a task decide *at run time* which concrete assets it produced, and downstream DAGs can schedule on the alias.
+
+**Detailed Explanation:**
+| Feature | Solves | Notes |
+|---|---|---|
+| `@asset(uri=..., schedule=...)` | Boilerplate for asset-centric pipelines | Creates an `Asset`, a DAG and a task, all with the function's name |
+| Inlet parameters, e.g. `def summary(self, context, raw_orders)` | Reading upstream events | `self`, `context` and `outlet_events` are reserved parameter names |
+| `yield Metadata(asset, {...})` | Attaching row counts or ranges to the event | Must be JSON-serialisable; it is stored in the DB |
+| `context["inlet_events"][asset][-1]` | Reading past events of an inlet | Lazy; ordered oldest to newest |
+| `@asset.multi(outlets=[a, b])` | One function producing several assets | |
+| `AssetAlias("name")` | Outputs known only at run time, such as one asset per country | The task adds concrete assets with `outlet_events[alias].add(Asset(...), extra=...)` |
+| `Asset.ref(name=...)` | Referring to an asset defined in another file | Avoids duplicate definitions |
+
+When to use which:
+- Use `@asset` when the team thinks in data products ("the daily_summary table") and each product is one step. Use normal DAGs when a pipeline has many steps but publishes one result.
+- Use `AssetAlias` when the set of outputs depends on the data. Defining a fixed asset for each possible output would be impractical.
+- Asset events are lineage records too. The UI's asset graph shows which DAG produced and consumed what, so use names people recognise.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from airflow.sdk import Asset, AssetAlias, Metadata, asset, dag, task
+
+
+# @asset = one DAG + one task + one Asset, all named after the function.
+@asset(uri="s3://lake/raw/orders", schedule="@daily")
+def raw_orders(self):
+    rows = 4210                                   # ... write the file ...
+    yield Metadata(self, {"row_count": rows})     # becomes the asset event's extra
+
+
+# Naming a parameter after another asset makes it an inlet; schedule on it to run after it.
+@asset(uri="s3://lake/gold/daily_summary", schedule=raw_orders)
+def daily_summary(self, context, raw_orders):
+    last = context["inlet_events"][raw_orders][-1]   # most recent upstream event
+    print("upstream rows:", last.extra["row_count"])
+
+
+# AssetAlias: the concrete asset (here, which country partition) is only known at run time.
+@dag(schedule=None)
+def export_by_country():
+    @task(outlets=[AssetAlias("country_exports")])
+    def export(*, outlet_events):
+        for country in ("de", "fr"):
+            outlet_events[AssetAlias("country_exports")].add(
+                Asset(name=f"export_{country}", uri=f"s3://exports/{country}/"), extra={"country": country})
+
+    export()
+
+export_by_country()
+
+
+@dag(schedule=AssetAlias("country_exports"))     # runs when any asset resolved by the alias updates
+def notify_partners():
+    @task
+    def notify(*, triggering_asset_events):
+        print(sorted(a.name for a in triggering_asset_events))
+
+    notify()
+
+notify_partners()
+```
+```text
+# DagBag + dag.test() of raw_orders, daily_summary and export_by_country:
+daily_summary      tasks=['daily_summary'] timetable=AssetTriggeredTimetable outlets=['daily_summary']
+export_by_country  tasks=['export'] timetable=NullTimetable outlets=['country_exports']
+notify_partners    tasks=['notify'] timetable=AssetTriggeredTimetable outlets=[]
+raw_orders         tasks=['raw_orders'] timetable=CronTriggerTimetable outlets=['raw_orders']
+raw_orders run: success
+upstream rows: 4210
+daily_summary run: success
+export run: success
+event: export_fr {'country': 'fr'}
+event: export_de {'country': 'de'}
+```
+
+**Real-World Use Case:**
+A data-products team declared each gold table as an `@asset`. They yielded the row count and the max event time as `Metadata`. A freshness dashboard read these from the asset events API, so it could report "last updated, rows" for every product without scanning the warehouse.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Defining the same asset with slightly different names or URIs in two files. Use `Asset.ref` or a shared module.
+- Putting large payloads in event `extra`. Like XCom, it belongs in the metadata DB only when small.
+- Assuming `@asset` works for multi-step pipelines. It creates exactly one task; use `@task` with `outlets` in a normal DAG instead.
+
+**Follow-up Questions Interviewers Ask:**
+- How do classic operators attach metadata? — Through `context["outlet_events"][asset].extra` inside `execute`, or by subclassing the operator.
+- Are asset events emitted on failure? — No. Only a successful task emits its outlets' events.
+
+---
+
+### Q540. How do `AssetWatcher` and event-driven scheduling work?
+**ID:** AF-22
+**Topic:** Airflow > Event-Driven Scheduling
+**Level:** Advanced
+**Frequency:** Common
+**Tags:** `airflow`, `asset-watcher`, `event-driven`, `triggerer`
+
+**Short Answer (2–3 lines):**
+An `AssetWatcher` attaches a trigger to an asset. The trigger runs in the **triggerer** and listens to an outside source, such as SQS, Kafka, Redis pub/sub or a custom poller. Each time it fires, Airflow records an asset event, and DAGs scheduled on that asset run. Only triggers that subclass `BaseEventTrigger` are allowed, and their payload reaches tasks through `triggering_asset_events`.
+
+**Detailed Explanation:**
+How the pieces fit together (added in 3.0):
+1. Define `Asset(name=..., watchers=[AssetWatcher(name=..., trigger=SomeEventTrigger(...))])`.
+2. The DAG processor registers the watcher, and a triggerer starts running the trigger's async `run()`.
+3. When the trigger yields a `TriggerEvent`, the triggerer creates an asset event whose `extra` contains the event payload. For the messaging triggers that means the message, under `payload`.
+4. The trigger is then started again to wait for the next event, and every DAG scheduled on the asset is queued.
+
+Ready-made: `MessageQueueTrigger(scheme="sqs" | "kafka" | "redis+pubsub", ...)` from the `common.messaging` provider, backed by the AWS, Kafka and Redis providers.
+
+Rules for a custom event trigger:
+- Subclass **`BaseEventTrigger`**. Ordinary deferral triggers are not accepted, because many of them fire again immediately when restarted, which would trigger endless runs.
+- It must be **idempotent across restarts**. Consume, acknowledge or move what it saw, as the example does by moving each file. Otherwise the same file fires again after the restart.
+- It must be fully async. A blocking call stalls every trigger on that triggerer (see Q543).
+- `serialize()` returns an importable classpath, and the module must be on the triggerer's path. Changing it needs a triggerer restart.
+- Since 3.3, siblings that poll the same source can share one poll loop via `shared_stream_key()`.
+
+Delivery is about as reliable as the source and the trigger make it. Keep consumers **idempotent**, and use the payload, such as a message id or file name, as the deduplication key.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 — plugins/inbox_trigger.py (must be importable by the triggerer)
+import asyncio
+import os
+from airflow.triggers.base import BaseEventTrigger, TriggerEvent
+
+
+class InboxFileTrigger(BaseEventTrigger):
+    """Fires once per file dropped into an inbox directory, then moves the file away
+    so the same file can never fire twice (the trigger is restarted after each event)."""
+
+    def __init__(self, inbox: str, done_dir: str, poll_seconds: float = 5.0):
+        super().__init__()
+        self.inbox, self.done_dir, self.poll_seconds = inbox, done_dir, poll_seconds
+
+    def serialize(self):
+        return ("inbox_trigger.InboxFileTrigger",
+                {"inbox": self.inbox, "done_dir": self.done_dir, "poll_seconds": self.poll_seconds})
+
+    async def run(self):
+        while True:
+            for name in sorted(os.listdir(self.inbox)):
+                os.makedirs(self.done_dir, exist_ok=True)
+                os.replace(os.path.join(self.inbox, name), os.path.join(self.done_dir, name))
+                yield TriggerEvent({"file": name})
+                return
+            await asyncio.sleep(self.poll_seconds)
+```
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 — dags/partner_drop.py
+from airflow.sdk import Asset, AssetWatcher, dag, task
+from inbox_trigger import InboxFileTrigger
+
+partner_drop = Asset(
+    name="partner_drop",
+    uri="file:///srv/inbox/partner_a",
+    watchers=[AssetWatcher(name="partner_a_inbox",
+                           trigger=InboxFileTrigger("/srv/inbox/partner_a", "/srv/done/partner_a"))],
+)
+
+
+@dag(schedule=[partner_drop])            # no cron: one run per event (batched if they pile up)
+def ingest_partner_drop():
+    @task
+    def ingest(*, triggering_asset_events):
+        for event in triggering_asset_events[partner_drop]:
+            print("ingesting", event.extra)
+
+    ingest()
+
+
+ingest_partner_drop()
+```
+```text
+# Parsed with DagBag, then the trigger's run() driven with asyncio as the triggerer would:
+errors: {}
+watchers: [('partner_a_inbox', 'InboxFileTrigger')]
+event: {'file': 'orders_0520.csv'} | inbox now: []
+```
+`os.listdir` is a quick local call. On a network filesystem, use an async client or run it in a thread with `asyncio.to_thread`.
+
+**Real-World Use Case:**
+An order-events team replaced a sensor DAG that ran every five minutes and mostly found nothing. They added an SQS-backed `MessageQueueTrigger` on an `orders_events` asset. Runs started within seconds of a message arriving, and the idle runs disappeared. The consumer used the message id from the payload as its deduplication key.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Using a normal `BaseTrigger` (for example a file sensor's trigger) in a watcher.
+- A trigger that doesn't consume or acknowledge what it saw, so it fires again forever.
+- Treating event-driven runs as exactly-once.
+
+**Follow-up Questions Interviewers Ask:**
+- What happens if the triggerer is down? — Nothing fires until it is back. The trigger resumes on another triggerer, but events the source didn't keep may be lost, depending on the source.
+- How is this different from a deferrable sensor? — A sensor waits inside a DAG run that already exists. A watcher *creates* runs (see Q543).
+
+---
+
+### Q541. What is asset partitioning in Airflow 3.2+, and when would you use it?
+**ID:** AF-23
+**Topic:** Airflow > Asset Partitioning
+**Level:** Advanced
+**Frequency:** Occasional
+**Tags:** `airflow`, `asset-partitions`, `timetables`, `airflow-3`
+
+**Short Answer (2–3 lines):**
+Asset partitioning gives each asset event a `partition_key`, such as an hour, a day or a region, so that downstream runs are matched to the exact partitions they need. A producer uses `CronPartitionTimetable`, or assigns keys at run time with `PartitionedAtRuntime`. A consumer uses `PartitionedAssetTimetable` with partition mappers. Since 3.3, `RollupMapper` can hold a daily run until its hourly partitions arrive.
+
+**Detailed Explanation:**
+Plain asset scheduling only knows that something was updated. Partitioning adds *which slice* was updated.
+
+| Piece | Role |
+|---|---|
+| `CronPartitionTimetable("0 * * * *")` | Producer: each scheduled run gets a key for its tick, and its events carry it |
+| `PartitionedAtRuntime()` (3.3) | Producer: the task calls `outlet_events[asset].add_partitions([...])` once it knows the keys |
+| `PartitionedAssetTimetable(assets=..., default_partition_mapper=...)` | Consumer: one run per downstream key |
+| `IdentityMapper`, `StartOfHourMapper`, `StartOfDayMapper`, …, `ProductMapper`, `AllowedKeyMapper` | Translate upstream keys into downstream keys |
+| `RollupMapper(upstream_mapper, window=DayWindow(), wait_policy=...)` (3.3) | Many to one: wait for every hour in a day |
+| `WaitForAll()` / `MinimumCount(n)` | Release a rollup when all keys, or at least `n`, have arrived |
+| `FanOutMapper`, `SegmentWindow` + `FixedKeyMapper` (3.3) | One to many, and categorical rollups such as all regions |
+
+Inside the run, read `dag_run.partition_key`. When the mapper is temporal, `dag_run.partition_date` is set too. Backfills of partitioned DAGs read `--from-date/--to-date` as a partition-date range (see Q536). Partitioned events don't trigger DAGs that aren't partition-aware, and a consumer on `PartitionedAssetTimetable` ignores events with no key.
+
+Points to raise in an interview:
+- It is new and still changing quickly between minor versions. Pin the version and read the release notes before relying on mappers. *Product behaviour changes; checked October 2026.*
+- A `DayWindow` assumes 24 hourly steps. Use UTC keys for rollups that cross a daylight-saving change, otherwise a day can wait forever for an hour that never exists.
+- `[scheduler] partition_mapper_max_downstream_keys` bounds how far one event can fan out.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 (asset partitioning: 3.2+, rollups: 3.3+)
+from airflow.sdk import (DAG, Asset, CronPartitionTimetable, DayWindow, MinimumCount,
+                         PartitionedAssetTimetable, RollupMapper, StartOfHourMapper, task)
+
+hourly_clicks = Asset(name="hourly_clicks", uri="s3://lake/bronze/clicks")
+
+# Producer: each run carries a partition key for its hour and stamps it on the asset event.
+with DAG("ingest_hourly_clicks",
+         schedule=CronPartitionTimetable("0 * * * *", timezone="UTC"), catchup=False) as producer:
+    @task(outlets=[hourly_clicks])
+    def ingest(dag_run=None):
+        print("ingesting partition", dag_run.partition_key)
+
+    ingest()
+
+# Consumer: one run per UTC day, released when at least 23 of the 24 hours have landed.
+with DAG("daily_click_summary",
+         schedule=PartitionedAssetTimetable(
+             assets=hourly_clicks,
+             default_partition_mapper=RollupMapper(
+                 upstream_mapper=StartOfHourMapper(),
+                 window=DayWindow(),
+                 wait_policy=MinimumCount(23),     # tolerate one late hour
+             ),
+         ),
+         catchup=False) as consumer:
+    @task
+    def summarise(dag_run=None):
+        print("summarising day", dag_run.partition_key)   # e.g. "2026-05-20"
+
+    summarise()
+
+if __name__ == "__main__":
+    print("consumer timetable:", type(consumer.timetable).__name__)
+    # How the scheduler computes the producer's next run (core-side class, used here only to show it):
+    import pendulum
+    from airflow.timetables.base import TimeRestriction
+    from airflow.timetables.trigger import CronPartitionTimetable as CoreCronPartition
+
+    info = CoreCronPartition("0 * * * *", timezone="UTC").next_dagrun_info_v2(
+        last_dagrun_info=None,
+        restriction=TimeRestriction(earliest=pendulum.datetime(2026, 5, 20, 9, 30, tz="UTC"),
+                                    latest=None, catchup=True))
+    print("next producer run:", info.run_after, "| partition_key:", info.partition_key)
+```
+```text
+consumer timetable: PartitionedAssetTimetable
+next producer run: 2026-05-20 10:00:00+00:00 | partition_key: 2026-05-20T10:00:00
+```
+
+**Real-World Use Case:**
+A clickstream platform ingested hourly files, some of which arrived hours late. Before partitioning, the daily summary ran on a fixed cron and sometimes missed late hours. The fix was a scheduled re-run the next day. With a `RollupMapper` on `DayWindow`, each day's summary ran once its hours were in. Run history was now one run per day, which made reprocessing a single day simple.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Calling this "Airflow 3.0 functionality". Partitioning arrived in 3.2, and rollups and runtime partitions in 3.3.
+- Expecting a partitioned producer to trigger an ordinary asset-scheduled DAG.
+- Building hourly-to-daily rollups on local-time keys across daylight-saving changes.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you rerun one partition? — Trigger the consumer with that `partition_key` from the UI or the REST API, or clear its run.
+- How do you see what a rollup is waiting for? — Partial windows show as pending on the DAG's next-run assets view.
+
+---
+
+### Q542. TriggerDagRunOperator, ExternalTaskSensor or assets: how do you choose for cross-DAG dependencies?
+**ID:** AF-24
+**Topic:** Airflow > Cross-DAG Dependencies
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `airflow`, `cross-dag`, `trigger-dagrun`, `external-task-sensor`
+
+**Short Answer (2–3 lines):**
+Use assets when "run after that data is updated" is enough. The producer doesn't need to know its consumers. Use `TriggerDagRunOperator` when the producer must start a particular DAG and pass it conf. Use `ExternalTaskSensor` only when two DAGs keep their own schedules and one must wait for a specific task in the other, and make the schedules line up.
+
+**Detailed Explanation:**
+| Need | Best fit | Watch out for |
+|---|---|---|
+| Many consumers react to one dataset | Assets (see Q538) | Events mean "task succeeded", not "data valid" |
+| Producer passes run parameters | `TriggerDagRunOperator(conf=...)` | Producer and target are tightly coupled; target validates params |
+| Wait for the other DAG to finish too | `TriggerDagRunOperator(wait_for_completion=True, deferrable=True)` | Without `deferrable`, it holds a worker slot while it waits |
+| Two scheduled DAGs, one task depends on another's | `ExternalTaskSensor` | Logical dates must match; use `execution_delta` or `execution_date_fn` |
+| Clear downstream when upstream is cleared | `ExternalTaskMarker` | Needs a matching `ExternalTaskSensor` |
+
+`ExternalTaskSensor` looks for the *same logical date* in the other DAG unless you shift it. A 03:00 DAG waiting on a 02:00 DAG needs `execution_delta=timedelta(hours=1)`. If you get this wrong, the sensor waits until it times out. Run it with `mode="reschedule"` or `deferrable=True`, and always set `timeout` (see Q544). In Airflow 3, logical dates can be `None` for manual and asset-triggered runs (see Q537), which makes date-matching sensors even more fragile. That is one more reason to prefer assets.
+
+In Airflow 3, these operators live in `apache-airflow-providers-standard`. A run created by `TriggerDagRunOperator` shows up with its own run type, so you can tell it apart from manual runs.
+
+For a longer walk-through, see the site's guide on making one Airflow DAG depend on another.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 (apache-airflow-providers-standard)
+from datetime import datetime, timedelta
+from airflow.sdk import dag, task
+from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.providers.standard.sensors.external_task import ExternalTaskSensor
+
+
+@dag(schedule="0 2 * * *", start_date=datetime(2026, 1, 1), catchup=False)
+def load_sales():
+    @task
+    def load() -> int:
+        return 1834
+
+    # Push: the producer names its downstream and hands over parameters.
+    load() >> TriggerDagRunOperator(
+        task_id="trigger_finance_report",
+        trigger_dag_id="finance_report",
+        conf={"source": "load_sales", "rows": "{{ ti.xcom_pull(task_ids='load') }}"},
+        wait_for_completion=False,
+    )
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False)
+def finance_report():
+    @task
+    def build(params=None, dag_run=None):
+        print("triggered with conf:", dag_run.conf)
+
+    build()
+
+
+# Pull: a DAG on its own schedule waits for a task in another DAG.
+@dag(schedule="0 3 * * *", start_date=datetime(2026, 1, 1), catchup=False)
+def marketing_mart():
+    ExternalTaskSensor(
+        task_id="wait_for_sales_load",
+        external_dag_id="load_sales",
+        external_task_id="load",
+        execution_delta=timedelta(hours=1),     # 03:00 run looks for the 02:00 run
+        mode="reschedule", poke_interval=300, timeout=3 * 3600,
+    )
+
+
+producer, consumer, sensor_dag = load_sales(), finance_report(), marketing_mart()
+
+if __name__ == "__main__":
+    print("producer:", producer.test().state)
+    from airflow.models.dagrun import DagRun
+    for dr in DagRun.find(dag_id="finance_report"):
+        print("finance_report run:", dr.run_type, dr.state, dr.conf)
+```
+```text
+producer: success
+finance_report run: operator_triggered queued {'source': 'load_sales', 'rows': '1834'}
+```
+The triggered run waits in `queued` because no scheduler is running in this local test. `rows` arrives as a string because templates render to strings (see Q532).
+
+**Real-World Use Case:**
+A company had twelve report DAGs that each used an `ExternalTaskSensor` on one ingestion DAG, so every schedule change broke some sensors. They replaced the sensors with an asset on the ingestion output. The twelve reports now run when the data lands, and the ingestion team can change its schedule without telling anyone.
+
+**Common Mistakes / Interviewer Red Flags:**
+- An `ExternalTaskSensor` between DAGs on different schedules with no `execution_delta`.
+- Chains of `TriggerDagRunOperator(wait_for_completion=True)` without deferrable mode, which tie up worker slots.
+- Building a web of cross-DAG links that should have been one DAG or task groups.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you see dependencies between DAGs? — The UI's DAG dependencies view, or `airflow dags show-dependencies`.
+- Can `TriggerDagRunOperator` reuse a run id? — Yes, with `trigger_run_id`. `reset_dag_run=True` clears an existing run instead of failing.
+
+---
+
+### Q543. How does the triggerer work, and how would you write a deferrable operator?
+**ID:** AF-25
+**Topic:** Airflow > Deferrable Operators
+**Level:** Advanced
+**Frequency:** Common
+**Tags:** `airflow`, `deferrable`, `triggerer`, `asyncio`
+
+**Short Answer (2–3 lines):**
+A deferrable operator starts the work, then calls `self.defer(trigger=..., method_name=...)`. The task moves to `deferred` and gives up its worker slot. The triggerer is an asyncio process that runs thousands of triggers in one event loop. When a trigger yields an event, the task is scheduled again and continues in `method_name` with the event payload.
+
+**Detailed Explanation:**
+Lifecycle:
+1. `execute()` runs on a worker and submits the job, which is quick.
+2. `self.defer(...)` raises a special exception. The trigger is serialised (classpath and kwargs) and stored, and the task becomes `deferred`. It holds no worker slot, and by default no pool slot either.
+3. A triggerer picks the trigger up and runs `async def run()`. Each triggerer handles up to `[triggerer] capacity` triggers, 1000 by default. Run two or more triggerers for high availability; they split the triggers between them.
+4. The trigger yields a `TriggerEvent(payload)`. The task goes back to `scheduled`, a worker starts it again, and it calls `execute_complete(context, event)`. That method is a fresh call, so any state must come from the event or from `kwargs` passed to `defer`.
+
+Design rules:
+- **Never block in `run()`.** Use async clients, `asyncio.sleep` and `asyncio.to_thread` for unavoidable sync calls. One blocking call stalls every trigger in that process. Set `PYTHONASYNCIODEBUG=1` to find them.
+- **Triggers must be importable by the triggerer** and must not depend on worker-only state.
+- **Timeouts.** `defer(timeout=...)` bounds the wait. `execution_timeout` covers the *whole* task, including the deferred time.
+- **`start_from_trigger=True`** lets suitable operators go straight to the triggerer without starting on a worker at all.
+- Many provider operators support `deferrable=True`. `[operators] default_deferrable = True` turns it on everywhere it is supported.
+
+Compared with sensors in reschedule mode (see Q44, Q544): reschedule releases the slot between pokes, but every poke is still a full task start. Deferral is cheaper when there are many long waits.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 — job_trigger.py, importable by workers and the triggerer
+import asyncio
+from airflow.triggers.base import BaseTrigger, TriggerEvent
+
+
+class JobDoneTrigger(BaseTrigger):
+    """Polls an external job asynchronously inside the triggerer's event loop."""
+
+    def __init__(self, job_id: str, poll_seconds: float = 30.0):
+        super().__init__()
+        self.job_id, self.poll_seconds = job_id, poll_seconds
+
+    def serialize(self):
+        # classpath + kwargs: stored in the DB so any triggerer can rebuild this object
+        return ("job_trigger.JobDoneTrigger", {"job_id": self.job_id, "poll_seconds": self.poll_seconds})
+
+    async def run(self):
+        polls = 0
+        while True:
+            polls += 1
+            status = "SUCCEEDED" if polls >= 3 else "RUNNING"   # stand-in for an async API call
+            if status in ("SUCCEEDED", "FAILED"):
+                yield TriggerEvent({"job_id": self.job_id, "status": status, "polls": polls})
+                return
+            await asyncio.sleep(self.poll_seconds)              # never time.sleep() here
+```
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 — the DAG file
+from datetime import datetime, timedelta
+from airflow.sdk import BaseOperator, dag
+from airflow.sdk.exceptions import AirflowException
+from job_trigger import JobDoneTrigger
+
+
+class RunJobOperator(BaseOperator):
+    def __init__(self, job_name: str, poll_seconds: float = 30.0, **kwargs):
+        super().__init__(**kwargs)
+        self.job_name, self.poll_seconds = job_name, poll_seconds
+
+    def execute(self, context):
+        job_id = f"{self.job_name}-0001"          # submit the job (fast, synchronous)
+        print("submitted", job_id, "- deferring")
+        # Frees the worker slot; the task goes to state "deferred" until the trigger fires.
+        self.defer(trigger=JobDoneTrigger(job_id, self.poll_seconds),
+                   method_name="execute_complete", timeout=timedelta(hours=2))
+
+    def execute_complete(self, context, event: dict):
+        # A fresh worker process resumes here with the trigger's payload.
+        if event["status"] != "SUCCEEDED":
+            raise AirflowException(f"job {event['job_id']} ended {event['status']}")
+        print(f"job {event['job_id']} finished after {event['polls']} polls")
+        return event["job_id"]
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False)
+def deferrable_demo():
+    RunJobOperator(task_id="run_job", job_name="nightly_spark", poll_seconds=0.5)
+
+
+dag_obj = deferrable_demo()
+
+if __name__ == "__main__":
+    print(dag_obj.test().state)
+```
+```text
+submitted nightly_spark-0001 - deferring
+job nightly_spark-0001 finished after 3 polls
+success
+```
+`dag.test()` runs the trigger in-process, so you can test deferral without a triggerer.
+
+**Real-World Use Case:**
+A platform submitted about 800 Databricks and EMR jobs a night, each lasting 20 to 90 minutes. With classic operators that wait synchronously, 800 worker slots sat idle while they waited. With deferrable operators, two small triggerer pods handled all the waits, and the worker pool shrank to the size of the actual compute work.
+
+**Common Mistakes / Interviewer Red Flags:**
+- `time.sleep()` or a synchronous HTTP client inside `run()`.
+- Keeping state on `self` between `execute` and `execute_complete`. It is a new process.
+- Not running a triggerer at all, so deferred tasks wait forever.
+
+**Follow-up Questions Interviewers Ask:**
+- Where do trigger logs go? — Into the task's log, interleaved with the triggerer's output for that trigger.
+- What if a triggerer dies? — Its triggers are reassigned to a live triggerer, so `run()` should be safe to restart.
+
+---

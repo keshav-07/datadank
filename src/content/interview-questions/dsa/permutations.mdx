@@ -1,7 +1,7 @@
 ---
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-09"
+reviewedDate: "2026-10-09"
 title: "Permutations: Every Ordering of Distinct Values with Backtracking"
 seoTitle: "Permutations: Backtracking with a Used Set"
 description: "Generate every ordering of a list of distinct values with used-flag backtracking or in-place swapping, with complexity, tests and common pitfalls."
@@ -35,8 +35,8 @@ Assume up to 8 values.
 values: [8, 1]
 answer: [8, 1], [1, 8]
 
-values: [3, 6, 9]
-answer: [3, 6, 9], [3, 9, 6], [6, 3, 9], [6, 9, 3], [9, 3, 6], [9, 6, 3]   (3! = 6)
+values: [4, 7, 2]
+answer: [4, 7, 2], [4, 2, 7], [7, 4, 2], [7, 2, 4], [2, 4, 7], [2, 7, 4]   (3! = 6)
 
 values: [42]
 answer: [42]
@@ -142,7 +142,7 @@ for fn in (permutations, permutations_swap, permutations_insert):
     assert norm(fn([])) == [()]                       # one empty ordering
     assert norm(fn([42])) == [(42,)]                  # single element
     assert norm(fn([8, 1])) == [(1, 8), (8, 1)]
-    assert len(fn([3, 6, 9])) == 6
+    assert len(fn([4, 7, 2])) == 6
     assert norm(fn([3, 6, 9, 12])) == sorted(itertools.permutations([3, 6, 9, 12]))
     assert len(set(map(tuple, fn([1, 2, 3, 4, 5])))) == 120   # all distinct
 

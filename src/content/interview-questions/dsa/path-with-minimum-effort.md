@@ -27,8 +27,8 @@ left or right. The effort of a route is the largest absolute difference in heigh
 it. Return the minimum effort over all routes.
 
 This is LeetCode 1631, Path With Minimum Effort. It is a "bottleneck path" problem, a close relative of
-[Swim in Rising Water](/interview/dsa/swim-in-rising-water/). Assume up to 100 by 100 cells and heights up to
-1,000,000.
+[Swim in Rising Water](/interview/dsa/swim-in-rising-water/). Grids can have thousands of cells and heights can be large,
+so neither brute-force search nor a scan over every possible effort value is attractive.
 
 ## Examples
 

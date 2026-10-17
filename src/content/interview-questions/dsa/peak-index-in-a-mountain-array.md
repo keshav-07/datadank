@@ -26,7 +26,7 @@ You are given a mountain array: at least three integers that strictly increase u
 
 This is LeetCode 852, Peak Index in a Mountain Array. It shows that binary search does not need a sorted list, only a yes/no question whose answers switch once across the indices.
 
-Assume between 3 and 100,000 values.
+The array always has at least three values, and it can be long enough that a linear scan is noticeably slower.
 
 ## Examples
 

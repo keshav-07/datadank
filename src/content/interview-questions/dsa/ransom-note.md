@@ -24,7 +24,7 @@ next: "interview-questions:dsa/valid-sudoku"
 
 You are given two strings, `note` and `magazine`. Return `True` if `note` can be written by cutting letters out of `magazine`, where each letter in `magazine` can be used at most once, and `False` otherwise. Order does not matter. This is LeetCode 383, Ransom Note.
 
-Both strings contain lowercase English letters and are up to about 10^5 characters long.
+Both strings use only lowercase English letters and can be long, so repeated list scans are too slow.
 
 ## Examples
 

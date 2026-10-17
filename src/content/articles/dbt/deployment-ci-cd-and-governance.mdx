@@ -1,0 +1,328 @@
+---
+publishedDate: "2026-10-16"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
+title: "dbt Deployment, CI/CD and Governance: Environments, Slim CI, Defer, Versions and Access"
+seoTitle: "dbt CI/CD: Slim CI, Defer and Governance"
+description: "dbt CI/CD and deployment: targets, selectors, state:modified+ with --defer for slim CI, production jobs, docs, exposures, model versions, groups and access."
+technology: ["dbt", "etl-elt"]
+topic: ["ci-cd", "deployment", "governance"]
+difficulty: "Advanced"
+learningObjectives:
+  - "Separate dev, CI and prod with targets and schemas"
+  - "Select exactly what to run with graph operators, methods and YAML selectors"
+  - "Build only changed models in CI with state:modified+, --defer and --state"
+  - "Run a production job in the right order and publish docs and artifacts"
+  - "Govern shared models with exposures, groups, access levels, contracts and versions"
+prerequisites: ["articles:dbt/jinja-macros-and-packages", "articles:etl-elt/testing-data-pipelines-cicd"]
+related: ["interview-questions:data-engineering/cicd-for-data-pipelines", "system-designs:elt-pipeline-with-dbt", "articles:airflow/best-practices-testing-cicd"]
+previous: "articles:dbt/jinja-macros-and-packages"
+versionContext: "Run on dbt Core 1.12.6 with dbt-duckdb 1.11.0 (DuckDB 1.5.6, Python 3.11) on 16 October 2026, with dev, ci and prod targets in one DuckDB file. Output is trimmed and timestamps are removed. dbt platform features are described from the dbt documentation, not run."
+sources:
+  - { label: "dbt documentation: Node selection syntax", url: "https://docs.getdbt.com/reference/node-selection/syntax" }
+  - { label: "dbt documentation: Node selector methods", url: "https://docs.getdbt.com/reference/node-selection/methods" }
+  - { label: "dbt documentation: YAML selectors", url: "https://docs.getdbt.com/reference/node-selection/yaml-selectors" }
+  - { label: "dbt documentation: Defer", url: "https://docs.getdbt.com/reference/node-selection/defer" }
+  - { label: "dbt documentation: clone", url: "https://docs.getdbt.com/reference/commands/clone" }
+  - { label: "dbt documentation: Exposures", url: "https://docs.getdbt.com/docs/build/exposures" }
+  - { label: "dbt documentation: Model access", url: "https://docs.getdbt.com/docs/mesh/govern/model-access" }
+  - { label: "dbt documentation: Model versions", url: "https://docs.getdbt.com/docs/mesh/govern/model-versions" }
+  - { label: "dbt documentation: Groups", url: "https://docs.getdbt.com/docs/build/groups" }
+  - { label: "dbt documentation: Documentation", url: "https://docs.getdbt.com/docs/build/documentation" }
+---
+
+The earlier lessons built a project that works on one laptop. This lesson makes it safe for a team: every change is built and tested in isolation before merge, production runs on a schedule in a fixed order, and models other teams depend on have owners, access rules and versioned interfaces.
+
+## Environments are targets
+
+The same code runs everywhere; only the target changes. This project's `profiles.yml` has three:
+
+| Target | Schema | Used by |
+|---|---|---|
+| `dev` | `dbt_dev` (in a team, one per developer, such as `dbt_asha`) | Local development |
+| `ci` | `dbt_ci` (in a team, one per pull request) | Pull-request checks |
+| `prod` | `analytics` | Scheduled production job |
+
+`ref()` resolves into the target's schema, so a developer can rebuild anything without touching production. In real warehouses, also separate credentials: the CI and prod service accounts should be the only ones allowed to write production schemas, and development roles should read production but not write it.
+
+## Selecting what to run
+
+Running the whole project for every change is slow. dbt's selection syntax picks nodes from the DAG:
+
+| Selector | Meaning |
+|---|---|
+| `fct_orders` | That node |
+| `+fct_orders` / `fct_orders+` | It and all ancestors / all descendants (`2+fct_orders` limits depth) |
+| `@fct_orders` | It, its descendants, and all ancestors of those descendants (useful in CI) |
+| `tag:nightly`, `path:models/marts`, `config.materialized:incremental` | Methods that select by property |
+| `test_type:unit`, `resource_type` flags | Narrow to a kind of node |
+| `state:modified`, `state:new` | Compare with a saved manifest (below) |
+| `result:error`, `source_status:fresher` | Use the results of a previous run |
+
+A space between selectors means union; a comma means intersection; `--exclude` subtracts. Descendants include tests and exposures:
+
+```text
+$ dbt ls --select "fct_orders+" --output name
+weekly_revenue_dashboard
+dim_customers.v1
+dim_customers.v2
+fct_orders
+assert_shipped_orders_are_paid
+not_negative_fct_orders_amount
+not_null_fct_orders_order_id
+unique_dim_customers_v1_customer_id
+unique_dim_customers_v2_customer_id
+unique_fct_orders_order_id
+test_dim_customers_excludes_cancelled_orders
+test_fct_orders_incremental_lookback
+```
+
+Selections used by jobs belong in `selectors.yml`, so the job definition says `--selector nightly` instead of repeating a long command:
+
+```yaml
+selectors:
+  - name: nightly
+    description: Everything except the event models, which have their own schedule.
+    definition:
+      union:
+        - method: fqn
+          value: "*"
+        - exclude:
+            - method: path
+              value: models/marts/fct_events.sql
+            - method: path
+              value: models/marts/agg_daily_events.sql
+```
+
+```text
+$ dbt ls --selector nightly --resource-type model --output name
+dim_customers.v1
+dim_customers.v2
+fct_orders
+int_order_payments
+stg_shop__customers
+stg_shop__orders
+stg_shop__payments
+```
+
+## The production job
+
+A production run is a short, fixed sequence:
+
+```bash
+dbt deps
+dbt source freshness --target prod
+dbt build --target prod --selector nightly --exclude-resource-type unit_test
+dbt docs generate --target prod
+```
+
+`dbt build` runs seeds, snapshots, models and tests in DAG order and skips children of failed tests. Unit tests are excluded, as the dbt docs recommend: their inputs are static, so running them in production only costs compute. After the run, keep `target/manifest.json` and `target/run_results.json` somewhere durable (object storage, the orchestrator's artifact store): the manifest is what CI compares against, and run results feed monitoring.
+
+The production build of this project:
+
+```text
+$ dbt build --target prod --selector nightly --exclude-resource-type unit_test
+4 of 26 OK loaded seed file analytics.payment_methods .......................... [INSERT 4 in 0.18s]
+5 of 26 OK snapshotted snapshots.customers_snapshot ............................ [OK in 0.26s]
+...
+17 of 26 OK created sql incremental model analytics.fct_orders ................. [OK in 0.07s]
+18 of 26 WARN 1 assert_shipped_orders_are_paid ................................. [WARN 1 in 0.09s]
+22 of 26 OK created sql table model analytics.dim_customers_v1 ................. [OK in 0.11s]
+23 of 26 NO-OP exposure weekly_revenue_dashboard ............................... [NO-OP in 0.00s]
+...
+Done. PASS=23 WARN=2 ERROR=0 SKIP=0 NO-OP=1 REUSED=0 TOTAL=26
+```
+
+Who triggers it is a separate choice: a dbt platform job, an Airflow or Dagster task (for example with the Cosmos library, which turns dbt nodes into Airflow tasks), or a CI scheduler. The orchestrator should also run the extract-load step first and only start dbt when the load succeeded.
+
+## Slim CI: build only what changed
+
+On a pull request, you want to build and test the changed models and everything downstream of them, and nothing else. Two features make this possible:
+
+- **`state:modified`** compares the current project with a manifest from production (passed with `--state`) and selects nodes whose code, config or contract changed. Subselectors like `state:modified.body` or `state:modified.contract` narrow it further.
+- **`--defer`** makes `ref()` to an unselected node resolve to the production relation from that manifest when the node does not exist in the CI schema. Your PR's models read real production parents instead of rebuilding them.
+
+The demonstration: production was built and its manifest saved to `prod-artifacts/`. Then one change was made to a staging model, adding a column:
+
+{/* noexec */}
+```sql
+renamed as (
+    select
+        id                                  as payment_id,
+        order_id,
+        payment_method,
+        {{ cents_to_dollars('amount_cents') }} as amount,
+        created_at,
+        cast(created_at as date)            as payment_date
+    from source
+)
+```
+
+dbt identified the changed model and its descendants:
+
+```text
+$ dbt ls -s state:modified+ --state prod-artifacts --resource-type model --output name
+dim_customers.v1
+dim_customers.v2
+fct_orders
+int_order_payments
+stg_shop__payments
+```
+
+and the CI build, against an empty `dbt_ci` schema, built only those:
+
+```text
+$ dbt build -s state:modified+ --defer --state prod-artifacts --target ci
+1 of 16 OK created sql view model dbt_ci.stg_shop__payments .................... [OK in 0.08s]
+2 of 16 PASS not_null_stg_shop__payments_payment_id ............................ [PASS in 0.05s]
+...
+5 of 16 PASS fct_orders::test_fct_orders_incremental_lookback .................. [PASS in 0.15s]
+6 of 16 OK created sql incremental model dbt_ci.fct_orders ..................... [OK in 0.07s]
+7 of 16 WARN 1 assert_shipped_orders_are_paid .................................. [WARN 1 in 0.03s]
+...
+12 of 16 OK created sql table model dbt_ci.dim_customers_v1 .................... [OK in 0.12s]
+13 of 16 NO-OP exposure weekly_revenue_dashboard ............................... [NO-OP in 0.00s]
+15 of 16 OK created sql table model dbt_ci.dim_customers_v2 .................... [OK in 0.04s]
+Done. PASS=14 WARN=1 ERROR=0 SKIP=0 NO-OP=1 REUSED=0 TOTAL=16
+```
+
+The compiled `fct_orders` shows deferral at work. The changed model was read from CI; unchanged parents were read from production; the ephemeral model was inlined (the docs note ephemeral models are never deferred):
+
+{/* noexec */}
+```sql
+    select * from "shop"."dbt_ci"."stg_shop__payments"
+    select * from "shop"."analytics"."payment_methods"
+    select * from "shop"."analytics"."stg_shop__orders"
+        from "shop"."dbt_ci"."fct_orders"
+```
+
+### Pitfalls found while running slim CI
+
+- **Deferral only applies to nodes missing from the target.** The docs state a node is deferred only if it is not selected and does not exist in the target database (unless `--favor-state` is passed). In a long-lived dev schema full of stale tables, `--defer` silently uses your stale copies. CI schemas should start empty, for example one schema per pull request, dropped afterwards.
+- **Incremental models are built from scratch in CI.** `fct_orders` did not exist in `dbt_ci`, so it ran as a full build. That is correct but can be expensive on large tables. The dbt docs suggest `dbt clone` of the modified incremental models as the first CI step on warehouses with zero-copy cloning, so the CI run is genuinely incremental.
+- **Pre-building with `--empty` can hide problems.** Building empty tables first (to satisfy unit tests that need relations to exist) makes the next run treat incremental models as existing. In lesson 4 that turned an incremental model with a null-unsafe filter into a silent no-op, and tests passed on the empty table.
+- **Unit tests that mock inputs with dict rows need the relations to exist.** Lesson 5 shows the error and the SQL-fixture workaround.
+
+The dbt platform provides CI jobs that run on pull requests with deferral to a production environment; with dbt Core you script the same steps in GitHub Actions, GitLab CI or similar: check out the branch, download the production manifest, run `dbt deps`, then the `dbt build -s state:modified+ --defer --state ...` command against a fresh CI schema, and drop the schema at the end.
+
+## Documentation and exposures
+
+`dbt docs generate` writes `target/manifest.json`, `target/catalog.json` and a static `index.html` lineage site; `dbt docs serve` serves it locally, and in production you publish it (or use the dbt platform's hosted docs). Descriptions in YAML are what make it useful, so write "one row per ..." on every model.
+
+**Exposures** put downstream consumers into the DAG. This one declares the dashboard that depends on two marts:
+
+```yaml
+exposures:
+  - name: weekly_revenue_dashboard
+    label: Weekly revenue dashboard
+    type: dashboard
+    maturity: high
+    url: https://bi.example.com/dashboards/weekly-revenue
+    description: Revenue and order counts reviewed in the Monday trading meeting.
+    depends_on:
+      - ref('fct_orders')
+      - ref('dim_customers')
+    owner:
+      name: Commerce analytics
+      email: commerce-data@example.com
+```
+
+dbt does not build anything for an exposure (it shows as `NO-OP` in `dbt build`), but it appears in lineage and in selection: `fct_orders+` included it above, so you can see which dashboards a change can break, and `+exposure:weekly_revenue_dashboard` builds everything a dashboard needs.
+
+## Governance: groups, access, contracts and versions
+
+As a project grows, some models become interfaces that other teams rely on. dbt has four tools for that.
+
+**Groups** give models an owner:
+
+```yaml
+groups:
+  - name: commerce
+    owner:
+      name: Commerce analytics
+      email: commerce-data@example.com
+```
+
+**Access** says who may `ref` a model. The docs define `private` (only the same group), `protected` (the same project; the default) and `public` (any project, including other projects in dbt Mesh). Here the intermediate model is private to the commerce group, and the marts are public:
+
+```yaml
+models:
+  - name: int_order_payments
+    description: Payments rolled up to one row per order, split by payment method group.
+    config:
+      group: commerce
+      access: private
+```
+
+A model outside the group that tries to use it fails at parse time, before anything runs:
+
+```text
+$ dbt parse
+[ERROR]: Encountered an error:
+Parsing Error
+  Node model.shop.tmp_check attempted to reference node model.shop.int_order_payments, which is not allowed because the referenced node is private to the 'commerce' group.
+```
+
+**Contracts** fix the column names and types of public models (lesson 5).
+
+**Versions** let you make a breaking change without breaking consumers on the same day. `dim_customers` v2 replaces `first_name` and `last_name` with `full_name`:
+
+```yaml
+  - name: dim_customers
+    latest_version: 1
+    # config and columns as in lesson 5
+    versions:
+      - v: 1
+        defined_in: dim_customers
+      - v: 2
+        columns:
+          - include: all
+            exclude: [first_name, last_name]
+          - name: full_name
+            data_type: varchar
+```
+
+{/* noexec */}
+```sql
+with customers as (
+    select * from {{ ref('dim_customers', v=1) }}
+)
+
+select
+    customer_id,
+    first_name || ' ' || last_name as full_name,
+    email,
+    country_code,
+    first_order_date,
+    most_recent_order_date,
+    order_count,
+    lifetime_value
+from customers
+```
+
+dbt built both as separate relations, `dim_customers_v1` and `dim_customers_v2`. Because `latest_version` is 1, a plain `ref('dim_customers')` still resolves to v1; v2 is a prerelease that consumers can try with `ref('dim_customers', v=2)`. The documented lifecycle is: publish the new version, move `latest_version` to it, set a `deprecation_date` on the old one so consumers get warnings, and remove it after the date. Here v2 is derived from v1 to keep the example short; in a real project each version normally has its own full SQL so v1 can be deleted later.
+
+## Project structure for a team
+
+- One project per domain or team when a single project becomes too slow to parse or review; cross-project `ref` to public models is the dbt Mesh approach; check the dbt documentation for which plans and engines support it before designing around it.
+- `models/staging/<source>/`, `models/intermediate/<domain>/`, `models/marts/<domain>/`, with one YAML file per folder.
+- `selectors.yml` for every job selection, `package-lock.yml` committed, `profiles.yml` with `env_var()` for secrets.
+- Pull request template: what changed, which exposures are affected (from `state:modified+`), how it was tested.
+- Lint SQL in CI (SQLFluff is common) so reviews are about logic, not formatting.
+
+## Common mistakes
+
+- **No CI, or CI that runs the whole project.** Slow CI gets skipped; slim CI keeps it fast enough to require.
+- **A stale or missing production manifest.** `state:modified` is only as good as the manifest you compare against; download it from the latest successful production run.
+- **Reusing one CI schema** across pull requests, so deferral picks up another branch's tables.
+- **Running unit tests in production** instead of excluding them.
+- **Breaking a public model in place** instead of adding a version and a deprecation date.
+- **Exposures nobody maintains.** Generate them from the BI tool where possible, or review them with the dashboards.
+
+## In an interview
+
+"How do you deploy dbt safely?" Describe targets for dev, CI and prod; a production job running `dbt source freshness` then `dbt build` with a named selector, publishing docs and artifacts; and slim CI on each pull request with `dbt build -s state:modified+ --defer --state <prod manifest>` into a fresh schema. Explain why deferral works (unselected refs resolve to production when absent in CI) and its limits (stale schemas, incremental models built from scratch, `dbt clone` as the fix). For governance, name groups, access levels, contracts and versions with deprecation dates, and exposures for impact analysis.
+
+## Key takeaway
+
+Targets isolate environments, selectors choose the work, state comparison and deferral keep CI fast, and groups, access, contracts and versions turn important models into stable interfaces. Run the production job in a fixed order, keep its manifest, and build every pull request in a clean schema.

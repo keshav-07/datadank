@@ -1,7 +1,7 @@
 ---
 publishedDate: "2026-10-04"
-updatedDate: "2026-10-09"
-reviewedDate: "2026-10-09"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
 title: "Airflow Cheat Sheet"
 description: "A quick Airflow 3 reference: TaskFlow DAGs, schedules and data intervals, retries, sensor modes, trigger rules, the CLI and what changed from Airflow 2."
 inventoryId: "CHEAT-08"
@@ -55,7 +55,7 @@ Select data with the run's own dates (`ds`, `logical_date`, `data_interval_start
 
 ## Retries
 
-`retries`, `retry_delay`, `retry_exponential_backoff` (a multiplier in Airflow 3, for example `2.0`; 0 disables it), `max_retry_delay`, `execution_timeout`. Raise `AirflowFailException` for errors a retry cannot fix. Only safe with idempotent tasks.
+`retries`, `retry_delay`, `retry_exponential_backoff` (a multiplier in Airflow 3, for example `2.0`; 0 disables it), `max_retry_delay`, `execution_timeout`. Raise `AirflowFailException` (`from airflow.sdk.exceptions`) for errors a retry cannot fix. Only safe with idempotent tasks.
 
 ## Sensors
 
@@ -95,6 +95,7 @@ In Airflow 2.x, backfills used `airflow dags backfill -s START -e END dag_id`.
 | Data dependencies | Datasets | Assets |
 | Late-run alerting | `sla`, `sla_miss_callback` | Deadline alerts (3.1+) |
 | Grouping | SubDAGs or TaskGroups | TaskGroups only |
+| DAG history | UI shows only the latest DAG structure | DAG versioning: each run keeps the version it was created with; a Git bundle also pins the code |
 | Backfill | `airflow dags backfill` in the CLI process | `airflow backfill create`, run by the scheduler |
 | Default executor | SequentialExecutor | LocalExecutor |
 | REST API | `/api/v1` | `/api/v2` with bearer tokens |

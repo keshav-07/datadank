@@ -24,12 +24,12 @@ next: "interview-questions:dsa/min-stack"
 
 You are given a string of lowercase letters. While the string contains two equal letters side by side, delete that pair. Keep going until no such pair exists and return what is left (possibly the empty string). This is LeetCode 1047, Remove All Adjacent Duplicates In String.
 
-The final result is the same whichever pair you remove first, so the answer is well defined. Strings can be long (up to around 100,000 characters), so a quadratic approach is too slow in practice.
+The final result is the same whichever pair you remove first, so the answer is well defined. Strings can be long, so a quadratic approach is too slow in practice.
 
 ## Examples
 
 ```text
-"abbaca"   ->  "ca"     (remove "bb" -> "aaca", then "aa" -> "ca")
+"mnnmpq"   ->  "pq"     (remove "nn" -> "mmpq", then "mm" -> "pq")
 "xyyxz"    ->  "z"      (remove "yy" -> "xxz", then "xx" -> "z")
 "abc"      ->  "abc"    (nothing to remove)
 "aaaa"     ->  ""       (two pairs cancel)
@@ -59,16 +59,16 @@ def remove_duplicates_brute(s):
 
 **Idea.** Build the answer from left to right and keep it on a stack. The top of the stack is the last surviving letter. When the next letter equals that top, the two would become neighbours and cancel, so pop. Otherwise the new letter survives for now, so push it. After a pop, the new top is the letter that is now adjacent to whatever comes next, which is exactly what a chain reaction like `"abba"` needs.
 
-Walkthrough on `"abbaca"`:
+Walkthrough on `"mnnmpq"`:
 
 | Char | Action | Stack after |
 |---|---|---|
-| a | push | a |
-| b | push | a b |
-| b | equals top, pop | a |
-| a | equals top, pop | (empty) |
-| c | push | c |
-| a | push | c a |
+| m | push | m |
+| n | push | m n |
+| n | equals top, pop | m |
+| m | equals top, pop | (empty) |
+| p | push | p |
+| q | push | p q |
 
 ```python
 def remove_duplicates(s):
@@ -91,7 +91,7 @@ def remove_duplicates(s):
 import random
 
 for f in (remove_duplicates, remove_duplicates_brute):
-    assert f("abbaca") == "ca"
+    assert f("mnnmpq") == "pq"
     assert f("xyyxz") == "z"
     assert f("abc") == "abc"
     assert f("aaaa") == ""

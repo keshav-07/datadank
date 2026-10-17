@@ -24,7 +24,7 @@ next: "interview-questions:dsa/remove-k-digits"
 
 Given the head of a singly linked list of positive integers, remove every node for which some node further along the list has a strictly greater value. Return the head of the modified list. This is LeetCode 2487, Remove Nodes From Linked List.
 
-The list can hold up to around 100,000 nodes, so checking every later node for each node is too slow.
+The list can be long, so checking every later node for each node is too slow.
 
 ## Examples
 

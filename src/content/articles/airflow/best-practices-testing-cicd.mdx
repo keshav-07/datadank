@@ -14,7 +14,7 @@ learningObjectives:
   - "Write pytest-style DAG integrity tests with DagBag, unit tests for task logic and dag.test() integration tests"
   - "Build a CI/CD pipeline that lints, tests and deploys DAGs, including Airflow 3 DAG bundles"
 prerequisites: ["articles:airflow/dag-fundamentals-taskflow", "articles:airflow/operations-backfills-monitoring"]
-related: ["articles:etl-elt/idempotency-in-data-pipelines", "articles:python/idempotent-csv-loader", "interview-questions:data-engineering/idempotent-batch-pipeline"]
+related: ["articles:etl-elt/idempotency-in-data-pipelines", "articles:python/idempotent-csv-loader", "interview-questions:data-engineering/idempotent-batch-pipeline", "interview-questions:airflow/testing-airflow-dags", "interview-questions:airflow/airflow-2-to-3-migration"]
 previous: "articles:airflow/operations-backfills-monitoring"
 versionContext: "Examples run on Apache Airflow 3.3.2 with Python 3.11, SQLite 3 (standard library) and a SQLite metadata database. The test functions are written for pytest and were executed by calling them directly, because pytest is not installed in the test environment. The DAG versioning demo ran against the local dags-folder bundle; the GitHub Actions workflow and Git DAG bundle configuration were not executed."
 sources:

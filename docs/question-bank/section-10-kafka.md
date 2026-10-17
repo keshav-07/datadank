@@ -231,7 +231,7 @@ With a key, the Java client uses `murmur2(key) % partitions`. Without a key, it 
 - `partitioner=consistent_random` hashes keys with CRC32, and spreads null keys randomly.
 - `murmur2_random` matches the Java client for keyed records.
 
-**Why it matters.** Kafka Streams, ksqlDB, Connect and Java services all assume murmur2. Suppose a Python service writes `customer_id`-keyed records and a Java service writes the same keys to the same topic. Their records for one customer end up in different partitions, which breaks per-key ordering and joins. Co-partitioning for stream-table joins (see Q508) quietly fails too.
+**Why it matters.** Kafka Streams, ksqlDB, Connect and Java services all assume murmur2. Suppose a Python service writes `customer_id`-keyed records and a Java service writes the same keys to the same topic. Their records for one customer end up in different partitions, which breaks per-key ordering and joins. Co-partitioning for stream-table joins (see Q507) quietly fails too.
 
 **Custom partitioners** are possible: implement `Partitioner` in Java, or specify the partition explicitly in `produce()`. They are hard to keep consistent across languages, so prefer choosing a good key (see Q473).
 
@@ -336,5 +336,401 @@ A marketplace keyed its `listing-events` topic by `seller_id`. One wholesale sel
 - How do you keep order when you must re-key? — Write to a new topic with the new key, drain the old topic, then switch consumers over.
 - What if one key is hot but must stay ordered? — Scale that consumer vertically, or split the entity's events into sub-streams that don't need ordering between them.
 - Does Kafka enforce key uniqueness? — No; a key is just bytes, and uniqueness only matters for compaction semantics.
+
+---
+
+### Q474. Can you change a topic's partition count, and what breaks when you do?
+**ID:** KFK-06
+**Topic:** Kafka > Topics & Partitions
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `kafka`, `partitions`, `scaling`, `keys`, `ordering`
+
+**Short Answer (2–3 lines):**
+You can only increase the partition count; Kafka refuses a decrease. Adding partitions changes `hash(key) % N`, so most keys start landing in a different partition. Per-key ordering breaks across the change, and compacted topics or keyed state can end up with a key's old and new values in two places. Existing data is never moved.
+
+**Detailed Explanation:**
+**What happens on increase**
+- New, empty partitions are created and assigned to brokers. Existing records stay where they are.
+- Producers notice on their next metadata refresh (`metadata.max.age.ms`, 5 minutes by default) and start routing keys by the new modulo.
+- Consumer groups rebalance to pick up the new partitions. With `auto.offset.reset=latest`, records written to a new partition *before* the group gets its first assignment can be skipped. The consumer config docs warn about exactly this.
+
+**What breaks**
+| Concern | Effect |
+|---|---|
+| Per-key order | Old events for key K are in partition 0 and new ones in partition 3, and consumers may process them in either order |
+| Compacted topics | Two "latest" values for K in different partitions; readers can see a stale one |
+| Kafka Streams state | Stores are partitioned by input partition, so keys are now in the wrong task. Treat it as an application reset |
+| Join co-partitioning | Both sides of a join must have equal partition counts |
+
+**Why no decrease?** Records in a removed partition would have nowhere to go without rewriting offsets, and offsets are the contract consumers rely on.
+
+**Safer patterns**
+1. Over-provision at creation (see the partition-count page and Q510).
+2. If you must grow a keyed topic: create `orders.v2` with more partitions, dual-write or replicate into it, and let consumers drain v1 before switching.
+3. For unkeyed topics (logs, clicks), adding partitions in place is usually fine.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Kafka 4.3.1 CLI
+bin/kafka-topics.sh --bootstrap-server localhost:19092 --alter --topic payments --partitions 2
+# Error while executing topic command : The topic payments currently has 3 partition(s); 2 would not be an increase.
+bin/kafka-topics.sh --bootstrap-server localhost:19092 --alter --topic payments --partitions 6
+```
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16, Apache Kafka 4.3 (topic "payments" grown from 3 to 6 partitions)
+from confluent_kafka import Producer
+
+def murmur2(data: bytes) -> int:
+    """Kafka's Java murmur2 (same as Utils.murmur2), returns a signed 32-bit int."""
+    m, r, length = 0x5BD1E995, 24, len(data)
+    h = (0x9747B28C ^ length) & 0xFFFFFFFF
+    for i in range(0, length - length % 4, 4):
+        k = int.from_bytes(data[i:i + 4], "little")
+        k = (k * m) & 0xFFFFFFFF; k ^= k >> r; k = (k * m) & 0xFFFFFFFF
+        h = ((h * m) & 0xFFFFFFFF) ^ k
+    tail = data[length - length % 4:]
+    if len(tail) >= 3: h ^= tail[2] << 16
+    if len(tail) >= 2: h ^= tail[1] << 8
+    if len(tail) >= 1: h ^= tail[0]; h = (h * m) & 0xFFFFFFFF
+    h ^= h >> 13; h = (h * m) & 0xFFFFFFFF; h ^= h >> 15
+    return h - (1 << 32) if h >= 1 << 31 else h
+
+def partition_for(key: str, n: int) -> int:
+    return (murmur2(key.encode()) & 0x7FFFFFFF) % n   # toPositive(hash) % numPartitions
+
+p = Producer({"bootstrap.servers": "localhost:19092", "partitioner": "murmur2_random"})
+actual = {}
+for k in ["acc-1", "acc-2", "acc-3", "acc-4"]:
+    p.produce("payments", key=k, value=b"{}", on_delivery=lambda e, m: actual.update({m.key().decode(): m.partition()}))
+p.flush()
+for k in sorted(actual):
+    print(f"{k}: with 3 partitions -> {partition_for(k, 3)}, with 6 -> {partition_for(k, 6)}, broker stored it in {actual[k]}")
+```
+```text
+acc-1: with 3 partitions -> 0, with 6 -> 3, broker stored it in 3
+acc-2: with 3 partitions -> 2, with 6 -> 2, broker stored it in 2
+acc-3: with 3 partitions -> 2, with 6 -> 5, broker stored it in 5
+acc-4: with 3 partitions -> 2, with 6 -> 5, broker stored it in 5
+```
+Three of the four keys moved partition, so their old and new events now live in different logs.
+
+**Real-World Use Case:**
+A team doubled partitions on a compacted `customer-profile` topic to fix lag. A downstream cache rebuilt from the topic began serving old addresses for some customers, because two "latest" records now existed per key. They rebuilt into a new topic and re-pointed consumers.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Saying "just add partitions" for lag on a keyed or compacted topic without mentioning remapping.
+- Believing Kafka moves existing data into the new partitions.
+- Forgetting that Kafka Streams apps reading the topic need a reset.
+
+**Follow-up Questions Interviewers Ask:**
+- Is moving partitions between brokers the same thing? — No; `kafka-reassign-partitions.sh` moves replicas but keeps the count and the key mapping.
+- How do consumers notice new partitions? — Through metadata refresh, followed by a rebalance.
+- Is there any way to reduce partitions? — Only by creating a new topic and migrating to it.
+
+---
+
+### Q475. Producer batching, linger.ms and compression: tuning for throughput
+**ID:** KFK-07
+**Topic:** Kafka > Producers
+**Level:** Intermediate
+**Frequency:** Very Common
+**Tags:** `kafka`, `producer`, `batching`, `linger-ms`, `compression`
+
+**Short Answer (2–3 lines):**
+The producer groups records per partition into batches. A batch is sent when it reaches `batch.size` or when `linger.ms` expires, whichever comes first. Bigger batches mean fewer requests and much better compression, and compression is applied per batch. Kafka 4.0 changed the Java default `linger.ms` from 0 to 5. Raise `linger.ms` and `batch.size` and use `lz4` or `zstd` for high-volume topics.
+
+**Detailed Explanation:**
+**The knobs (Java defaults, Kafka 4.3)**
+| Setting | Default | Effect |
+|---|---|---|
+| `batch.size` | 16384 bytes | Upper bound per partition batch |
+| `linger.ms` | 5 | Maximum wait to fill a batch |
+| `buffer.memory` | 32 MB | Total memory for unsent records; when it's full, `send()` blocks up to `max.block.ms` |
+| `compression.type` | `none` | `gzip`, `snappy`, `lz4`, `zstd` |
+| `max.request.size` | 1 MB | Largest request, and so the largest single record |
+
+librdkafka (Python, Go, .NET) uses the same names with different defaults: `linger.ms=5`, `batch.size=1000000`, `batch.num.messages=10000`.
+
+**Why lingering can lower latency.** Under load, records queue behind in-flight requests anyway. Bigger batches mean fewer requests, less broker CPU and shorter queues, so tail latency often falls. That's the reasoning behind the 4.0 default change, and the lab run below shows the same effect.
+
+**Compression.** It happens in the producer, per batch. Brokers store the compressed batch as-is when the topic's `compression.type=producer` (the default), and consumers decompress. So compression saves network, disk and replication traffic together. Small batches compress badly, which is why batching and compression are tuned together.
+- `lz4`: very fast and a good default.
+- `zstd`: best ratio for a little more CPU. Good for cross-region links and long retention.
+- `snappy`: older and similar to lz4.
+- `gzip`: high CPU, rarely the right choice today.
+
+Setting a topic-level `compression.type` that differs from the producer's codec forces the broker to recompress every batch, which costs broker CPU.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Kafka 4.3.1, kafka-producer-perf-test.sh, single local broker, 6 partitions,
+# payload.jsonl = 2,000 sample JSON click events (~150 bytes each)
+for cfg in "linger.ms=0 compression.type=none" "linger.ms=5 compression.type=none" \
+           "linger.ms=20 batch.size=131072 compression.type=lz4" \
+           "linger.ms=20 batch.size=131072 compression.type=zstd"; do
+  echo "== $cfg"
+  bin/kafka-producer-perf-test.sh --bootstrap-server localhost:19092 --topic perf \
+    --num-records 300000 --throughput -1 --payload-file payload.jsonl \
+    --command-property ${cfg// / --command-property } 2>&1 | tail -1
+done
+```
+```text
+== linger.ms=0 compression.type=none
+300000 records sent, 163309.744148 records/sec (22.78 MB/sec), 275.02 ms avg latency, 510.00 ms max latency, 301 ms 50th, 490 ms 95th, 503 ms 99th, 509 ms 99.9th.
+== linger.ms=5 compression.type=none
+300000 records sent, 200534.759358 records/sec (27.97 MB/sec), 127.28 ms avg latency, 417.00 ms max latency, 98 ms 50th, 303 ms 95th, 323 ms 99th, 331 ms 99.9th.
+== linger.ms=20 batch.size=131072 compression.type=lz4
+300000 records sent, 203389.830508 records/sec (28.37 MB/sec), 20.29 ms avg latency, 494.00 ms max latency, 18 ms 50th, 41 ms 95th, 73 ms 99th, 91 ms 99.9th.
+== linger.ms=20 batch.size=131072 compression.type=zstd
+300000 records sent, 190355.329949 records/sec (26.55 MB/sec), 44.56 ms avg latency, 548.00 ms max latency, 12 ms 50th, 183 ms 95th, 201 ms 99th, 211 ms 99.9th.
+```
+Writing 100,000 of the same records to single-partition topics, one per codec, then checking `kafka-log-dirs.sh --describe` gave: none 15.62 MB, snappy 3.78 MB, lz4 3.81 MB, zstd 2.12 MB. These are lab numbers on one laptop-class node, so measure your own payloads.
+
+**Real-World Use Case:**
+A clickstream producer sent more than 100k small JSON events per second with `linger.ms=0`. Brokers were CPU-bound on request handling. Moving to `linger.ms=20`, `batch.size=256KB` and `lz4` cut request rate and network egress, and p99 latency dropped as well.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Assuming `linger.ms` always adds that much latency to every record.
+- Compressing at the broker (a topic `compression.type` that differs from the producer's) and burning broker CPU.
+- Raising `batch.size` without also raising `buffer.memory` when there are many partitions.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you see actual batch sizes? — Producer metrics `batch-size-avg`, `records-per-request-avg` and `compression-rate-avg`.
+- What happens when `buffer.memory` is exhausted? — `send()` blocks for up to `max.block.ms`, then throws a `TimeoutException`.
+- Does compression change offsets? — No; each record keeps its own offset inside the compressed batch.
+
+---
+
+### Q476. Producer retries, timeouts and error handling
+**ID:** KFK-08
+**Topic:** Kafka > Producers
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `kafka`, `producer`, `retries`, `delivery-timeout`, `error-handling`
+
+**Short Answer (2–3 lines):**
+Modern producers retry transient errors, such as leader changes and `NOT_ENOUGH_REPLICAS`, almost indefinitely (`retries=2147483647`). The real limit is `delivery.timeout.ms` (2 minutes in Java), the total time from `send()` to success or failure. Non-retriable errors, such as a record that's too large or an authorisation failure, fail fast. Your code must handle both in the delivery callback, or the record is lost silently.
+
+**Detailed Explanation:**
+**Timeline of one record (Java defaults)**
+- `max.block.ms` (60 s): how long `send()` itself may block waiting for metadata or buffer space.
+- `linger.ms` (5): time spent waiting in a batch.
+- `request.timeout.ms` (30 s): how long to wait for each broker response.
+- `retry.backoff.ms` (100) growing to `retry.backoff.max.ms` (1 s): exponential backoff between retries.
+- `delivery.timeout.ms` (120 s): an overall cap that must be at least `linger.ms + request.timeout.ms`.
+
+In librdkafka the overall cap is `message.timeout.ms` (alias `delivery.timeout.ms`) and defaults to 300 s.
+
+**Error classes**
+| Retriable (the client handles it) | Non-retriable (your code must) |
+|---|---|
+| `NOT_LEADER_OR_FOLLOWER`, `NOT_ENOUGH_REPLICAS`, `REQUEST_TIMED_OUT`, network errors | `RECORD_TOO_LARGE` / `MSG_SIZE_TOO_LARGE`, `TOPIC_AUTHORIZATION_FAILED`, serialisation errors, `INVALID_RECORD` |
+
+**What your code should do**
+- Always pass a callback (Java `send(record, callback)`, Python `on_delivery=`). An ignored future means silent loss.
+- On final failure: log, raise a metric, and either stop the application (for critical data) or write the record to a local spool or fallback store so it can be replayed.
+- Don't wrap `send()` in your own retry loop on top of client retries. It duplicates records and breaks the ordering guarantees that idempotence gives you (see Q477).
+- Keep `retries` at its default and tune `delivery.timeout.ms` instead, as the Kafka docs recommend.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16, Apache Kafka 4.3
+# Setup: topic "small-msgs" created with --config max.message.bytes=1000
+import time
+from confluent_kafka import Producer
+
+def send(bootstrap, topic, value):
+    p = Producer({"bootstrap.servers": bootstrap, "acks": "all",
+                  "delivery.timeout.ms": 5000,   # total budget for send + all retries
+                  "retry.backoff.ms": 200})
+    start = time.time()
+    def on_delivery(err, msg):
+        took = time.time() - start
+        if err is None:
+            print(f"{topic}: delivered after {took:.1f}s")
+        else:
+            print(f"{topic}: failed after {took:.1f}s -> {err.name()} (retriable={err.retriable()})")
+    p.produce(topic, value=value, on_delivery=on_delivery)
+    p.flush(15)
+
+send("localhost:19092", "small-msgs", b"x" * 500)    # fits
+send("localhost:19092", "small-msgs", b"x" * 5000)   # too big for the topic: retrying can't help
+send("localhost:1", "orders", b"x")                  # no broker: retried until delivery.timeout.ms
+```
+```text
+small-msgs: delivered after 0.0s
+small-msgs: failed after 0.0s -> MSG_SIZE_TOO_LARGE (retriable=False)
+orders: failed after 5.0s -> _MSG_TIMED_OUT (retriable=False)
+```
+The third record was retried internally for the whole 5-second budget, and only then reported as a final failure.
+
+**Real-World Use Case:**
+An order service used fire-and-forget sends with no callback. During a broker upgrade some batches expired after `delivery.timeout.ms`, and nobody noticed for a week. The fix was a callback that increments a "failed sends" metric and writes failed records to a local spool replayed on start-up.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Setting `retries=0` "to avoid duplicates", when idempotence already removes them.
+- Ignoring the future or callback returned by `send()`.
+- Setting `delivery.timeout.ms` below `linger.ms + request.timeout.ms`, which the Java client rejects.
+- Treating `TimeoutException` as proof the record was *not* written; it may have been.
+
+**Follow-up Questions Interviewers Ask:**
+- Can a timed-out record still be in Kafka? — Yes; the broker may have written it before the response was lost, so consumers should be idempotent anyway.
+- What does `max.block.ms` protect? — The calling thread, from blocking forever when metadata is missing or the buffer is full.
+- How do you surface producer health? — Metrics such as `record-error-rate`, `record-retry-rate` and `request-latency-avg`.
+
+---
+
+### Q477. max.in.flight.requests.per.connection, idempotence and ordering
+**ID:** KFK-09
+**Topic:** Kafka > Producers
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `kafka`, `producer`, `idempotence`, `ordering`, `max-in-flight`
+
+**Short Answer (2–3 lines):**
+`max.in.flight.requests.per.connection` is how many unacknowledged requests a producer may have open to one broker. Without idempotence, a value above 1 combined with retries can reorder records: batch 2 succeeds while batch 1 is being retried. With idempotence on, the broker uses sequence numbers to keep order for any value up to 5. Java enables idempotence by default; librdkafka does not.
+
+**Detailed Explanation:**
+**The reordering scenario (idempotence off)**
+1. Batch A (offsets 1–100) and batch B (101–200) are both in flight.
+2. A fails with a transient error, while B succeeds and is appended.
+3. A is retried and appended after B, so the partition holds B before A.
+
+The old fix was `max.in.flight=1`, which caps throughput at one round trip per batch.
+
+**With idempotence.** Each batch carries a producer ID, an epoch and a per-partition sequence number. The broker remembers the last 5 batches per producer and partition. It rejects an out-of-order sequence so the client retries in order, and it discards duplicates. Hence the limit: `max.in.flight ≤ 5`.
+
+**Defaults differ by client**
+| Client | `enable.idempotence` default | `acks` default | `max.in.flight` default |
+|---|---|---|---|
+| Java (3.0+) | `true` (unless conflicting configs) | `all` | 5 |
+| librdkafka 2.16 (`confluent-kafka`) | `false` | `all` (-1) | 1000000 |
+
+**The silent-disable trap (Java).** If you don't set `enable.idempotence` but do set `acks=1`, `retries=0` or `max.in.flight=6`, Java quietly turns idempotence off. If you set it explicitly to `true` alongside a conflicting value, the client throws a `ConfigException`. librdkafka refuses to start, as the output below shows.
+
+Idempotence covers one producer session against each partition. For guarantees across restarts or across partitions, use transactions (see Q70 and Q494).
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16
+from confluent_kafka import Producer
+
+try:
+    Producer({"bootstrap.servers": "localhost:19092",
+              "enable.idempotence": True,
+              "max.in.flight.requests.per.connection": 10})
+except Exception as e:
+    print(type(e).__name__, e)
+
+# Safe, ordered, high-throughput settings for a Python producer:
+p = Producer({"bootstrap.servers": "localhost:19092",
+              "enable.idempotence": True,   # implies acks=all, retries, max.in.flight<=5
+              "linger.ms": 20,
+              "compression.type": "lz4"})
+```
+```text
+KafkaException KafkaError{code=_INVALID_ARG,val=-186,str="Failed to create producer: `max.in.flight` must be set <= 5 when `enable.idempotence` is true"}
+```
+
+**Real-World Use Case:**
+A Python CDC relay published row changes with librdkafka's defaults (idempotence off, a huge in-flight limit). During a broker restart, updates for some rows were applied out of order downstream, so the final value was stale. Enabling idempotence fixed it without any throughput loss.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Recommending `max.in.flight=1` as the only way to keep order.
+- Assuming Python and Java producers share defaults.
+- Setting `acks=1` for speed and losing idempotence without noticing.
+
+**Follow-up Questions Interviewers Ask:**
+- What is `OutOfOrderSequenceException`? — The broker saw a sequence gap it can't explain, often after data loss on the broker; the producer must be recreated.
+- Does idempotence cost much? — Very little: a few bytes per batch and some broker-side state per producer.
+- Does idempotence survive a producer restart? — No; a new session gets a new producer ID unless you use a `transactional.id`.
+
+---
+
+### Q478. Synchronous vs asynchronous sends, flush() and delivery callbacks
+**ID:** KFK-10
+**Topic:** Kafka > Producers
+**Level:** Beginner
+**Frequency:** Common
+**Tags:** `kafka`, `producer`, `async`, `callbacks`, `python`
+
+**Short Answer (2–3 lines):**
+`send()` / `produce()` is always asynchronous: it puts the record in a local buffer and returns at once. "Synchronous" means waiting for that record's acknowledgement (Java `send().get()`, Python `flush()` after each record). That's safe but slow. The usual pattern is async sends with a delivery callback, `poll(0)` in the loop, and `flush()` at shutdown.
+
+**Detailed Explanation:**
+| Pattern | Throughput | Error visibility | When |
+|---|---|---|---|
+| Fire-and-forget (no callback) | Highest | None, so errors are silent | Never in production |
+| Sync (`get()` / `flush()` per record) | Low: one round trip per record | Immediate | Rare control messages, tests |
+| Async with callback | High | Per record, slightly delayed | Default |
+| Async, `flush()` per batch of input | High | At batch boundaries | Batch jobs, such as a file to Kafka |
+
+**Python specifics (`confluent-kafka`)**
+- `produce()` raises `BufferError` when the local queue is full (`queue.buffering.max.messages` / `queue.buffering.max.kbytes`). Call `poll()` and try again.
+- Delivery callbacks run only inside `poll()` or `flush()`, so call `poll(0)` regularly.
+- `flush(timeout)` returns how many messages are still queued. A non-zero return means data was never confirmed.
+- Callbacks run on your thread, so keep them short.
+
+**Java specifics**
+- Callbacks run on the producer's I/O thread, so don't block in them.
+- `close()` waits for in-flight records. Call it on shutdown (`try-with-resources` or a shutdown hook).
+
+**Shutdown.** Kubernetes sends SIGTERM and waits `terminationGracePeriodSeconds`. Catch the signal, stop taking input, `flush()`, then exit. Otherwise records still in the buffer are lost.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16, Apache Kafka 4.3 (local single broker)
+import time
+from confluent_kafka import Producer
+
+conf = {"bootstrap.servers": "localhost:19092", "enable.idempotence": True}  # librdkafka default is False
+N = 2000
+failures = []
+
+def on_delivery(err, msg):
+    if err:
+        failures.append((msg.key(), err))
+
+# 1) "Synchronous": wait for each ack before sending the next record
+p = Producer(conf)
+t = time.time()
+for i in range(N):
+    p.produce("orders", key=str(i), value=b"{}", on_delivery=on_delivery)
+    p.flush()                       # blocks until this record is acked
+print(f"sync : {N / (time.time() - t):8.0f} msg/s")
+
+# 2) Asynchronous: keep sending, serve callbacks with poll(0), flush once at the end
+p = Producer(conf)
+t = time.time()
+for i in range(N):
+    while True:
+        try:
+            p.produce("orders", key=str(i), value=b"{}", on_delivery=on_delivery)
+            break
+        except BufferError:         # local queue full: let callbacks drain it
+            p.poll(0.1)
+    p.poll(0)                       # run delivery callbacks that are ready
+remaining = p.flush(30)
+print(f"async: {N / (time.time() - t):8.0f} msg/s, unflushed={remaining}, failures={len(failures)}")
+```
+```text
+sync :     1017 msg/s
+async:     3875 msg/s, unflushed=0, failures=0
+```
+Even on a local broker with sub-millisecond round trips, waiting per record cost most of the throughput. Over a real network, with milliseconds per round trip, the gap gets much wider.
+
+**Real-World Use Case:**
+A Lambda-style function produced events and returned without flushing. About one invocation in twenty lost its last records, because the runtime froze the process before the background thread sent them. Adding `flush(5)` before returning fixed it.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Thinking `produce()` returning means the record is stored.
+- Never calling `poll()` in Python, so callbacks never fire and the queue fills.
+- Calling `flush()` after every record in a high-volume path.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you guarantee nothing is lost on shutdown? — Handle SIGTERM, stop input, `flush()` with a timeout, and alert if the return value is non-zero.
+- Are callbacks called in order? — Per partition, yes, in send order.
+- Can one producer be shared across threads? — Yes; Java and librdkafka producers are thread-safe, and one per process is usually best.
 
 ---

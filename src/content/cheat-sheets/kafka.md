@@ -1,7 +1,7 @@
 ---
 publishedDate: "2026-10-04"
-updatedDate: "2026-10-09"
-reviewedDate: "2026-10-09"
+updatedDate: "2026-10-17"
+reviewedDate: "2026-10-17"
 title: "Kafka Cheat Sheet"
 description: "Kafka 4.x cheat sheet: topics, partitions, keys, replication, producer and consumer settings, rebalancing, delivery semantics, compaction and CLI commands."
 inventoryId: "CHEAT-07"
@@ -23,7 +23,7 @@ versionContext: "Apache Kafka 4.x (KRaft only, ZooKeeper removed in 4.0). Defaul
 | Replication factor | Copies of each partition across brokers; RF 3 is the production norm |
 | ISR | Replicas caught up with the leader; `acks=all` waits for the current ISR |
 | Consumer group | Each partition is read by one member of the group; each group reads everything |
-| Share group (4.2+) | Queue-style: members share partitions and acknowledge records one by one, no ordering |
+| Share group (production-ready in 4.2) | Queue-style: members share partitions and acknowledge each record (accept, release, reject, renew); redelivery capped at 5 attempts by default; no ordering |
 | KRaft | Metadata in a Raft log on 3 or 5 controllers; no ZooKeeper in 4.x |
 
 ## Producer settings
@@ -96,6 +96,9 @@ kafka-consumer-groups.sh --bootstrap-server localhost:9092 --group billing --res
   --to-datetime 2026-10-08T00:00:00.000 --topic orders --dry-run                     # then --execute
 kafka-get-offsets.sh --bootstrap-server localhost:9092 --topic orders --time -1        # latest offsets
 kafka-metadata-quorum.sh --bootstrap-server localhost:9092 describe --status         # KRaft quorum
+kafka-share-groups.sh --bootstrap-server localhost:9092 --describe --group resizers   # share group lag
+kafka-configs.sh --bootstrap-server localhost:9092 --alter --entity-type groups --entity-name resizers \
+  --add-config share.auto.offset.reset=earliest                                      # share groups default to latest
 ```
 
 ## Design rules of thumb

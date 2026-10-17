@@ -4,7 +4,7 @@ updatedDate: "2026-10-16"
 reviewedDate: "2026-10-16"
 title: "When is AWS Lambda a good fit for ETL, and what limits push you to Glue or containers?"
 seoTitle: "AWS Lambda for ETL and Its Limits: Interview"
-description: "AWS Lambda for ETL: which jobs fit, the limits that matter (15 minutes, 10 GB memory, payload sizes, concurrency) and how to handle retries and partial batch failures."
+description: "AWS Lambda for ETL: which jobs fit, the limits that matter (15 minutes, 10 GB memory, payloads, concurrency) and how to handle partial batch failures."
 technology: ["aws"]
 topic: ["lambda", "serverless", "etl", "limits"]
 difficulty: "Medium"

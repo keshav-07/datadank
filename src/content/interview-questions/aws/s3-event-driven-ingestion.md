@@ -4,7 +4,7 @@ updatedDate: "2026-10-16"
 reviewedDate: "2026-10-16"
 title: "How do you build reliable event-driven ingestion from S3 when events can be duplicated or late?"
 seoTitle: "S3 Event-Driven Ingestion and Idempotency"
-description: "S3 event-driven ingestion: S3 notifications vs EventBridge, at-least-once delivery, duplicates and ordering, and an idempotent file manifest you can run in SQL."
+description: "S3 event-driven ingestion: S3 notifications vs EventBridge, at-least-once delivery, duplicates and ordering, and an idempotent file manifest in SQL."
 technology: ["aws"]
 topic: ["s3", "event-driven", "idempotency", "eventbridge", "ingestion"]
 difficulty: "Medium"

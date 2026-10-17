@@ -4,7 +4,7 @@ updatedDate: "2026-10-16"
 reviewedDate: "2026-10-16"
 title: "Lake Formation permissions vs IAM and S3 bucket policies: how do they work together?"
 seoTitle: "Lake Formation vs IAM and S3 Policies: Interview"
-description: "Lake Formation vs IAM and S3 bucket policies: who controls catalog and data access, credential vending, IAMAllowedPrincipals, hybrid mode and column and row filters."
+description: "Lake Formation vs IAM and S3 bucket policies: catalog vs data access, credential vending, IAMAllowedPrincipals, hybrid mode and row and column filters."
 technology: ["aws"]
 topic: ["lake-formation", "iam", "governance", "access-control"]
 difficulty: "Hard"

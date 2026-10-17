@@ -4,7 +4,7 @@ updatedDate: "2026-10-16"
 reviewedDate: "2026-10-16"
 title: "How do you reduce Amazon Athena query cost and make queries faster?"
 seoTitle: "Athena Cost and Performance Tuning: Interview"
-description: "Athena cost and performance tuning: cut bytes scanned with Parquet, partitions, projection and compaction, then use workgroup limits, result reuse and reservations."
+description: "Athena cost and performance tuning: cut bytes scanned with Parquet, partitions, projection and compaction, then add workgroup limits and result reuse."
 technology: ["aws"]
 topic: ["athena", "query-optimization", "cost-optimization", "partitioning"]
 difficulty: "Medium"

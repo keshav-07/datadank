@@ -4,7 +4,7 @@ updatedDate: "2026-10-16"
 reviewedDate: "2026-10-16"
 title: "How do you choose Redshift distribution styles and sort keys?"
 seoTitle: "Redshift Distribution and Sort Keys: Interview"
-description: "Redshift distribution and sort keys: when to use AUTO, KEY, EVEN or ALL, compound vs interleaved sort keys, and how to spot skew and redistribution in EXPLAIN."
+description: "Redshift distribution and sort keys: when to use AUTO, KEY, EVEN or ALL, compound vs interleaved sort keys, and spotting skew and redistribution."
 technology: ["aws", "data-warehousing"]
 topic: ["redshift", "distribution-keys", "sort-keys", "query-optimization"]
 difficulty: "Medium"

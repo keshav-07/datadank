@@ -2689,3 +2689,444 @@ During a 90-day backfill, the backfill's runs crowded out the daily production l
 - How do you give a whole DAG priority? — `default_args={"priority_weight": ..., "weight_rule": "absolute"}`.
 
 ---
+
+### Q549. How do Airflow's concurrency limits stack, from `parallelism` down to a single task?
+**ID:** AF-31
+**Topic:** Airflow > Concurrency
+**Level:** Advanced
+**Frequency:** Common
+**Tags:** `airflow`, `concurrency`, `max-active-runs`, `scaling`
+
+**Short Answer (2–3 lines):**
+A task instance only starts when *every* limit on it has room. The limits are: `[core] parallelism` per scheduler, the executor's or worker's slots, the pool, the DAG's `max_active_tasks` and `max_active_runs`, and the task's `max_active_tis_per_dag` and `max_active_tis_per_dagrun`. The tightest limit wins, so "tasks stuck in scheduled" usually means one of these is full.
+
+**Detailed Explanation:**
+| Level | Setting | Default (3.3) | Limits |
+|---|---|---|---|
+| Scheduler | `[core] parallelism` | 32 | Running + queued task instances per scheduler |
+| Executor | Celery `worker_concurrency`, K8s quotas, Local process count | Celery 16 per worker | Physical slots |
+| Pool | `slots` per pool | `default_pool` 128 | One resource, across all DAGs |
+| DAG | `max_active_tasks` | `[core] max_active_tasks_per_dag` = 16 | Running tasks of one DAG across all its runs |
+| DAG | `max_active_runs` | `[core] max_active_runs_per_dag` = 16 | Concurrent runs (catchup, backfill) |
+| Task | `max_active_tis_per_dag` | None | Copies of one task across runs |
+| Task | `max_active_tis_per_dagrun` | None | Copies of one task within a run (mapping) |
+| Backfill | `--max-active-runs` | n/a | That backfill only (see Q536) |
+
+Related settings:
+- `max_consecutive_failed_dag_runs` pauses a DAG automatically after N failed runs in a row.
+- `[scheduler] max_tis_per_query` controls how many task instances the scheduler examines per loop. It is a throughput knob, not a limit.
+- With two or more schedulers, `parallelism` applies **per scheduler**, so the total capacity multiplies (see Q555).
+
+How to diagnose: open a task stuck in `scheduled`. The UI's task-instance details, or `airflow tasks failed-deps <dag_id> <task_id> <run_id>`, list the unmet dependency, such as "pool full" or "max_active_tasks reached". Then raise the limit that is actually the bottleneck. Raising `parallelism` does nothing when the pool is full. See the site's guide on finding why tasks sit in scheduled or queued.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.configuration import conf
+from airflow.sdk import dag, task
+
+
+@dag(
+    schedule="@hourly", start_date=datetime(2026, 1, 1), catchup=True,
+    max_active_runs=3,                 # at most 3 runs of this DAG at once (catchup can't flood)
+    max_active_tasks=8,                # at most 8 running task instances across those runs
+    max_consecutive_failed_dag_runs=5, # auto-pause after 5 failed runs in a row
+)
+def throttled_ingest():
+    @task(max_active_tis_per_dagrun=2,     # per run: 2 copies of this task at once
+          max_active_tis_per_dag=4,        # across all runs: 4 copies at once
+          pool="partner_api")              # across ALL DAGs: pool slots
+    def fetch_page(page: int):
+        print("page", page)
+
+    fetch_page.expand(page=list(range(20)))
+
+
+d = throttled_ingest()
+
+if __name__ == "__main__":
+    t = d.get_task("fetch_page")
+    print("[core] parallelism:", conf.getint("core", "parallelism"),
+          "| max_active_tasks_per_dag default:", conf.getint("core", "max_active_tasks_per_dag"),
+          "| max_active_runs_per_dag default:", conf.getint("core", "max_active_runs_per_dag"))
+    print("DAG:", {"max_active_runs": d.max_active_runs, "max_active_tasks": d.max_active_tasks,
+                   "max_consecutive_failed_dag_runs": d.max_consecutive_failed_dag_runs})
+    print("task:", {"per_dagrun": t.max_active_tis_per_dagrun, "per_dag": t.max_active_tis_per_dag, "pool": t.pool})
+```
+```text
+[core] parallelism: 32 | max_active_tasks_per_dag default: 16 | max_active_runs_per_dag default: 16
+DAG: {'max_active_runs': 3, 'max_active_tasks': 8, 'max_consecutive_failed_dag_runs': 5}
+task: {'per_dagrun': 2, 'per_dag': 4, 'pool': 'partner_api'}
+```
+For this DAG, at most 4 `fetch_page` copies run at once, and only if the `partner_api` pool and the scheduler's `parallelism` both have room.
+
+**Real-World Use Case:**
+A platform raised Celery workers from 4 to 12, but throughput didn't change. `failed-deps` showed "Task Instance Slots Available: parallelism reached". `parallelism` was still 32, while the 12 workers offered 192 slots. Raising it to 192, and setting per-DAG `max_active_tasks` so one DAG couldn't take everything, let the new workers do useful work.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Turning on `catchup=True` for an hourly DAG with a year-old `start_date` and the default `max_active_runs` of 16.
+- Using one huge pool as the only control and ignoring the DAG-level limits.
+- Not knowing that `parallelism` is per scheduler.
+
+**Follow-up Questions Interviewers Ask:**
+- What happened to `concurrency` and `task_concurrency`? — They were renamed to `max_active_tasks` and `max_active_tis_per_dag`. The old names are gone in Airflow 3.
+- How do you protect a downstream API from all DAGs? — With a pool (see Q547).
+
+---
+
+### Q550. How do you configure retries, backoff, timeouts and the 3.3 retry policies?
+**ID:** AF-32
+**Topic:** Airflow > Retries and Timeouts
+**Level:** Intermediate
+**Frequency:** Very Common
+**Tags:** `airflow`, `retries`, `execution-timeout`, `retry-policy`
+
+**Short Answer (2–3 lines):**
+`retries` and `retry_delay` set how many times and how long to wait. `retry_exponential_backoff` grows the delay, with a numeric multiplier allowed since 3.2, and `max_retry_delay` caps it. `execution_timeout` kills a single hung try. Airflow 3.3 adds `retry_policy`, which retries, fails fast or falls back to the defaults depending on the exception. `AirflowFailException` always fails at once.
+
+**Detailed Explanation:**
+| Setting | Scope | Notes |
+|---|---|---|
+| `retries` | Task | Default `[core] default_task_retries` = 0. Set it in `default_args` |
+| `retry_delay` | Task | Default 300 s |
+| `retry_exponential_backoff` | Task | `True` or a multiplier such as `2.0` (3.2+); adds jitter |
+| `max_retry_delay` | Task | Cap for the backoff |
+| `execution_timeout` | **One try** | Kills the try and counts as a failure, which may be retried |
+| `dagrun_timeout` | DAG run | Marks a run that runs too long as failed |
+| `retry_policy` (3.3) | Task | `ExceptionRetryPolicy(rules=[RetryRule(...)])`, or subclass `RetryPolicy` |
+| `AirflowFailException` | Raised in code | No retries, ever |
+
+How retry policies work: rules are checked in order against the exception, using `isinstance` by default, and the first match wins. An action of `RETRY` can set its own delay but never goes beyond `retries`. `FAIL` stops now. `DEFAULT` falls back to the normal settings, and so does an exception no rule matches. The policy runs in the worker, and its decision is written to the task log. A subclass can inspect HTTP status codes, `Retry-After` headers or `dag_run.run_type`.
+
+Rules of thumb:
+- Retry *transient* errors such as timeouts, 429s, 5xx responses and lost connections. Fail fast on bad credentials, 4xx responses, schema errors and bad input.
+- Retries are only safe if the task is idempotent (see Q46 and the site's guide on retries and idempotency).
+- Always set `execution_timeout` on tasks that call networks. A hung socket otherwise holds a slot until the heartbeat timeout fires (see Q567).
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 (retry policies are new in 3.3)
+from datetime import datetime, timedelta
+from airflow.sdk import ExceptionRetryPolicy, RetryAction, RetryRule, dag, task
+
+CALLS = {"flaky": 0}
+
+# First matching rule wins; anything unmatched falls back to retries/retry_delay.
+API_POLICY = ExceptionRetryPolicy(rules=[
+    RetryRule(exception=PermissionError, action=RetryAction.FAIL, reason="bad credentials, retrying won't help"),
+    RetryRule(exception=ConnectionError, action=RetryAction.RETRY, retry_delay=timedelta(seconds=1)),
+])
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False,
+     default_args={
+         "retries": 3,
+         "retry_delay": timedelta(seconds=1),
+         "retry_exponential_backoff": 2.0,          # numeric multiplier since 3.2 (True = 2)
+         "max_retry_delay": timedelta(minutes=30),
+         "execution_timeout": timedelta(minutes=10),  # per try; kills a hung call
+         "retry_policy": API_POLICY,
+     })
+def retry_demo():
+    @task
+    def flaky_api():
+        CALLS["flaky"] += 1
+        if CALLS["flaky"] < 3:
+            raise ConnectionError(f"timeout on attempt {CALLS['flaky']}")
+        print("succeeded on attempt", CALLS["flaky"])
+
+    @task
+    def bad_credentials():
+        raise PermissionError("token rejected")
+
+    flaky_api()
+    bad_credentials()
+
+
+dag_obj = retry_demo()
+
+if __name__ == "__main__":
+    run = dag_obj.test()
+    for ti in sorted(run.get_task_instances(), key=lambda t: t.task_id):
+        print(f"{ti.task_id:16} state={ti.state} try_number={ti.try_number} max_tries={ti.max_tries}")
+```
+```text
+succeeded on attempt 3
+bad_credentials  state=failed try_number=1 max_tries=3
+flaky_api        state=success try_number=3 max_tries=3
+```
+`bad_credentials` had 3 retries available but failed on its first try, because of the policy's `FAIL` rule.
+
+**Real-World Use Case:**
+A marketing-API extractor had `retries=5`. When an expired token caused 401s, it retried for 40 minutes before failing, and the on-call engineer only heard about it after the dashboards were late. A retry policy that fails at once on auth errors, while still retrying 429s and 5xx with backoff, cut the alert time to about a minute.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Treating `execution_timeout` as a whole-run timeout. It applies to each try, including time spent deferred.
+- Retrying non-idempotent appends, which duplicates data on every retry.
+- Very many retries with no backoff against a struggling dependency.
+
+**Follow-up Questions Interviewers Ask:**
+- Can a retry policy add tries? — No. It can fail earlier or change the delay, but `retries` stays the maximum.
+- How do you retry a whole DAG? — Clear the failed run. For automatic DAG-level retries, the docs show a pattern based on a failure callback.
+
+---
+
+### Q551. SLAs were removed in Airflow 3. How do Deadline Alerts replace them?
+**ID:** AF-33
+**Topic:** Airflow > Deadline Alerts
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `airflow`, `deadline-alerts`, `sla`, `alerting`
+
+**Short Answer (2–3 lines):**
+The old `sla` and `sla_miss_callback` were removed in 3.0. Passing them now only gives a warning. Since 3.1, a DAG declares `deadline=DeadlineAlert(reference=..., interval=..., callback=...)`. When a run has not finished by reference + interval, the callback runs. Callbacks are `AsyncCallback` (run in the triggerer) or `SyncCallback` (run by the executor, since 3.2). The feature is still marked experimental.
+
+**Detailed Explanation:**
+Why SLAs went away: they were measured from odd anchors, they were evaluated by the DAG processor, and they misfired around catchup. Deadlines are explicit.
+
+References (the point the clock starts from):
+| Reference | Deadline = |
+|---|---|
+| `DAGRUN_LOGICAL_DATE` | Scheduled time + interval. "Done by 04:00 for the 01:00 run", even if the run never started |
+| `DAGRUN_QUEUED_AT` | Queue time + interval. Catches capacity problems |
+| `FIXED_DATETIME(dt)` | A wall-clock time; a negative interval alerts *before* it |
+| `AVERAGE_RUNTIME(max_runs, min_runs)` | Now + historical average + interval. No deadline is set if there aren't enough runs |
+| Custom reference | Any function that returns a timestamp |
+
+Callbacks:
+- `AsyncCallback(callable_or_notifier, kwargs=...)` runs in the **triggerer**. The callable must be importable there, for example from the plugins folder, and the triggerer needs a restart after you change it.
+- `SyncCallback(...)` (3.2+) is sent to the executor and runs as a top-priority task.
+- Templated kwargs such as `{{ dag_run.dag_id }}` and `{{ deadline.deadline_time }}` work with notifiers, and a `context` kwarg is passed in.
+- Airflow 3.3 adds a Deadlines page under Browse.
+
+How to migrate: map each old `sla=timedelta(...)` to a `DAGRUN_LOGICAL_DATE` deadline at the DAG level, and send it to the same channel. Remember that the old SLAs were per task, while deadlines are per DAG run. *Product behaviour changes; checked October 2026.*
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 — plugins/deadline_callbacks.py
+def page_finance_oncall(**kwargs):
+    context = kwargs.get("context", {})
+    dag_id = context.get("dag_run", {}).get("dag_id")
+    print(f"[{kwargs['severity']}] {dag_id} missed its deadline")
+```
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 (Deadline Alerts: 3.1+, experimental) — dags/finance_close.py
+from datetime import datetime, timedelta
+from airflow.sdk import DeadlineAlert, DeadlineReference, SyncCallback, dag, task
+from deadline_callbacks import page_finance_oncall
+
+
+@dag(
+    schedule="0 1 * * *",
+    start_date=datetime(2026, 1, 1),
+    catchup=False,
+    # "Must be finished 3 hours after its scheduled time", whether or not it has started.
+    deadline=DeadlineAlert(
+        reference=DeadlineReference.DAGRUN_LOGICAL_DATE,
+        interval=timedelta(hours=3),
+        callback=SyncCallback(page_finance_oncall, kwargs={"severity": "P2"}),
+    ),
+)
+def finance_close():
+    @task
+    def reconcile():
+        print("reconciling ledgers")
+
+    reconcile()
+
+
+finance_close()
+```
+```text
+# DagBag parse, then calling the callback the way Airflow does on a miss:
+errors: {}
+reference: DagRunLogicalDateDeadline | interval: 3:00:00 | callback: deadline_callbacks.page_finance_oncall
+[P2] finance_close missed its deadline
+```
+
+**Real-World Use Case:**
+A month-end close DAG had to finish by 04:00 for the controllers. In 2.x its SLA was measured per task from odd anchors and fired inconsistently. A `DAGRUN_LOGICAL_DATE` deadline of 3 hours paged the on-call engineer at 04:00 whenever the 01:00 run wasn't done. That included nights when a scheduler outage meant the run never started, which a duration check alone would have missed.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Saying "set `sla=` on the task" for Airflow 3.
+- Defining an `AsyncCallback` that the triggerer can't import.
+- Using only `AVERAGE_RUNTIME` on a new DAG, which sets no deadline until enough runs exist.
+
+**Follow-up Questions Interviewers Ask:**
+- Can a DAG have several deadlines? — Yes. Pass a list of `DeadlineAlert`s, for example a warning at +2 h and a page at +3 h.
+- Deadline or `dagrun_timeout`? — `dagrun_timeout` *fails* a run that takes too long. A deadline only *alerts*, and can fire before the run has even started.
+
+---
+
+### Q552. How do callbacks and notifiers work, and where do they run?
+**ID:** AF-34
+**Topic:** Airflow > Callbacks and Alerting
+**Level:** Beginner
+**Frequency:** Common
+**Tags:** `airflow`, `callbacks`, `notifiers`, `alerting`
+
+**Short Answer (2–3 lines):**
+Tasks accept `on_execute_callback`, `on_success_callback`, `on_failure_callback`, `on_retry_callback` and `on_skipped_callback`. DAGs accept success and failure callbacks. Each takes a function, a list of functions, or a notifier: a `BaseNotifier` subclass with templated fields, such as the Slack, SMTP or PagerDuty notifiers from providers. Task callbacks run where the task ran. DAG-level callbacks are run by the DAG processor, so their errors show up in its logs.
+
+**Detailed Explanation:**
+| Callback | Fires when | Level |
+|---|---|---|
+| `on_execute_callback` | Just before the task executes | Task |
+| `on_success_callback` | Task or run succeeded | Task, DAG |
+| `on_failure_callback` | Task failed for good, or run failed | Task, DAG |
+| `on_retry_callback` | Task failed and will retry | Task |
+| `on_skipped_callback` | Task raised `AirflowSkipException` while running | Task |
+
+Behaviour to know:
+- Callbacks fire only for state changes caused by running tasks. Marking a task failed or successful in the UI or CLI doesn't trigger them.
+- In 3.0+ `on_success_callback` no longer fires for tasks that end `skipped`.
+- Put task callbacks in `default_args` to cover every task. Put a DAG-level `on_failure_callback` on the DAG for one alert per run instead of one per task.
+- **Notifiers** are reusable classes with `template_fields` and `notify(context)`. Prefer provider notifiers, such as `SlackNotifier` or `SmtpNotifier`, over hand-written HTTP calls.
+- A callback must be quick and must not fail. An exception in it is only logged, so the alert is lost.
+- For "the run didn't finish by a certain time", use Deadline Alerts (see Q551). For alerting patterns overall, see the site's guide on failure handling and alerting.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime, timedelta
+from airflow.sdk import BaseNotifier, dag, task
+
+
+class ChatNotifier(BaseNotifier):
+    """Reusable alert: template_fields are rendered with the task's context, like an operator."""
+    template_fields = ("message",)
+
+    def __init__(self, message: str, channel: str = "#data-alerts"):
+        super().__init__()
+        self.message, self.channel = message, channel
+
+    def notify(self, context):
+        # real version: post to Slack/Teams via a provider hook or notifier
+        print(f"to {self.channel}: {self.message}")
+
+
+def log_retry(context):                      # plain-function callbacks work too
+    ti = context["ti"]
+    print(f"retrying {ti.task_id}, try {ti.try_number}")
+
+
+@dag(
+    schedule=None, start_date=datetime(2026, 1, 1), catchup=False,
+    on_failure_callback=ChatNotifier("DAG {{ dag.dag_id }} run {{ run_id }} FAILED"),
+    default_args={
+        "retries": 1, "retry_delay": timedelta(seconds=1),
+        "on_retry_callback": log_retry,
+        "on_failure_callback": ChatNotifier("task {{ ti.task_id }} failed after {{ ti.try_number }} tries"),
+    },
+)
+def alerting_demo():
+    @task
+    def load():
+        raise RuntimeError("warehouse unavailable")
+
+    load()
+
+
+dag_obj = alerting_demo()
+
+if __name__ == "__main__":
+    print(dag_obj.test().state)
+```
+```text
+retrying load, try 1
+to #data-alerts: task load failed after 2 tries
+failed
+```
+In this local `dag.test()` run only the task-level callbacks printed. In a deployment, the DAG-level `on_failure_callback` is run by the DAG processor once the run fails.
+
+**Real-World Use Case:**
+A team with 300 tasks had a task-level `on_failure_callback` posting to Slack. A single warehouse outage produced 300 messages, and the channel got muted. They moved the alert to DAG level with a notifier that lists the failed task ids, and kept task-level alerts only for a few critical tasks. One incident became one message.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Expecting callbacks to fire after marking a task failed in the UI.
+- Doing heavy work, such as queries or retries, inside a callback.
+- Hard-coding webhook URLs in DAG code instead of keeping them in a connection.
+
+**Follow-up Questions Interviewers Ask:**
+- Where do you find callback errors? — Task callbacks in the task log. DAG callbacks in the DAG processor logs.
+- Can you attach several notifiers? — Yes. Pass a list, for example Slack and PagerDuty.
+
+---
+
+### Q553. How do multiple executors work, and how do you route a task to a specific one?
+**ID:** AF-35
+**Topic:** Airflow > Executors
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `airflow`, `executors`, `multiple-executors`, `routing`
+
+**Short Answer (2–3 lines):**
+Since 2.10 you can list several executors, for example `[core] executor = CeleryExecutor,KubernetesExecutor`. The first is the default. A task picks another with `executor="KubernetesExecutor"` or an alias, and a whole DAG can do it through `default_args`. Airflow 3 removed the hybrid CeleryKubernetes and LocalKubernetes executors in favour of this.
+
+**Detailed Explanation:**
+Q42 compares the executors themselves. This question is about running more than one.
+
+Configuration:
+- `executor = LocalExecutor,CeleryExecutor`, or with aliases: `executor = fast:CeleryExecutor,isolated:KubernetesExecutor`.
+- Every component (schedulers, API server, workers, DAG processor) must have the **same** list. A task that names an executor not in the list makes the **DAG fail to parse** (output below).
+- One class can't be listed twice, except across teams in multi-team mode (3.2+).
+
+Routing:
+| Scope | How |
+|---|---|
+| One task | `@task(executor="KubernetesExecutor")` or `Operator(executor=...)` |
+| Whole DAG | `default_args={"executor": "..."}` |
+| Per-executor settings | `executor_config={"pod_override": k8s.V1Pod(...)}` for Kubernetes; `queue=` for Celery |
+
+Typical layouts:
+- **Celery default + Kubernetes for the heavy work**: low latency for thousands of light tasks, isolation for big ones.
+- **Local default + an ECS, Batch or Kubernetes executor**: a small single-machine deployment that can burst.
+- **Celery + EdgeExecutor**: run some tasks on remote sites or in other networks (see Q554).
+
+Each executor reports its own metrics, such as `executor.open_slots.<executor class name>`. Watch each one separately. An idle Kubernetes executor doesn't help when the Celery queue is full.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+# airflow.cfg (every component must have the same list):
+#   [core] executor = CeleryExecutor,KubernetesExecutor     # first = default
+from datetime import datetime
+from airflow.sdk import dag, task
+
+
+@dag(schedule="0 2 * * *", start_date=datetime(2026, 1, 1), catchup=False)
+def mixed_executors():
+    @task                                              # default executor (first in the list)
+    def trigger_warehouse_job():
+        print("submitting SQL")
+
+    @task(executor="KubernetesExecutor",               # own pod, own resources
+          executor_config={"pod_override": None})      # e.g. a k8s V1Pod with 16Gi memory
+    def train_model():
+        print("training")
+
+    trigger_warehouse_job() >> train_model()
+
+
+mixed_executors()
+```
+```text
+# Parsed on a deployment configured with only "executor = LocalExecutor":
+dags: []
+import error: UnknownExecutorException: Task 'train_model' specifies executor 'KubernetesExecutor', which is not available. Make sure it is listed in your [core] executors co...
+```
+
+**Real-World Use Case:**
+A company ran Celery for about 5,000 short "submit and poll" tasks a day. A few ML-feature tasks needed 32 GB of RAM and GPU libraries. Routing those to the Kubernetes executor with a `pod_override` let them have their own images and node pools. The Celery workers stayed small and identical.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Configuring the second executor on the scheduler but not on other components, which leads to parse errors in some places.
+- Proposing CeleryKubernetesExecutor for Airflow 3.
+- Confusing `executor=` with `queue=`. A queue routes between Celery worker groups *within* the Celery executor.
+
+**Follow-up Questions Interviewers Ask:**
+- How does this relate to KubernetesPodOperator? — KPO runs a pod from any executor. Executor routing decides where the Airflow task process itself runs (see Q556).
+- Does the scheduler run the executors? — Yes. Executor logic runs inside each scheduler process; there is no separate executor service.
+
+---

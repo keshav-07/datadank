@@ -29,8 +29,8 @@ The list has up to about 10^5 elements, so an O(n²) scan is too slow.
 ## Examples
 
 ```text
-nums = [2, -1, 2],          k = 3    ->  3    (only the whole array reaches 3)
-nums = [1, 2],              k = 4    ->  -1
+nums = [2, -1, 3],          k = 4    ->  3    (only the whole array reaches 4)
+nums = [2, 1],              k = 5    ->  -1
 nums = [4, -10, 3, 3],      k = 6    ->  2    ([3, 3])
 nums = [5, 1, 3],           k = 5    ->  1    ([5])
 ```
@@ -107,8 +107,8 @@ Walkthrough on `[4, -10, 3, 3]`, `k = 6`. Prefix sums are `[0, 4, -6, -3, 0]`.
 import random
 
 for f in (shortest_at_least_k, shortest_at_least_k_brute):
-    assert f([2, -1, 2], 3) == 3
-    assert f([1, 2], 4) == -1                # impossible
+    assert f([2, -1, 3], 4) == 3
+    assert f([2, 1], 5) == -1                # impossible
     assert f([4, -10, 3, 3], 6) == 2         # negative value resets the best start
     assert f([5, 1, 3], 5) == 1              # single element
     assert f([1], 1) == 1

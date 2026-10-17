@@ -12,8 +12,8 @@ shortAnswer: "Write the tree in preorder, emitting a marker such as # for every 
 followUps: ["Why does a single traversal without null markers not identify the tree?", "How would you make the format more compact for a binary search tree?", "How would you version the format so old data still loads?", "How would you avoid recursion limits on very deep trees?"]
 versionContext: "Python 3 solutions verified with assert-based tests"
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-09"
+reviewedDate: "2026-10-09"
 practice: {"platform": "LeetCode", "number": 297, "title": "Serialize and Deserialize Binary Tree", "url": "https://leetcode.com/problems/serialize-and-deserialize-binary-tree/"}
 previous: "interview-questions:dsa/binary-tree-maximum-path-sum"
 next: "interview-questions:dsa/binary-tree-level-order-traversal"
@@ -25,7 +25,7 @@ Design two functions. `serialize(root)` turns a binary tree into a string, and `
 
 This is widely known as LeetCode 297 (Serialize and Deserialize Binary Tree). It is a hard problem mostly because of format design: the code is short once the format is unambiguous.
 
-Constraints for this version: 0 to 10,000 nodes; integer values between -1,000 and 1,000.
+Trees may be empty, can hold thousands of nodes, and values can be negative or repeated.
 
 ## Examples
 
@@ -33,14 +33,14 @@ Using the preorder format chosen below:
 
 | Tree (level order) | Serialised |
 |---|---|
-| `[1, 2, 3, None, None, 4, 5]` | `1,2,#,#,3,4,#,#,5,#,#` |
+| `[8, 3, 10, None, None, 9, 14]` | `8,3,#,#,10,9,#,#,14,#,#` |
 | `[-7]` | `-7,#,#` |
 | `[2, 2]` | `2,2,#,#,#` |
 | `[]` | `#` |
 
 ## Approach 1: brute force
 
-A tempting shortcut stores only the values in one traversal order, such as preorder `1,2,3`. That is not reversible: a left chain and a right chain of the same values give the same preorder. Storing **two** traversals (preorder and inorder) is reversible only when values are unique, so it fails on `[2, 2]`.
+A tempting shortcut stores only the values in one traversal order, such as preorder `8,3,10`. That is not reversible: a left chain and a right chain of the same values give the same preorder. Storing **two** traversals (preorder and inorder) is reversible only when values are unique, so it fails on `[2, 2]`.
 
 The simplest correct design is a full level-order listing that writes a marker for every missing child, similar to how tree inputs are usually written down:
 
@@ -88,16 +88,16 @@ This is already O(n) in both directions and avoids recursion. It writes one mark
 
 **Key insight.** Preorder visits a node, then its whole left subtree, then its whole right subtree. If every missing child is written as `#`, then while reading the tokens back in the same order you always know what the next token means: it is the root of the subtree you are about to build, or a marker saying that subtree is empty. No sizes or positions need to be stored.
 
-**Walkthrough** for `1,2,#,#,3,4,#,#,5,#,#`:
+**Walkthrough** for `8,3,#,#,10,9,#,#,14,#,#`:
 
 | Token | Meaning |
 |---|---|
-| 1 | root |
-| 2 | root's left child |
-| #, # | 2 has no children |
-| 3 | root's right child |
-| 4 | 3's left child, then `#, #` |
-| 5 | 3's right child, then `#, #` |
+| 8 | root |
+| 3 | root's left child |
+| #, # | 3 has no children |
+| 10 | root's right child |
+| 9 | 10's left child, then `#, #` |
+| 14 | 10's right child, then `#, #` |
 
 ```python
 def serialize(root):
@@ -196,15 +196,15 @@ def same(a, b):
         return a is b
     return a.val == b.val and same(a.left, b.left) and same(a.right, b.right)
 
-assert serialize(build_tree([1, 2, 3, None, None, 4, 5])) == "1,2,#,#,3,4,#,#,5,#,#"
+assert serialize(build_tree([8, 3, 10, None, None, 9, 14])) == "8,3,#,#,10,9,#,#,14,#,#"
 assert serialize(build_tree([-7])) == "-7,#,#"
 assert serialize(build_tree([2, 2])) == "2,2,#,#,#"
 assert serialize(None) == "#"
-assert serialize_iterative(build_tree([1, 2, 3, None, None, 4, 5])) == "1,2,#,#,3,4,#,#,5,#,#"
+assert serialize_iterative(build_tree([8, 3, 10, None, None, 9, 14])) == "8,3,#,#,10,9,#,#,14,#,#"
 
 codecs = [(serialize, deserialize), (serialize_bfs, deserialize_bfs),
           (serialize_iterative, deserialize_iterative)]
-shapes = [[], [-7], [2, 2], [2, None, 2], [1, 2, 3, None, None, 4, 5],
+shapes = [[], [-7], [2, 2], [2, None, 2], [8, 3, 10, None, None, 9, 14],
           [12, 1, 2], [1, None, 2, None, 3, None, 4], [0, -1000, 1000]]
 for ser, de in codecs:
     for values in shapes:

@@ -1,0 +1,414 @@
+---
+publishedDate: "2026-10-16"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
+title: "Git for Data Engineers: Branches, Merge vs Rebase, Pull Requests and Secrets"
+seoTitle: "Git for Data Engineers: Branches, Rebase, PRs"
+description: "Git for data engineers: branches, merge vs rebase, conflicts, pull requests, .gitignore for data repos, tags, and what to do when you commit a secret."
+technology: ["dev-tools"]
+topic: ["git", "version-control", "code-review"]
+difficulty: "Beginner"
+learningObjectives:
+  - "Explain the working tree, staging area and commit history, and make small, reviewable commits"
+  - "Create branches, merge them, rebase them and resolve a merge conflict"
+  - "Keep data files, outputs and secrets out of the repository with .gitignore"
+  - "Work in a trunk-based flow with short-lived branches, pull requests and tagged releases"
+  - "Respond correctly when a credential has been committed"
+prerequisites: ["articles:dev-tools/command-line-for-data-work"]
+related: ["articles:etl-elt/testing-data-pipelines-cicd", "articles:airflow/best-practices-testing-cicd", "articles:dev-tools/makefiles-pre-commit-data-repos"]
+previous: "articles:dev-tools/command-line-for-data-work"
+next: "articles:dev-tools/shell-scripting-for-pipelines"
+versionContext: "Every command was run with Git 2.43 in a fresh repository in a temporary directory (author dates fixed so the history is easy to follow), and git-filter-repo 2.47 for the history rewrite. Commit hashes in your run will differ."
+sources:
+  - { label: "Git documentation (reference manual)", url: "https://git-scm.com/docs" }
+  - { label: "Pro Git book: Git Branching", url: "https://git-scm.com/book/en/v2/Git-Branching-Branches-in-a-Nutshell" }
+  - { label: "Git documentation: git-rebase", url: "https://git-scm.com/docs/git-rebase" }
+  - { label: "Git documentation: gitignore", url: "https://git-scm.com/docs/gitignore" }
+  - { label: "Git documentation: git-tag", url: "https://git-scm.com/docs/git-tag" }
+  - { label: "GitHub Docs: Removing sensitive data from a repository", url: "https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository" }
+  - { label: "git-filter-repo", url: "https://github.com/newren/git-filter-repo" }
+---
+
+Pipelines are code: SQL models, DAG files, Spark jobs, Terraform, tests. Git records every change to that code, lets several people change it at once, and gives the team a place to review changes before they reach production. In a data team it also has one job that application teams worry about less: keeping data files and credentials out of the history, because once they are pushed they are hard to remove.
+
+This lesson builds a small `orders-pipeline` repository from scratch. Every command was run and the output is real.
+
+## The three places a change lives
+
+Git has three areas, and most confusion comes from mixing them up:
+
+- the **working tree**: the files on disk that you edit;
+- the **staging area** (the index): the snapshot you are preparing, filled with `git add`;
+- the **history**: commits, each a full snapshot with an author, a message and a pointer to its parent.
+
+`git status` shows what differs between them, `git diff` shows unstaged changes and `git diff --staged` shows what the next commit will contain. Set your identity once and use `main` as the default branch name:
+
+{/* noexec */}
+```bash
+# noexec: changes your global Git configuration
+git config --global user.name "Asha Rao"
+git config --global user.email "asha@example.com"
+git config --global init.defaultBranch main
+```
+
+## A .gitignore for data projects, before the first commit
+
+Start the repository and create the kind of files every data project has: code, a local data extract and a `.env` file with a password.
+
+```bash
+git init -q orders-pipeline && cd orders-pipeline
+mkdir -p src data
+printf 'def load(path):\n    print(f"loading {path}")\n' > src/load_orders.py
+echo "order_id,amount" > data/orders_2026-10-01.csv
+echo "PGPASSWORD=s3cret" > .env
+git status --short
+```
+
+```text
+?? .env
+?? data/
+?? src/
+```
+
+`??` means untracked. A `git add .` now would commit the password and the data. Add a `.gitignore` first:
+
+```bash
+cat > .gitignore <<'EOF'
+# data and outputs
+data/
+*.csv
+*.parquet
+# secrets and local config
+.env
+*.pem
+# Python and tooling
+__pycache__/
+.venv/
+.pytest_cache/
+EOF
+git status --short
+git check-ignore -v data/orders_2026-10-01.csv .env
+```
+
+```text
+?? .gitignore
+?? src/
+.gitignore:2:data/	data/orders_2026-10-01.csv
+.gitignore:6:.env	.env
+```
+
+`git check-ignore -v` tells you which line of which file ignores a path, the quickest way to debug a rule. Why keep data out of Git:
+
+- Git keeps every version of every file forever, so a 2 GB extract committed once makes every clone 2 GB, even after you delete it.
+- Data often contains personal information, and the repository is shared far more widely than the warehouse.
+- Data belongs in object storage or the warehouse, versioned there (table formats such as Delta Lake keep their own history). Small, synthetic test fixtures are the exception; put them in a clearly named folder such as `tests/fixtures/` and allow it explicitly with a `!tests/fixtures/*.csv` rule after the general `*.csv` rule.
+
+Commit an `.env.example` with variable names and no values, so others know which settings the job needs.
+
+## Commits
+
+```bash
+git add .gitignore src/load_orders.py
+git commit -m "Add order loader skeleton"
+git log --oneline
+```
+
+```text
+[main (root-commit) c040257] Add order loader skeleton
+ 2 files changed, 13 insertions(+)
+ create mode 100644 .gitignore
+ create mode 100644 src/load_orders.py
+c040257 Add order loader skeleton
+```
+
+A good commit does one thing and says why in its message: "Deduplicate orders on order_id" rather than "fix" or "changes". Stage deliberately with `git add path` or `git add -p` (interactive, hunk by hunk) instead of `git add .`, which picks up anything not ignored. Small commits make review, `git revert` and `git bisect` (binary search through history for the commit that broke something) far easier.
+
+### Untracking a file committed by mistake
+
+`.gitignore` only affects *untracked* files. If a file is already committed, ignoring it does nothing until you stop tracking it with `git rm --cached`, which removes it from the index but leaves it on disk:
+
+```bash
+git add -f data/orders_2026-10-01.csv && git commit -q -m "Add sample data"
+git rm --cached data/orders_2026-10-01.csv && git commit -q -m "Stop tracking data files"
+git ls-files
+ls data
+```
+
+```text
+rm 'data/orders_2026-10-01.csv'
+.gitignore
+src/load_orders.py
+orders_2026-10-01.csv
+```
+
+The file is still in the earlier commit; `git rm --cached` stops future tracking, it does not rewrite history.
+
+## Branches and merging
+
+A branch is a movable pointer to a commit. Create one per change, so `main` always holds reviewed code:
+
+```bash
+git switch -c feature/dedupe-orders
+cat > src/load_orders.py <<'EOF'
+def load(path):
+    print(f"loading {path}")
+
+
+def dedupe(rows):
+    return list({r["order_id"]: r for r in rows}.values())
+EOF
+git diff --stat
+git add src/load_orders.py && git commit -q -m "Deduplicate orders on order_id"
+git switch main
+# meanwhile, someone changes load() on main
+printf 'def load(path, batch_size=500):\n    print(f"loading {path} in batches of {batch_size}")\n' > src/load_orders.py
+git commit -q -am "Load in batches"
+git log --oneline --graph --all
+```
+
+```text
+Switched to a new branch 'feature/dedupe-orders'
+ src/load_orders.py | 4 ++++
+ 1 file changed, 4 insertions(+)
+Switched to branch 'main'
+* 11b85bd Load in batches
+| * 6d075bd Deduplicate orders on order_id
+|/  
+* a672c1c Stop tracking data files
+* 6cd7871 Add sample data
+* c040257 Add order loader skeleton
+```
+
+The histories have diverged. `git merge` combines them with a **merge commit** that has two parents. Both sides changed the same lines of `load_orders.py`, so Git cannot decide alone:
+
+```bash
+git merge feature/dedupe-orders; echo "exit=$?"
+git status --short
+cat src/load_orders.py
+```
+
+```text
+Auto-merging src/load_orders.py
+CONFLICT (content): Merge conflict in src/load_orders.py
+Automatic merge failed; fix conflicts and then commit the result.
+exit=1
+UU src/load_orders.py
+<<<<<<< HEAD
+def load(path, batch_size=500):
+    print(f"loading {path} in batches of {batch_size}")
+=======
+def load(path):
+    print(f"loading {path}")
+
+
+def dedupe(rows):
+    return list({r["order_id"]: r for r in rows}.values())
+>>>>>>> feature/dedupe-orders
+```
+
+## Resolving a conflict
+
+Between `<<<<<<< HEAD` and `=======` is the version on your current branch; between `=======` and `>>>>>>>` is the incoming one. Resolving means editing the file into the correct final version, which is often a combination, not a choice of one side. Here we want the batched `load()` *and* the new `dedupe()`:
+
+```bash
+cat > src/load_orders.py <<'EOF'
+def load(path, batch_size=500):
+    print(f"loading {path} in batches of {batch_size}")
+
+
+def dedupe(rows):
+    return list({r["order_id"]: r for r in rows}.values())
+EOF
+git add src/load_orders.py
+git commit --no-edit
+git log --oneline --graph
+```
+
+```text
+[main aacea61] Merge branch 'feature/dedupe-orders'
+*   aacea61 Merge branch 'feature/dedupe-orders'
+|\  
+| * 6d075bd Deduplicate orders on order_id
+* | 11b85bd Load in batches
+|/  
+* a672c1c Stop tracking data files
+* 6cd7871 Add sample data
+* c040257 Add order loader skeleton
+```
+
+Then run the tests: a conflict-free merge can still be wrong if one branch renamed a column that the other started using. `git merge --abort` returns to the state before the merge if you want to start again. In SQL and dbt repositories, conflicts cluster in shared files such as `schema.yml` and model lists; small, frequent merges keep them small.
+
+## Merge vs rebase
+
+`git rebase main` takes the commits on your branch and replays them on top of the latest `main`, creating new commits with new hashes. The result is a straight line, and the branch can then be merged with a fast-forward (the pointer simply moves, no merge commit):
+
+```bash
+git switch -q -c feature/validate-amounts
+printf 'def valid_amount(value):\n    return value >= 0\n' > src/validate.py
+git add src/validate.py && git commit -q -m "Reject negative amounts"
+git switch -q main
+echo "# orders-pipeline" > README.md && git add README.md && git commit -q -m "Add README"
+git switch -q feature/validate-amounts
+git rebase main
+git log --oneline --graph --all | head -n 3
+git switch -q main && git merge --ff-only feature/validate-amounts
+```
+
+```text
+Successfully rebased and updated refs/heads/feature/validate-amounts.
+* 48e820c Reject negative amounts
+* a17810e Add README
+*   aacea61 Merge branch 'feature/dedupe-orders'
+Updating a17810e..48e820c
+Fast-forward
+ src/validate.py | 2 ++
+ 1 file changed, 2 insertions(+)
+ create mode 100644 src/validate.py
+```
+
+| | Merge | Rebase |
+|---|---|---|
+| History | true record, with merge commits | linear, easier to read and bisect |
+| Rewrites commits | no | yes, new hashes for the rebased commits |
+| Conflicts | resolved once, in the merge commit | may be resolved once per replayed commit |
+| Safe on a shared branch | yes | no, others' copies diverge |
+
+The rule that matters: **rebase only commits that nobody else has built on**, which in practice means your own feature branch. Never rebase `main`. If you rebase a branch you already pushed, update it with `git push --force-with-lease`, which refuses to overwrite commits on the remote that you have not seen, rather than `--force`. Teams pick a convention (rebase then fast-forward, squash-merge, or merge commits); consistency matters more than the choice.
+
+## Pull requests and code review
+
+On GitHub, GitLab or Bitbucket, you push the branch and open a **pull request** (merge request on GitLab): a proposal to merge it into `main`, with the diff, a discussion and automated checks.
+
+{/* noexec */}
+```bash
+# noexec: needs a remote repository
+git push -u origin feature/dedupe-orders
+# open the pull request in the web UI, or with the GitHub CLI:
+gh pr create --base main --title "Deduplicate orders on order_id" --body "Keeps the last row per order_id. Adds tests."
+```
+
+What reviewers in a data team look for, beyond code style:
+
+- **Correctness of the data**: join keys and grain, null handling, time zones, deduplication rules. A query that runs is not a query that is right.
+- **Idempotency**: can the job run twice for the same date without duplicating rows?
+- **Blast radius**: does it change a table other teams read? Is a backfill needed? Is the schema change backward compatible?
+- **Tests and evidence**: unit tests for transformations, and for SQL changes, row counts or a diff of results before and after.
+- **No data, no secrets, no notebooks full of output** in the diff.
+
+Keep pull requests small (a few hundred lines at most) so they get a real review. Protect `main` in the hosting platform so changes only arrive through a reviewed pull request with passing CI.
+
+## A trunk-based workflow
+
+Most data teams work well with a trunk-based flow:
+
+1. `main` is always deployable.
+2. Each change gets a short-lived branch from the latest `main` (hours to a couple of days).
+3. Before opening or merging the pull request, update the branch (`git switch main && git pull`, then `git rebase main` on your branch).
+4. CI runs linting and tests on every pull request; a reviewer approves; it merges to `main`.
+5. Deployment runs from `main`, or from a tag.
+
+Long-lived branches (a `develop` branch, one branch per environment) mean big, painful merges and environments that drift apart. Unfinished work is better merged behind a configuration flag than kept on a branch for weeks.
+
+## Tags and releases
+
+A tag names a specific commit, typically a version that was deployed. Annotated tags (`-a`) store a message, author and date:
+
+```bash
+git tag -a v1.0.0 -m "First production release"
+git tag -n
+git describe --tags
+```
+
+```text
+v1.0.0          First production release
+v1.0.0
+```
+
+Push tags explicitly with `git push origin v1.0.0`. Deploying from tags gives you a precise answer to "what code produced last Tuesday's numbers", and makes rollback a redeploy of the previous tag. On GitHub, a release is a tag plus notes and optional build artefacts.
+
+To undo a change that is already on `main`, use `git revert`, which adds a new commit that reverses an old one, instead of rewriting shared history:
+
+```bash
+git revert --no-edit HEAD~1      # HEAD~1 is the "Add README" commit
+git log --oneline -2
+```
+
+```text
+[main 65da151] Revert "Add README"
+ Date: Fri Oct 16 11:30:00 2026 +0000
+ 1 file changed, 1 deletion(-)
+ delete mode 100644 README.md
+65da151 Revert "Add README"
+48e820c Reject negative amounts
+```
+
+## When you committed a secret
+
+Someone commits a database URL with a password:
+
+```bash
+echo 'DB_URL = "postgresql://etl:s3cret@db.internal/analytics"' > src/config.py
+git add src/config.py && git commit -q -m "Add config"
+```
+
+**Step one, always: revoke or rotate the credential.** Assume anything that reached a remote is compromised; automated scanners look for credentials in public repositories, and every clone and fork already has a copy. Rotation is what actually removes the risk. Cleaning the history is secondary and sometimes unnecessary once the secret is useless.
+
+Then, depending on where the commit is:
+
+**Not pushed yet.** Fix the file and amend the commit (or `git reset --soft HEAD~1` to undo it and commit again):
+
+```bash
+printf 'import os\n\nDB_URL = os.environ["DB_URL"]\n' > src/config.py
+git add src/config.py && git commit -q --amend --no-edit
+git log --all --oneline -S's3cret' | wc -l
+git reflog -2
+```
+
+```text
+0
+8a9c279 HEAD@{0}: commit (amend): Add config
+eda2e8e HEAD@{1}: commit: Add config
+```
+
+`git log -S` searches history for commits that add or remove a string, and the branch history no longer contains it. The old commit still exists locally through the reflog (`git show eda2e8e:src/config.py` prints the password) until Git garbage-collects it, which does not matter as long as it never reaches a remote.
+
+**Already pushed.** Rotate first. Then, if the history must be cleaned, rewrite it with [git-filter-repo](https://github.com/newren/git-filter-repo), the tool Git's own documentation recommends over `git filter-branch`. With version 2.47 or later, `--sensitive-data-removal` also reports what else needs cleaning. In a throwaway repository:
+
+```bash
+git init -q leak && cd leak
+echo 'DB_URL = "postgresql://etl:s3cret@db.internal/analytics"' > config.py
+git add . && git commit -qm "Add config"
+echo 'print("load")' > load.py && git add . && git commit -qm "Add loader"
+echo 's3cret==>REDACTED' > ../passwords.txt
+git filter-repo --sensitive-data-removal --replace-text ../passwords.txt --force
+git log --oneline
+cat config.py
+```
+
+```text
+d4c1c70 Add loader
+8c6c67b Add config
+DB_URL = "postgresql://etl:REDACTED@db.internal/analytics"
+```
+
+The tool also prints a checklist of next steps (verify the result, force-push with `git push --force --mirror origin`, contact the hosting provider, have colleagues re-clone). Every commit from the first affected one onward gets a new hash, so the rewrite must be force-pushed, every collaborator must re-clone or follow the tool's clean-up steps, and pull request views on the hosting platform may still show the old diff until the platform's support removes them. (`--force` was needed only because this demo repository is not a fresh clone; on a real repository, run it on a fresh clone.) To remove a whole file instead, use `--invert-paths --path path/to/file`.
+
+**Prevent the next one**: keep secrets in environment variables or a secrets manager, add `.env` and key files to `.gitignore` from day one, enable the hosting platform's secret scanning and push protection, and run a secret scanner as a pre-commit hook (see [Makefiles and pre-commit hooks](/dev-tools/makefiles-pre-commit-data-repos/)).
+
+## Common mistakes
+
+- `git add .` before writing a `.gitignore`, committing data extracts and `.env` files.
+- Adding a path to `.gitignore` and expecting an already tracked file to disappear (it needs `git rm --cached`).
+- Deleting a committed secret in a new commit and assuming it is gone (it is still in history).
+- Cleaning history but not rotating the credential.
+- Rebasing a shared branch, or force-pushing with `--force` instead of `--force-with-lease`.
+- Resolving a conflict by picking one side wholesale without reading the other.
+- Long-lived feature branches and thousand-line pull requests that nobody can review properly.
+
+## In an interview
+
+Git questions in Data Engineering interviews are practical: "what is the difference between merge and rebase", "how do you resolve a conflict", "what is your team's branching strategy", and the classic "you pushed a password to the repository, what do you do". For the last, lead with rotating the credential, then explain cleaning history with git-filter-repo, the force-push and the impact on collaborators, then prevention (secrets manager, `.gitignore`, secret scanning, pre-commit hooks). For merge vs rebase, say what each does to history, and that you rebase only your own unpublished branch. Mentioning that data and secrets never belong in the repository, and that SQL changes in a pull request should come with evidence such as row counts, signals real team experience.
+
+## Key takeaway
+
+Write the `.gitignore` before the first commit, keep commits small and branches short-lived, merge through reviewed pull requests, tag what you deploy and revert rather than rewrite shared history. If a secret is committed, rotate it first and clean history second. Next: [shell scripting for pipelines](/dev-tools/shell-scripting-for-pipelines/).

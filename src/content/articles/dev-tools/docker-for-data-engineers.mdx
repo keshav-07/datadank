@@ -1,0 +1,330 @@
+---
+publishedDate: "2026-10-16"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
+title: "Docker for Data Engineers: Images, Dockerfiles, Volumes and Docker Compose"
+seoTitle: "Docker for Data Engineers: Dockerfile to Compose"
+description: "Docker for data engineers: images vs containers, a multi-stage non-root Dockerfile for a Python pipeline, volumes, config, and Docker Compose with Postgres."
+technology: ["dev-tools"]
+topic: ["docker", "containers", "docker-compose"]
+difficulty: "Intermediate"
+learningObjectives:
+  - "Explain images, containers, layers, registries and tags"
+  - "Write a multi-stage Dockerfile for a Python pipeline that runs as a non-root user on a slim base"
+  - "Keep data in volumes and configuration in environment variables, not in the image"
+  - "Run a local Postgres and a pipeline together with Docker Compose, with a health-checked start order"
+  - "Describe what Kubernetes adds on top of containers"
+prerequisites: ["articles:dev-tools/python-environments-packaging", "articles:dev-tools/command-line-for-data-work"]
+related: ["articles:spark/deployment-monitoring", "articles:airflow/executors-scaling", "articles:dev-tools/makefiles-pre-commit-data-repos"]
+previous: "articles:dev-tools/python-environments-packaging"
+next: "articles:dev-tools/makefiles-pre-commit-data-repos"
+versionContext: "The pipeline code was run (outside Docker, with a local Unix-socket PGHOST) against PostgreSQL 16 on Python 3.11 and 3.13 (the 3.13 run installed the locked, hashed requirements exactly as the Dockerfile does). The compose file was validated with docker compose config (Docker Compose 5.3) and the Dockerfile linted with hadolint 2.15. No Docker daemon was available in the review environment, so the docker build and run commands are shown without output; their syntax follows the Docker documentation (October 2026)."
+sources:
+  - { label: "Docker documentation: What is an image?", url: "https://docs.docker.com/get-started/docker-concepts/the-basics/what-is-an-image/" }
+  - { label: "Docker documentation: Multi-stage builds", url: "https://docs.docker.com/build/building/multi-stage/" }
+  - { label: "Docker documentation: Building best practices", url: "https://docs.docker.com/build/building/best-practices/" }
+  - { label: "Docker documentation: Volumes", url: "https://docs.docker.com/engine/storage/volumes/" }
+  - { label: "Docker documentation: Control startup order in Compose", url: "https://docs.docker.com/compose/how-tos/startup-order/" }
+  - { label: "Docker documentation: Set environment variables in Compose", url: "https://docs.docker.com/compose/how-tos/environment-variables/set-environment-variables/" }
+  - { label: "Docker Official Images: postgres (PGDATA change in 18)", url: "https://hub.docker.com/_/postgres" }
+  - { label: "Kubernetes documentation: Jobs", url: "https://kubernetes.io/docs/concepts/workloads/controllers/job/" }
+---
+
+The previous lesson pinned Python packages with a lock file. That still leaves the Python version, the operating system libraries and the way the job is started to chance. A container image packages all of it: interpreter, system libraries, locked dependencies and your code, in one artefact that runs the same on a laptop, in CI, on Airflow workers and on Kubernetes. That is why most production pipelines, Airflow tasks and Spark-on-Kubernetes jobs ship as images.
+
+## Images, containers, layers and registries
+
+- An **image** is a read-only template: a stack of file system **layers** plus metadata (which command to run, environment variables, the user). It is built from a `Dockerfile`.
+- A **container** is a running (or stopped) instance of an image, with its own thin writable layer, process space and network. Many containers can run from one image. When a container is removed, anything written to its writable layer is gone.
+- A **registry** (Docker Hub, Amazon ECR, Google Artifact Registry, GitHub Container Registry) stores images. A reference such as `python:3.13-slim-trixie` is a repository plus a **tag**; tags can be moved by the publisher, a **digest** (`@sha256:...`) cannot.
+
+A container is not a virtual machine: it shares the host's kernel and is an isolated process, which is why it starts in milliseconds rather than minutes.
+
+{/* noexec */}
+```bash
+# noexec: needs a Docker daemon
+docker pull python:3.13-slim-trixie
+docker run --rm python:3.13-slim-trixie python -c "import sys; print(sys.version)"
+docker image ls
+docker ps -a            # containers, including stopped ones
+```
+
+## The pipeline we will containerise
+
+A small loader that reads one day's CSV and replaces that day's rows in Postgres inside one transaction, so it is safe to rerun. Connection settings come from the standard libpq environment variables (`PGHOST`, `PGUSER`, `PGPASSWORD`, `PGDATABASE`), so nothing environment-specific is baked into the image.
+
+```text
+orders-pipeline/
+  Dockerfile
+  .dockerignore
+  compose.yaml
+  pyproject.toml
+  requirements.txt        # locked with hashes
+  src/orders_pipeline/__init__.py
+  src/orders_pipeline/load.py
+  data/orders_2026-10-15.csv
+```
+
+`src/orders_pipeline/load.py`:
+
+{/* noexec */}
+```python
+"""Load one day's orders CSV into Postgres, replacing that day's rows (safe to rerun)."""
+import csv
+import logging
+import os
+import sys
+from pathlib import Path
+
+import psycopg
+
+log = logging.getLogger("load_orders")
+
+DDL = """
+CREATE TABLE IF NOT EXISTS orders (
+    order_id   integer PRIMARY KEY,
+    order_date date    NOT NULL,
+    amount     numeric(12, 2) NOT NULL
+)
+"""
+
+
+def main() -> int:
+    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"),
+                        format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    run_date = os.environ["RUN_DATE"]                      # required: fail fast if missing
+    path = Path(os.environ.get("DATA_DIR", "/data")) / f"orders_{run_date}.csv"
+
+    with path.open(newline="") as f:
+        rows = [(int(r["order_id"]), run_date, r["amount"]) for r in csv.DictReader(f)]
+
+    # Connection settings come from the standard libpq variables: PGHOST, PGPORT,
+    # PGDATABASE, PGUSER, PGPASSWORD. Nothing is hard-coded in the image.
+    with psycopg.connect() as conn:                        # one transaction, committed on exit
+        conn.execute(DDL)
+        conn.execute("DELETE FROM orders WHERE order_date = %s", (run_date,))
+        with conn.cursor() as cur:
+            cur.executemany("INSERT INTO orders VALUES (%s, %s, %s)", rows)
+    log.info("loaded %d rows for %s from %s", len(rows), run_date, path)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+`pyproject.toml` declares `dependencies = ["psycopg[binary]>=3.2,<4"]` and a `load-orders = "orders_pipeline.load:main"` entry point, and `requirements.txt` is the locked, hashed set for the image's platform:
+
+```bash
+uv pip compile pyproject.toml --generate-hashes --python-version 3.13 --python-platform linux -o requirements.txt
+```
+
+Run outside Docker against a local Postgres, twice, the loader replaces rather than duplicates, and a missing setting fails immediately with a non-zero exit:
+
+```bash
+export PGHOST=/var/run/postgresql PGDATABASE=orders_demo DATA_DIR=./data RUN_DATE=2026-10-15
+load-orders; load-orders
+psql -tA -c "select count(*), sum(amount) from orders"
+unset RUN_DATE; load-orders 2>&1 | tail -n 1; echo "exit=${PIPESTATUS[0]}"
+```
+
+```text
+2026-10-17 05:12:51,089 INFO load_orders loaded 3 rows for 2026-10-15 from data/orders_2026-10-15.csv
+2026-10-17 05:12:51,287 INFO load_orders loaded 3 rows for 2026-10-15 from data/orders_2026-10-15.csv
+3|245.49
+KeyError: 'RUN_DATE'
+exit=1
+```
+
+## A Dockerfile for a Python pipeline
+
+```dockerfile
+# syntax=docker/dockerfile:1
+
+# ---- build stage: install dependencies and the package into a virtual environment
+FROM python:3.13-slim-trixie AS builder
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+WORKDIR /src
+# Dependencies first: this layer is cached until requirements.txt changes.
+COPY requirements.txt .
+RUN pip install --require-hashes -r requirements.txt
+COPY pyproject.toml .
+COPY src ./src
+RUN pip install --no-deps .
+
+# ---- runtime stage: only the virtual environment, no build tools or source
+FROM python:3.13-slim-trixie AS runtime
+RUN groupadd --system --gid 10001 app \
+ && useradd --system --uid 10001 --gid app --no-create-home --no-log-init app
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    DATA_DIR=/data
+USER 10001:10001
+ENTRYPOINT ["load-orders"]
+```
+
+What each decision buys you:
+
+- **Slim, pinned base.** `python:3.13-slim-trixie` is Debian 13 with only what Python needs, much smaller than the full `python:3.13` image, which includes compilers and headers. The tag fixes the Python minor version and the Debian release; for fully repeatable builds, pin the digest as well (`FROM python:3.13-slim-trixie@sha256:...`) and let a bot such as Dependabot propose updates. Alpine images are smaller still but use musl instead of glibc, so many data libraries have no prebuilt wheels and compile slowly or fail.
+- **Multi-stage build.** Everything needed only to *build* (pip's cache, the source tree, any compilers you might add) stays in the `builder` stage. `COPY --from=builder` copies only the finished virtual environment into the final image. Copying a venv between stages works because both use the same base image and the same path, `/opt/venv`.
+- **Layer order for caching.** Docker reuses a cached layer until an instruction or the files it copies change. Copying `requirements.txt` and installing dependencies before copying `src/` means a code change rebuilds only the last two layers, not the dependency install.
+- **Locked, hashed install.** `--require-hashes` makes the image contain exactly the tested versions; `--no-deps` stops the package install from resolving anything new.
+- **Non-root user.** By default containers run as root. The `USER` instruction runs the job as an unprivileged user with an explicit UID/GID (the Docker docs recommend explicit IDs because automatically assigned ones can change between builds). A numeric `USER` also lets Kubernetes verify `runAsNonRoot` without looking inside the image.
+- **Exec-form `ENTRYPOINT`.** The JSON-array form runs `load-orders` as process 1 without a shell in between, so `SIGTERM` from `docker stop` or Kubernetes reaches Python directly. `PYTHONUNBUFFERED=1` makes logs appear immediately in `docker logs`.
+
+Keep the build context small and secrets out of it with a `.dockerignore`:
+
+```text
+.git
+.venv
+__pycache__/
+*.pyc
+.env
+data/
+```
+
+Build and run:
+
+{/* noexec */}
+```bash
+# noexec: needs a Docker daemon
+docker build -t orders-pipeline:0.1.0 .
+docker run --rm \
+  -e RUN_DATE=2026-10-15 \
+  -e PGHOST=host.docker.internal -e PGUSER=etl -e PGDATABASE=analytics -e PGPASSWORD \
+  -v "$PWD/data:/data:ro" \
+  orders-pipeline:0.1.0
+```
+
+`-e PGPASSWORD` with no value passes the variable through from your shell, so the password never appears in the command line or the shell history. `host.docker.internal` reaches the host from a container on Docker Desktop; on Linux add `--add-host=host.docker.internal:host-gateway`. Compose, below, avoids the problem by putting both containers on one network.
+
+## Volumes: where data lives
+
+A container's writable layer disappears with the container, so anything that must survive goes in a mount:
+
+| Mount | Syntax | Use it for |
+|---|---|---|
+| Named volume | `-v pgdata:/var/lib/postgresql` | database files and other state Docker manages |
+| Bind mount | `-v "$PWD/data:/data:ro"` | sharing host files with a container: input data, local code during development |
+| tmpfs | `--tmpfs /tmp` | scratch space that should never touch disk |
+
+`:ro` mounts read-only, a cheap guard against a job modifying its input. Named volumes survive `docker compose down`; `docker compose down -v` deletes them, which is the quickest way to reset a local database and the quickest way to lose one.
+
+A version-specific trap: from **PostgreSQL 18**, the official `postgres` image stores data under `/var/lib/postgresql/18/docker` and declares its volume at `/var/lib/postgresql`. Mount volumes at `/var/lib/postgresql` for 18 and later. For 17 and earlier the mount point is `/var/lib/postgresql/data`; mounting the parent directory there silently writes data to an anonymous volume that is lost when the container is recreated.
+
+## Configuration: environment variables, not images
+
+Build one image and promote it from development to production; only configuration changes. Pass settings as environment variables (`-e`, `--env-file`, Compose `environment:` or `env_file:`) and secrets from a secrets manager or the orchestrator's secret store at run time. Never `COPY .env` into an image or put a password in an `ENV` or `ARG` instruction: anyone who can pull the image can read its layers and history.
+
+## Docker Compose: Postgres plus the pipeline
+
+Compose describes several containers, their network, volumes and start order in one file. `compose.yaml`:
+
+```yaml
+services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: etl
+      POSTGRES_DB: analytics
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  pipeline:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      PGUSER: etl
+      PGDATABASE: analytics
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      RUN_DATE: ${RUN_DATE:-2026-10-15}
+    volumes:
+      - ./data:/data:ro
+
+volumes:
+  pgdata:
+```
+
+- Services share a default network on which each service name is a hostname, so the pipeline connects to `PGHOST: db`.
+- `${POSTGRES_PASSWORD:?message}` is read from your shell or from a `.env` file next to `compose.yaml` (which stays in `.gitignore`), and Compose refuses to start if it is missing. `$$` escapes a dollar sign so the health check sees `${POSTGRES_USER}` inside the container.
+- `depends_on` with `condition: service_healthy` waits until `pg_isready` succeeds, not merely until the container has started. Without it the pipeline races the database and fails on the first connection.
+- `127.0.0.1:5432:5432` publishes Postgres to your machine only, not to the whole network.
+- The top-level `version:` key is obsolete; current Compose only warns about it.
+
+Validating the file needs no daemon. With the password unset, and then set in `.env`:
+
+```bash
+docker compose config > /dev/null; echo "exit=$?"
+echo "POSTGRES_PASSWORD=local-dev-only" > .env
+docker compose config --services
+```
+
+```text
+error while interpolating services.db.environment.POSTGRES_PASSWORD: required variable POSTGRES_PASSWORD is missing a value: set POSTGRES_PASSWORD in .env
+exit=1
+db
+pipeline
+```
+
+The everyday commands:
+
+{/* noexec */}
+```bash
+# noexec: needs a Docker daemon
+docker compose up -d --wait db                     # start Postgres, return once it is healthy
+docker compose run --rm pipeline                   # build if needed, run the load once, remove the container
+docker compose run --rm -e RUN_DATE=2026-10-16 pipeline
+docker compose exec db psql -U etl -d analytics -c "select count(*) from orders"
+docker compose logs -f db
+docker compose down                                # stop and remove containers, keep the volume
+docker compose down -v                             # also delete the pgdata volume
+```
+
+This is the local stack most data teams use for development and integration tests: the real database engine, with real SQL, started in seconds and thrown away afterwards.
+
+## What Kubernetes adds
+
+Docker runs containers on one machine. Kubernetes schedules them across a cluster and keeps them in the state you declare. For data work the relevant pieces are:
+
+- **Pods**: one or more containers scheduled together on a node; the unit Kubernetes runs.
+- **Jobs and CronJobs**: run a container to completion, retry on failure up to a limit, and run on a schedule. A containerised batch load maps naturally onto a Job.
+- **Resource requests and limits**: CPU and memory per container, used for scheduling and to stop one job starving others.
+- **ConfigMaps and Secrets**: configuration and credentials injected as environment variables or files, so the same image runs in every environment.
+- **Self-healing and scaling**: failed containers are restarted and long-running services (an Airflow scheduler, a Kafka Connect cluster) can scale out.
+
+Airflow's `KubernetesPodOperator` and Kubernetes executor, Spark on Kubernetes and most managed platforms run your image in exactly this way. Kubernetes does not replace a good image: the same habits (slim base, locked dependencies, non-root user, configuration from the environment, clean `SIGTERM` handling) are what make a pod behave.
+
+## Common mistakes
+
+- Using `latest` or an unpinned base image, so a rebuild silently changes Python or system libraries.
+- Copying the whole project before installing dependencies, which invalidates the cache on every code change.
+- Running as root, and baking `.env` files or passwords into the image.
+- Keeping database data in the container's writable layer, or mounting the wrong path for the Postgres version.
+- Shell-form `ENTRYPOINT`/`CMD`, so signals go to `/bin/sh` and the job is killed instead of stopping cleanly.
+- `depends_on` without a health check, so the pipeline starts before the database accepts connections.
+- Publishing a database port on all interfaces with a weak password.
+- `docker compose down -v` without realising it deletes the data.
+
+## In an interview
+
+Common questions: "image vs container", "how would you containerise a Python job", "how do you keep images small and secure", "how do you pass secrets to a container", "what does Kubernetes add". Strong answers mention the multi-stage build, layer ordering for cache, a slim pinned base with a locked install, a non-root user, configuration and secrets injected at run time, volumes for state, and health-checked dependencies in Compose. For Kubernetes, describe Jobs and CronJobs for batch work, resource requests and limits, and Secrets, and say that an orchestrator such as Airflow often launches those pods.
+
+## Key takeaway
+
+An image fixes everything a pipeline needs to run; a container is one run of it. Build it in stages from a slim, pinned base and a lock file, run it as a non-root user, keep data in volumes and configuration in the environment, and use Compose to run it next to a real database. Next, give the repository one-command workflows and pre-commit checks with [Makefiles and pre-commit hooks](/dev-tools/makefiles-pre-commit-data-repos/).

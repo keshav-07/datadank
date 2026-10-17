@@ -1,0 +1,330 @@
+---
+publishedDate: "2026-10-16"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
+title: "Python Environments and Packaging for Data Engineers: venv, pip, Lock Files and pyproject.toml"
+seoTitle: "Python venv, pip and Lock Files Explained"
+description: "Python virtual environments and packaging for data pipelines: venv, pip, lock files, pyproject.toml, uv and pip-tools, and why it works on my machine."
+technology: ["dev-tools", "python"]
+topic: ["python-packaging", "virtual-environments", "dependencies"]
+difficulty: "Intermediate"
+learningObjectives:
+  - "Create, activate and recreate a virtual environment, and explain what it isolates"
+  - "Tell abstract dependencies (pyproject.toml) from pinned, locked ones (requirements.txt, uv.lock)"
+  - "Structure a pipeline as an installable package with pyproject.toml and a command-line entry point"
+  - "Produce a reproducible install with pip-tools hashes or uv lock and uv sync --locked"
+  - "Diagnose the usual causes of 'works on my machine'"
+prerequisites: ["articles:dev-tools/command-line-for-data-work", "articles:python/functions-modules-reusable-code"]
+related: ["articles:python/python-for-data-engineering", "articles:python/testing-with-pytest", "articles:dev-tools/docker-for-data-engineers"]
+previous: "articles:dev-tools/shell-scripting-for-pipelines"
+next: "articles:dev-tools/docker-for-data-engineers"
+versionContext: "Run on Python 3.11.15 with pip 24.0, uv 0.8.17 and pip-tools 7.6.2 against PyPI in October 2026, in a temporary directory. Resolved versions (requests 2.34.2, urllib3 2.8.0 and so on) are what PyPI served that day; yours will be newer, which is the point of the lesson."
+sources:
+  - { label: "Python documentation: venv", url: "https://docs.python.org/3/library/venv.html" }
+  - { label: "Python Packaging User Guide: Install packages in a virtual environment using pip and venv", url: "https://packaging.python.org/en/latest/guides/installing-using-pip-and-virtual-environments/" }
+  - { label: "Python Packaging User Guide: Writing your pyproject.toml", url: "https://packaging.python.org/en/latest/guides/writing-pyproject-toml/" }
+  - { label: "Python Packaging User Guide: install_requires vs requirements files", url: "https://packaging.python.org/en/latest/discussions/install-requires-vs-requirements/" }
+  - { label: "Python Packaging User Guide: Dependency groups specification", url: "https://packaging.python.org/en/latest/specifications/dependency-groups/" }
+  - { label: "Python Packaging User Guide: pylock.toml specification", url: "https://packaging.python.org/en/latest/specifications/pylock-toml/" }
+  - { label: "Python Packaging User Guide: Externally managed environments", url: "https://packaging.python.org/en/latest/specifications/externally-managed-environments/" }
+  - { label: "uv documentation: Locking and syncing", url: "https://docs.astral.sh/uv/concepts/projects/sync/" }
+  - { label: "pip-tools documentation", url: "https://pip-tools.readthedocs.io/en/stable/" }
+---
+
+A pipeline that ran yesterday fails today with an `ImportError` nobody can reproduce locally. The code did not change; a dependency did. Most "works on my machine" problems in Python come from three places: a different Python version, a different set of installed packages, or packages installed in the wrong place. Virtual environments fix the third, lock files fix the second, and pinning the interpreter (or the container image, in the next lesson) fixes the first.
+
+## Virtual environments: one set of packages per project
+
+A virtual environment is a directory with its own `python` executable and its own `site-packages`, so each project can have its own versions of each library without touching the system Python or other projects.
+
+```bash
+mkdir orders-etl && cd orders-etl
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+which python
+python -c "import sys; print(sys.prefix != sys.base_prefix, sys.prefix.endswith('.venv'))"
+```
+
+```text
+/home/asha/orders-etl/.venv/bin/python
+True True
+```
+
+(The home-directory path is shortened here and below; yours is wherever you created the project.) Inside an environment, `sys.prefix` points to the environment and `sys.base_prefix` to the Python it was created from. A pipeline can check that it is running where you expect:
+
+```python
+import sys
+from importlib.metadata import version
+
+in_venv = sys.prefix != sys.base_prefix
+print(f"Python {sys.version_info.major}.{sys.version_info.minor}, virtual environment: {in_venv}")
+print("pip", version("pip"))
+```
+
+Run inside the environment above, it printed `Python 3.11, virtual environment: True` and `pip 24.0`.
+
+Rules that save time:
+
+- **Use `python -m pip`**, not bare `pip`. It guarantees you install into the interpreter you are about to run, which is the most common source of "I installed it but it is not found".
+- **Activation is a convenience.** It only puts `.venv/bin` first on your `PATH`. Scripts, cron jobs and Dockerfiles can call `.venv/bin/python` directly without activating.
+- **Environments are disposable and not portable.** The Python docs describe them as something to delete and recreate, not move or copy. Never commit `.venv/` (add it to `.gitignore`); commit the files that let you recreate it.
+- **Leave the system Python alone.** Many Linux distributions mark it as *externally managed* (PEP 668), and `pip install` outside a virtual environment then fails with `externally-managed-environment`. That is a feature: the operating system's own tools depend on those packages.
+
+## pip, requirements.txt and the transitive dependency problem
+
+```bash
+python -m pip install requests==2.32.3
+python -m pip freeze > requirements.txt
+cat requirements.txt
+```
+
+```text
+certifi==2026.7.22
+charset-normalizer==3.5.2
+idna==3.20
+requests==2.32.3
+urllib3==2.8.0
+```
+
+You asked for one package and got five: `requests` depends on four others (its *transitive* dependencies). `pip freeze` records exactly what is installed, with `==` pins, which is what you want for reproducing an environment. Its weakness is that it mixes what you asked for with what came along, and has no record of why each package is there, so nobody dares remove a line.
+
+Pinning only your direct dependency is not enough. Here is the same one-line requirement, `requests>=2.31`, resolved as of June 2024 and as of today (`uv pip compile --exclude-newer` resolves as if newer releases did not exist yet):
+
+```bash
+echo "requests>=2.31" > requirements.in
+uv pip compile requirements.in --exclude-newer 2024-06-01 -q -o old.txt
+uv pip compile requirements.in -q -o new.txt
+diff old.txt new.txt
+```
+
+```text
+2,3c2,3
+< #    uv pip compile requirements.in --exclude-newer 2024-06-01 -o old.txt
+< certifi==2024.2.2
+---
+> #    uv pip compile requirements.in -o new.txt
+> certifi==2026.7.22
+5c5
+< charset-normalizer==3.3.2
+---
+> charset-normalizer==3.5.2
+7c7
+< idna==3.7
+---
+> idna==3.20
+9c9
+< requests==2.32.3
+---
+> requests==2.34.2
+11c11
+< urllib3==2.2.1
+---
+> urllib3==2.8.0
+```
+
+Every package changed. A developer who installed in 2024 and a CI job that installs today run different code from the same requirement. Usually that is harmless; occasionally a minor release changes behaviour, and that is the day the pipeline breaks for one person and not another.
+
+## Abstract dependencies vs lock files
+
+The Python Packaging User Guide separates two kinds of requirement:
+
+| | Abstract (what the code needs) | Concrete / locked (what to install) |
+|---|---|---|
+| Where | `pyproject.toml` `dependencies` | `requirements.txt` from a compiler, `uv.lock`, `pylock.toml` |
+| Looks like | `requests>=2.31,<3` | `requests==2.34.2` plus every transitive package, ideally with hashes |
+| Who edits it | you, by hand | a tool, never by hand |
+| Purpose | say which versions are compatible | reproduce one exact, tested environment |
+
+Libraries that others install should declare ranges and not pin, so they do not conflict with other packages. **Applications and pipelines**, which is most of what Data Engineers ship, should declare ranges *and* deploy from a lock file. You update the lock deliberately (for example weekly, or with an automated pull request), run the tests, and merge.
+
+`pylock.toml` is the standard lock file format defined by PEP 751 in 2025; tools are adopting it, while `uv.lock` and compiled `requirements.txt` files remain the common formats today.
+
+## pyproject.toml: make the pipeline an installable package
+
+Turning your pipeline into a package means imports work the same in tests, notebooks, containers and the scheduler, with no `sys.path` hacks. A minimal project with the recommended `src/` layout:
+
+```text
+orders-etl/
+  pyproject.toml
+  src/orders_etl/__init__.py
+  src/orders_etl/cli.py
+  tests/test_cli.py
+```
+
+```toml
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "orders-etl"
+version = "0.1.0"
+description = "Daily orders load"
+requires-python = ">=3.11"
+dependencies = [
+    "requests>=2.31,<3",
+]
+
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.2"]
+
+[project.scripts]
+orders-etl = "orders_etl.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+```
+
+- `[build-system]` names the build backend (hatchling here; setuptools, flit-core, pdm-backend and uv_build are also common).
+- `requires-python` stops installation on an interpreter you never tested.
+- `dependencies` are the abstract runtime requirements.
+- `optional-dependencies` are *extras* users opt into: `pip install "orders-etl[postgres]"`.
+- `[project.scripts]` creates an `orders-etl` command that calls `main()`.
+- `[dependency-groups]` (PEP 735) holds development-only tools such as pytest; they are not part of the published package.
+
+`src/orders_etl/cli.py`:
+
+```python
+import sys
+from importlib.metadata import version
+
+
+def main() -> int:
+    print(f"orders-etl {version('orders-etl')} on Python {sys.version_info.major}.{sys.version_info.minor}")
+    print(f"requests {version('requests')}")
+    return 0
+```
+
+An *editable* install (`-e`) links the environment to your source tree, so code changes apply without reinstalling:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -q -e .
+.venv/bin/orders-etl
+```
+
+```text
+orders-etl 0.1.0 on Python 3.11
+requests 2.34.2
+```
+
+## Locking with uv
+
+[uv](https://docs.astral.sh/uv/) is a fast package and project manager that reads `pyproject.toml`, writes a cross-platform `uv.lock`, and creates the virtual environment for you:
+
+```bash
+uv lock
+uv sync --locked
+uv run orders-etl
+uv run pytest -q
+```
+
+```text
+Using CPython 3.11.15 interpreter at: /usr/bin/python3
+Resolved 16 packages in 289ms
+Using CPython 3.11.15 interpreter at: /usr/bin/python3
+Creating virtual environment at: .venv
+Resolved 16 packages in 3ms
+Prepared 11 packages in 2.32s
+Installed 11 packages in 11ms
+ + certifi==2026.7.22
+ + charset-normalizer==3.5.2
+ + idna==3.20
+ + iniconfig==2.3.1
+ + orders-etl==0.1.0 (from file:///home/asha/orders-etl)
+ + packaging==26.3
+ + pluggy==1.7.0
+ + pygments==2.21.0
+ + pytest==9.1.1
+ + requests==2.34.2
+ + urllib3==2.8.0
+orders-etl 0.1.0 on Python 3.11
+requests 2.34.2
+.                                                                        [100%]
+1 passed in 0.01s
+```
+
+(Build lines and the long temporary path are trimmed.) `uv.lock` resolved 16 packages, covering the extras and dev group, and records each with its source URL and SHA-256 hashes; `uv sync` installed the 11 needed for the default install plus the `dev` group. Commit `uv.lock`.
+
+`--locked` is the flag to use in CI and Docker builds: it installs exactly the lock file and fails if `pyproject.toml` has changed without the lock being updated. After adding `python-dateutil>=2.9` to `dependencies` without running `uv lock`:
+
+```bash
+uv sync --locked; echo "exit=$?"
+```
+
+```text
+Resolved 18 packages in 884ms
+The lockfile at `uv.lock` needs to be updated, but `--locked` was provided. To update the lockfile, run `uv lock`.
+exit=1
+```
+
+For tools that only read requirements files, `uv export --format requirements-txt --no-dev` writes the locked set in that format.
+
+## Locking with pip-tools
+
+[pip-tools](https://pip-tools.readthedocs.io/) does the same job with plain pip: you edit `requirements.in` (abstract), `pip-compile` writes `requirements.txt` (locked), and `pip-sync` makes an environment match it exactly.
+
+```bash
+echo "requests>=2.31,<3" > requirements.in
+pip-compile -q --generate-hashes requirements.in
+head -n 12 requirements.txt
+```
+
+```text
+#
+# This file is autogenerated by pip-compile with Python 3.11
+# by the following command:
+#
+#    pip-compile --generate-hashes requirements.in
+#
+certifi==2026.7.22 \
+    --hash=sha256:62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775 \
+    --hash=sha256:741e2c3b351ddf169a738da9f2c048608ff7f2c5cc02f1ebc6b118bb090d5d55
+    # via requests
+charset-normalizer==3.5.2 \
+    --hash=sha256:01077390b03f7988f11d700a2194e69b119741a86b1a638b1db88891e3eced8e \
+```
+
+Install it with `python -m pip install --require-hashes -r requirements.txt`. With hashes, pip refuses any file whose contents differ from what was locked, which protects against a tampered or re-uploaded package as well as against drift. The `# via` comments answer "why is this package here".
+
+## Why "works on my machine" happens
+
+When the same code behaves differently in two places, compare these in order:
+
+1. **Python version.** `python --version` on both sides. 3.11 and 3.13 differ in behaviour and in which wheels exist. Pin it with `requires-python`, a `.python-version` file (read by uv and pyenv) and, in production, the container base image.
+2. **Installed packages.** `python -m pip freeze` on both sides and `diff` the output. If either side did not install from a lock file, this is usually the answer.
+3. **Which environment is active.** `which python` and `python -m pip --version` (it prints the path it installs into). A package installed globally, or in another project's environment, can mask a missing dependency.
+4. **System libraries and platform.** Packages with compiled code (database drivers, `pyarrow`, cryptography) ship different wheels per operating system and CPU; an Apple Silicon laptop and a Linux x86-64 server install different binaries. Some fall back to compiling from source when no wheel exists, which then needs system headers.
+5. **Environment and configuration.** Environment variables, time zone (`TZ`), locale, credentials and config files that exist on one machine only.
+6. **Data.** The same code on a different input. Not an environment problem, but often mistaken for one.
+
+Containers (the next lesson) remove 1, 3 and 4 and make 5 explicit, which is why production pipelines usually ship as images built from a lock file.
+
+## Worked example: from a loose script to a reproducible project
+
+A teammate's `extract.py` runs on their laptop with "whatever is installed". To make it reproducible:
+
+1. Create the `src/` layout and a `pyproject.toml` with `requires-python` and the direct dependencies as ranges (`requests>=2.31,<3`), found by reading the imports, not by copying `pip freeze`.
+2. Add a `[project.scripts]` entry point so the scheduler runs `orders-etl --date 2026-10-15` instead of `python path/to/extract.py`.
+3. Put pytest and linters in a `dev` dependency group.
+4. Run `uv lock` (or `pip-compile --generate-hashes`), commit the lock file, and add `.venv/` to `.gitignore`.
+5. In CI and the Dockerfile, install with `uv sync --locked` (or `pip install --require-hashes -r requirements.txt`), so a stale lock fails the build instead of silently resolving new versions.
+6. Schedule a regular dependency update: re-lock, run tests, review the diff of the lock file, merge.
+
+## Common mistakes
+
+- Installing into the system Python or the wrong environment because of bare `pip` instead of `python -m pip`.
+- Committing `.venv/`, or copying an environment to another machine instead of recreating it.
+- Hand-editing a lock file, or treating `pip freeze` output as the list of direct dependencies.
+- Pinning only direct dependencies and assuming the environment is reproducible.
+- Pinning exact versions in a library's `dependencies`, which causes conflicts for everyone who installs it.
+- Installing in CI without `--locked` or `--require-hashes`, so CI tests different versions than production runs.
+- Never updating the lock file, then facing a year of upgrades and security fixes at once.
+
+## In an interview
+
+Typical questions: "what is a virtual environment and why use one", "requirements.txt vs pyproject.toml", "how do you make sure production runs the same versions you tested", and "a job works locally but fails in Airflow, how do you debug it". Strong answers distinguish abstract requirements from a lock file that includes transitive dependencies and hashes, mention that the Python version and platform-specific wheels matter too, and describe a concrete flow: `pyproject.toml` plus `uv.lock` or compiled requirements, `--locked` installs in CI and Docker, and scheduled updates. For the debugging question, walk through the checklist above: Python version, `pip freeze` diff, active environment, platform, configuration.
+
+## Key takeaway
+
+One virtual environment per project, created from files in Git and never committed itself. Declare what the code needs in `pyproject.toml`, lock what you install with uv or pip-tools, install with `--locked` or `--require-hashes` everywhere that matters, and pin the Python version. Next, package the whole runtime, interpreter included, with [Docker for Data Engineers](/dev-tools/docker-for-data-engineers/).

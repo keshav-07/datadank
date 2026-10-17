@@ -1,0 +1,523 @@
+---
+publishedDate: "2026-10-16"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
+title: "The Command Line for Data Work: Pipes, grep, awk, jq and Large Files"
+seoTitle: "Command Line for Data Engineers: grep, awk, jq"
+description: "Command line for data engineers: pipes, redirection, grep, awk, sort and jq to inspect large CSV and JSON files, plus exit codes, set -euo pipefail and SSH."
+technology: ["dev-tools"]
+topic: ["command-line", "bash", "jq"]
+difficulty: "Beginner"
+learningObjectives:
+  - "Move around a file system and combine small tools with pipes and redirection"
+  - "Count, filter, aggregate and deduplicate CSV files with grep, cut, sort, uniq and awk"
+  - "Query and flatten JSON Lines with jq"
+  - "Inspect and sample a file too large to open in an editor"
+  - "Read exit codes and make scripts stop on the first error with set -euo pipefail"
+  - "Use environment variables and SSH safely"
+prerequisites: ["articles:dev-tools/dev-tools-for-data-engineers"]
+related: ["articles:python/file-io-csv-json", "articles:delta-lake/json-vs-parquet", "articles:dev-tools/shell-scripting-for-pipelines"]
+previous: "articles:dev-tools/dev-tools-for-data-engineers"
+next: "articles:dev-tools/git-for-data-engineers"
+versionContext: "Every command was run in a temporary directory on Ubuntu 24.04 with GNU bash 5.2, GNU coreutils 9.4, GNU grep 3.11, GNU sed 4.9, GNU findutils 4.9, mawk 1.3.4 and jq 1.7; the output shown is the real output. macOS ships BSD versions of these tools, which differ in some flags (noted where it matters)."
+sources:
+  - { label: "GNU Bash Reference Manual", url: "https://www.gnu.org/software/bash/manual/bash.html" }
+  - { label: "GNU Bash manual: Redirections", url: "https://www.gnu.org/software/bash/manual/html_node/Redirections.html" }
+  - { label: "GNU Bash manual: The Set Builtin", url: "https://www.gnu.org/software/bash/manual/html_node/The-Set-Builtin.html" }
+  - { label: "GNU Coreutils manual", url: "https://www.gnu.org/software/coreutils/manual/coreutils.html" }
+  - { label: "GNU Awk User's Guide", url: "https://www.gnu.org/software/gawk/manual/gawk.html" }
+  - { label: "GNU Findutils manual", url: "https://www.gnu.org/software/findutils/manual/html_mono/find.html" }
+  - { label: "jq manual", url: "https://jqlang.org/manual/" }
+  - { label: "OpenSSH ssh(1) manual page", url: "https://man.openbsd.org/ssh" }
+---
+
+A file lands in the landing zone and something downstream breaks. Before you open a notebook, a terminal can tell you how many rows the file has, whether the header changed, which values are new and whether the last line is truncated. These checks take seconds, they work on files far bigger than memory, and they run on any server you can SSH into.
+
+This lesson uses two small files you can recreate with the commands below, plus a one-million-row CSV generated locally. Run the examples in an empty directory.
+
+```bash
+mkdir -p ~/cli-lab && cd ~/cli-lab
+cat > orders.csv <<'EOF'
+order_id,customer_id,country,status,amount
+1001,C01,US,shipped,120.50
+1002,C02,DE,pending,35.00
+1003,C01,US,shipped,89.99
+1004,C03,IN,cancelled,15.00
+1005,C04,US,shipped,240.00
+1006,C02,DE,shipped,60.00
+1007,C05,IN,shipped,42.10
+1008,C03,IN,pending,18.75
+EOF
+```
+
+`cat > file <<'EOF'` is a *here document*: everything up to the line `EOF` becomes the input of `cat`, which writes it to the file. Quoting `'EOF'` stops the shell from expanding `$variables` inside it.
+
+## Navigation and the file system
+
+You need about ten commands to get around:
+
+| Command | What it does |
+|---|---|
+| `pwd` | print the current directory |
+| `ls -lah` | list files with sizes, permissions and hidden files |
+| `cd dir`, `cd ..`, `cd -` | change directory, go up, go back to the previous one |
+| `mkdir -p a/b/c` | create nested directories (no error if they exist) |
+| `cp`, `mv`, `rm` | copy, move or rename, delete (there is no recycle bin) |
+| `cat`, `less` | print a file, page through a file (`q` quits, `/text` searches) |
+| `du -sh dir`, `df -h` | size of a directory, free space on each disk |
+| `man cmd`, `cmd --help` | the manual for a command |
+
+Paths starting with `/` are absolute; everything else is relative to the current directory. `~` is your home directory. Use `rm -r` with care, never with an unquoted variable you have not checked: `rm -rf "$TARGET_DIR/"` with an empty variable deletes from the root.
+
+## Pipes and redirection
+
+Every command has three streams: standard input (0), standard output (1) and standard error (2). A pipe `|` connects the output of one command to the input of the next, so small tools combine into a pipeline. Redirection sends a stream to a file:
+
+| Syntax | Meaning |
+|---|---|
+| `cmd > out.txt` | write stdout to a file (overwrite) |
+| `cmd >> out.txt` | append stdout |
+| `cmd 2> err.txt` | write stderr to a file |
+| `cmd > all.log 2>&1` | stdout to the file, then stderr to wherever stdout goes |
+| `cmd < in.txt` | read stdin from a file |
+| `cmd > /dev/null` | discard output |
+
+Keeping errors separate from data matters in pipelines: a script that mixes an error message into its CSV output produces a corrupt file.
+
+```bash
+ls orders.csv /nope > listing.txt 2> errors.txt; echo "exit=$?"
+cat listing.txt
+cat errors.txt
+```
+
+```text
+exit=2
+orders.csv
+ls: cannot access '/nope': No such file or directory
+```
+
+The data went to one file and the error to the other. Order matters when you combine them: `> all.log 2>&1` sends both streams to the file, while `2>&1 > all.log` sends errors to the terminal, because redirections are applied left to right.
+
+## Looking at a file: head, tail, wc, cut
+
+```bash
+wc -l orders.csv
+head -n 3 orders.csv
+tail -n +2 orders.csv | wc -l
+```
+
+```text
+9 orders.csv
+order_id,customer_id,country,status,amount
+1001,C01,US,shipped,120.50
+1002,C02,DE,pending,35.00
+8
+```
+
+`wc -l` counts newline characters, so the header is included and a final line without a trailing newline is *not* counted. `tail -n +2` starts printing at line 2, which is the standard way to skip a header. `tail -f app.log` follows a file as it grows, useful for watching a running job's log.
+
+To see which number each column has before using `cut` or `awk`:
+
+```bash
+awk -F, 'NR==1 { for (i = 1; i <= NF; i++) print i": "$i; exit }' orders.csv
+```
+
+```text
+1: order_id
+2: customer_id
+3: country
+4: status
+5: amount
+```
+
+`cut -d, -f3` then extracts column 3. Both `cut` and `awk -F,` split on every comma, so they are only correct for simple CSV without quoted fields such as `"Smith, Jane"`. For real CSV with quoting, use Python's `csv` module, DuckDB or a CSV-aware tool; the shell is for quick checks.
+
+## Counting and ranking: sort and uniq
+
+```bash
+cut -d, -f3 orders.csv | tail -n +2 | sort | uniq -c | sort -rn
+```
+
+```text
+      3 US
+      3 IN
+      2 DE
+```
+
+This is the shell's `GROUP BY country ORDER BY count DESC`. `uniq` only collapses *adjacent* duplicates, which is why `sort` comes first. Other useful variants:
+
+```bash
+tail -n +2 orders.csv | sort -t, -k5,5 -rn | head -n 3      # top 3 orders by amount
+tail -n +2 orders.csv | cut -d, -f2 | sort -u | wc -l       # distinct customers
+```
+
+```text
+1005,C04,US,shipped,240.00
+1001,C01,US,shipped,120.50
+1003,C01,US,shipped,89.99
+5
+```
+
+`-t,` sets the separator, `-k5,5` sorts on field 5 only (without the `,5` the key runs to the end of the line) and `-n` compares numerically, so `240` sorts above `89.99`. `uniq -d` prints only duplicated lines, a quick primary-key check: `cut -d, -f1 file.csv | tail -n +2 | sort | uniq -d` prints nothing when every id is unique.
+
+## Filtering and transforming: grep, sed, awk
+
+`grep` selects lines that match a pattern, `-c` counts them, `-v` inverts the match, `-i` ignores case and `-E` enables extended regular expressions:
+
+```bash
+grep -c ',shipped,' orders.csv
+grep -v ',shipped,' orders.csv
+```
+
+```text
+5
+order_id,customer_id,country,status,amount
+1002,C02,DE,pending,35.00
+1004,C03,IN,cancelled,15.00
+1008,C03,IN,pending,18.75
+```
+
+`sed` edits a stream; `s/old/new/` replaces the first match on each line, `s/old/new/g` replaces every match:
+
+```bash
+sed 's/,cancelled,/,canceled,/' orders.csv | grep canceled
+```
+
+```text
+1004,C03,IN,canceled,15.00
+```
+
+`sed -i` edits a file in place. GNU sed accepts `sed -i 's/a/b/' file`; BSD sed on macOS needs `sed -i '' 's/a/b/' file`. Prefer writing to a new file in pipelines so the input stays untouched.
+
+`awk` is a small language for column-oriented work. `-F,` sets the field separator, `$4` is the fourth field, `NR` is the line number, and the `END` block runs after the last line. Revenue of shipped orders per country:
+
+```bash
+awk -F, 'NR > 1 && $4 == "shipped" { total[$3] += $5 }
+         END { for (country in total) printf "%s %.2f\n", country, total[country] }' orders.csv | sort
+```
+
+```text
+DE 60.00
+IN 42.10
+US 450.49
+```
+
+`for (country in total)` visits keys in no guaranteed order, so the output is piped to `sort`. awk does arithmetic in floating point, which is fine for a sanity check and wrong for financial reconciliation; use SQL `NUMERIC` or Python `Decimal` for that.
+
+## Finding files and running a command on each: find and xargs
+
+Recreate a small landing zone with a file name that contains spaces, an empty file and an old file:
+
+```bash
+mkdir -p landing/2026-10-01 landing/2026-10-02
+cp orders.csv landing/2026-10-01/orders.csv
+cp orders.csv "landing/2026-10-02/orders part 2.csv"
+touch -d '2026-09-01' landing/2026-10-01/orders.csv
+: > landing/2026-10-02/empty.csv
+```
+
+```bash
+find landing -type f -name '*.csv' | sort
+find landing -type f -empty
+find landing -type f -name '*.csv' -mtime +30
+```
+
+```text
+landing/2026-10-01/orders.csv
+landing/2026-10-02/empty.csv
+landing/2026-10-02/orders part 2.csv
+landing/2026-10-02/empty.csv
+landing/2026-10-01/orders.csv
+```
+
+The three commands print all CSV files, the empty ones (a common sign of a failed export), and files modified more than 30 days ago. Quote the pattern (`'*.csv'`) so the shell passes it to `find` instead of expanding it.
+
+`xargs` turns lines of input into arguments for another command. By default it splits on whitespace, so a file name with a space breaks:
+
+```bash
+find landing -name '*.csv' | xargs wc -l
+```
+
+```text
+  0 landing/2026-10-02/empty.csv
+wc: landing/2026-10-02/orders: No such file or directory
+wc: part: No such file or directory
+```
+
+The fix is to separate names with a NUL byte, which cannot appear in a path: `-print0` on the `find` side and `-0` on the `xargs` side. `-size +0` skips empty files:
+
+```bash
+find landing -type f -name '*.csv' -size +0 -print0 | xargs -0 wc -l
+```
+
+```text
+  9 landing/2026-10-02/orders part 2.csv
+  9 landing/2026-10-01/orders.csv
+ 18 total
+```
+
+`xargs -P 4` runs up to four commands in parallel, handy for compressing or uploading many files. `find ... -exec cmd {} +` is an alternative that needs no `xargs`.
+
+## JSON on the command line: jq
+
+APIs and event streams produce JSON, usually as JSON Lines (one object per line). `jq` filters, reshapes and validates it:
+
+```bash
+cat > events.jsonl <<'EOF'
+{"event_id":"e1","user":{"id":7,"country":"US"},"type":"click","ts":"2026-10-01T09:00:00Z"}
+{"event_id":"e2","user":{"id":8,"country":"DE"},"type":"view","ts":"2026-10-01T09:01:10Z"}
+{"event_id":"e3","user":{"id":7,"country":"US"},"type":"purchase","ts":"2026-10-01T09:05:42Z","amount":19.99}
+{"event_id":"e4","user":{"id":9,"country":null},"type":"view","ts":"2026-10-01T09:06:00Z"}
+EOF
+jq -c 'select(.type == "purchase")' events.jsonl
+jq -r '[.event_id, .user.id, (.user.country // "unknown")] | @csv' events.jsonl
+```
+
+```text
+{"event_id":"e3","user":{"id":7,"country":"US"},"type":"purchase","ts":"2026-10-01T09:05:42Z","amount":19.99}
+"e1",7,"US"
+"e2",8,"DE"
+"e3",7,"US"
+"e4",9,"unknown"
+```
+
+`.user.id` reaches into nested objects, `//` supplies a default for `null` or missing values, `@csv` produces properly quoted CSV, `-r` prints raw strings instead of JSON strings and `-c` prints one compact object per line. To aggregate, `-s` (slurp) reads every line into one array first, which uses memory proportional to the file:
+
+```bash
+jq -s 'group_by(.type) | map({type: .[0].type, n: length})' events.jsonl
+```
+
+```text
+[
+  {
+    "type": "click",
+    "n": 1
+  },
+  {
+    "type": "purchase",
+    "n": 1
+  },
+  {
+    "type": "view",
+    "n": 2
+  }
+]
+```
+
+For large files, stream instead: `jq -r '.type' events.jsonl | sort | uniq -c` gives the same counts in constant memory. Two checks worth remembering: `jq -c 'keys' events.jsonl | sort | uniq -c` shows every distinct set of keys (schema drift at a glance), and jq exits non-zero on invalid JSON, so it doubles as a validator:
+
+```bash
+jq -c 'keys' events.jsonl | sort | uniq -c
+echo '{"a":1,"b":' | jq . ; echo "exit=$?"
+```
+
+```text
+      1 ["amount","event_id","ts","type","user"]
+      3 ["event_id","ts","type","user"]
+jq: parse error: Unfinished JSON term at EOF at line 2, column 0
+exit=5
+```
+
+## Inspecting and sampling large files
+
+Never open a multi-gigabyte file in an editor. Generate a one-million-row file to practise on:
+
+```bash
+python3 -c "
+import random; random.seed(1)
+with open('big.csv', 'w') as f:
+    f.write('id,country,amount\n')
+    for i in range(1, 1000001):
+        f.write(f'{i},{random.choice([\"US\", \"DE\", \"IN\", \"BR\"])},{random.randint(1, 500)}\n')
+"
+du -h big.csv
+wc -l big.csv
+head -n 1 big.csv; tail -n 2 big.csv
+```
+
+```text
+14M	big.csv
+1000001 big.csv
+id,country,amount
+999999,DE,300
+1000000,DE,149
+```
+
+`head` and `tail` read only the start and end of the file, so they are instant at any size; `tail` is how you spot a truncated last line. `wc -l` reads the whole file once, sequentially, which is about as fast as the disk allows.
+
+A random sample that keeps the header (your rows will differ, `shuf` is random):
+
+```bash
+(head -n 1 big.csv; tail -n +2 big.csv | shuf -n 5) > sample.csv
+cat sample.csv
+```
+
+```text
+id,country,amount
+131455,BR,447
+133751,DE,140
+991567,IN,413
+415954,BR,25
+81027,IN,226
+```
+
+Check structure before loading: rows with the wrong number of fields usually mean an unquoted delimiter or a truncated write.
+
+```bash
+awk -F, 'NR > 1 && NF != 3 { bad++ } END { print bad+0, "malformed rows" }' big.csv
+```
+
+```text
+0 malformed rows
+```
+
+Compressed files do not need to be unpacked to disk: `zcat file.csv.gz | head`, `gzip -dc` on macOS, and `zcat file.csv.gz | wc -l`. Gzip took this file from 14 MB to 4.0 MB. For repeated questions about a big file, load it into DuckDB, which reads CSV, JSON and Parquet directly; for a one-off "how many rows, what does the end look like", the shell is quicker.
+
+## Exit codes and set -euo pipefail
+
+Every command returns an exit status: `0` means success, anything else means failure. `$?` holds the status of the last command, and schedulers such as cron, Airflow or a CI system decide success or failure from the exit status of your script. Some commands use specific codes: `grep` returns `1` when nothing matched and `2` on an error such as a missing file.
+
+```bash
+grep -q ',BR,' orders.csv; echo "grep exit=$?"
+false | true; echo "without pipefail: $?"
+set -o pipefail; false | true; echo "with pipefail: $?"
+```
+
+```text
+grep exit=1
+without pipefail: 0
+with pipefail: 1
+```
+
+By default a pipeline's status is the status of its *last* command, so a failed `curl` piped into `gzip` looks like success. By default a script also carries on after a failed command. Compare:
+
+```bash
+cat > unsafe.sh <<'EOF'
+#!/usr/bin/env bash
+cp /nope/orders.csv staging/
+echo "load finished"
+EOF
+bash unsafe.sh; echo "exit=$?"
+```
+
+```text
+cp: cannot stat '/nope/orders.csv': No such file or directory
+load finished
+exit=0
+```
+
+The script reported success after the copy failed. Add one line at the top:
+
+```bash
+cat > safe.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cp /nope/orders.csv staging/
+echo "load finished"
+EOF
+bash safe.sh; echo "exit=$?"
+```
+
+```text
+cp: cannot stat '/nope/orders.csv': No such file or directory
+exit=1
+```
+
+- `-e` (errexit): exit when a command fails.
+- `-u` (nounset): treat an unset variable as an error instead of an empty string.
+- `-o pipefail`: a pipeline fails if any command in it fails, not just the last one.
+
+`set -e` has documented exceptions: it does not fire for a command tested by `if`, `while` or `until`, for any command in a `&&` or `||` list except the last one, or for a command negated with `!`. It is a safety net, not a substitute for checking the results that matter. It also catches commands whose failure you expected, so make those explicit:
+
+```bash
+cat > count.sh <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+br_orders=$(grep ',BR,' orders.csv | wc -l)
+echo "BR orders: ${br_orders}"
+EOF
+bash count.sh; echo "exit=$?"
+```
+
+```text
+exit=1
+```
+
+No BR orders exist, `grep` returned 1, `pipefail` failed the pipeline and `-e` stopped the script silently. Use `grep -c ',BR,' orders.csv || true`, which prints `BR orders: 0` and exits 0.
+
+## Environment variables
+
+Configuration such as database hosts, buckets and credentials reaches a program through environment variables. A plain assignment is visible only in the current shell; `export` makes it visible to child processes:
+
+```bash
+DB_NAME=analytics
+bash -c 'echo "child sees: ${DB_NAME:-<unset>}"'
+export DB_NAME
+bash -c 'echo "child sees: ${DB_NAME:-<unset>}"'
+echo "${BATCH_SIZE:-500}"
+```
+
+```text
+child sees: <unset>
+child sees: analytics
+500
+```
+
+`${VAR:-default}` substitutes a default when the variable is unset or empty, and with `set -u`, `${TARGET_DIR}` on an unset variable stops the script with `TARGET_DIR: unbound variable`, which is what you want for required settings. `VAR=value command` sets a variable for that one command only. To load a local `.env` file of `KEY=value` lines into the environment:
+
+```bash
+set -a; . ./.env; set +a
+```
+
+`set -a` exports every variable assigned while it is on. Keep `.env` out of Git (see the Git lesson), and remember that environment variables are visible to every process the job starts and to anyone who can inspect the process. Production credentials belong in a secrets manager that injects them at run time.
+
+## SSH basics
+
+SSH gives you a shell on a remote machine: an edge node, a bastion host, a VM running a database. Use key-based authentication, not passwords.
+
+{/* noexec */}
+```bash
+# noexec: needs network access and a remote host
+ssh-keygen -t ed25519 -C "you@example.com"     # creates ~/.ssh/id_ed25519 and id_ed25519.pub
+ssh-copy-id analyst@etl-01.example.com          # appends the public key to the server's authorized_keys
+ssh analyst@etl-01.example.com                  # interactive shell
+ssh analyst@etl-01.example.com 'df -h /data'    # run one command and return
+scp report.csv analyst@etl-01.example.com:/data/inbox/
+ssh -L 5433:db.internal:5432 analyst@bastion.example.com   # local port 5433 tunnels to the private database
+```
+
+Put repeated settings in `~/.ssh/config` (a `Host` alias with `HostName`, `User` and `IdentityFile`) so `ssh etl-01` is enough. Never share or commit the private key (the file without `.pub`), and protect it with a passphrase. For long jobs on a remote host, run them in `tmux` or `screen`, or better, through the scheduler, because closing your SSH session ends the processes it started.
+
+## Worked example: triage a new file in two minutes
+
+A vendor delivers `big.csv` and the load fails. A quick checklist using only the tools above:
+
+```bash
+du -h big.csv                                                   # size: is it plausible?
+head -n 1 big.csv                                               # header: did a column move or get renamed?
+tail -n 2 big.csv                                               # end: is the last line complete?
+wc -l big.csv                                                   # row count vs. yesterday
+awk -F, 'NR > 1 && NF != 3 { bad++ } END { print bad+0, "malformed rows" }' big.csv
+cut -d, -f1 big.csv | tail -n +2 | sort | uniq -d | head        # duplicate ids
+cut -d, -f2 big.csv | tail -n +2 | sort | uniq -c               # value distribution of a category
+```
+
+On the generated file the duplicate check prints nothing and the field check prints `0 malformed rows`, so the next suspect is the loader itself. Each command reads the file sequentially and needs almost no memory, so the same checklist works on a 50 GB file.
+
+## Common mistakes
+
+- Using `cut` or `awk -F,` on CSV with quoted commas and trusting the result.
+- Forgetting that `uniq` needs sorted input, so counts come out split.
+- `sort` on numbers without `-n`, so `100` sorts before `9`.
+- Piping `find` into `xargs` without `-print0` and `-0`, which breaks on spaces in file names.
+- `jq -s` on a multi-gigabyte file, which loads everything into memory.
+- Scripts without `set -euo pipefail`, which report success after a failed step.
+- `rm -rf "$DIR/"` with an unchecked variable, and `> file` when you meant `>> file`.
+
+## In an interview
+
+Command-line questions usually appear in pairing or take-home rounds: "how would you check this file before loading it", "count distinct values in column 3 of a 20 GB CSV", or "why did the job show success when the copy failed". Strong answers name the pipeline (`cut | sort | uniq -c`), explain why `uniq` needs `sort`, mention that `cut` breaks on quoted CSV, and explain exit codes and `pipefail`. If asked "shell or Python", say the shell is right for quick inspection and gluing commands together, and Python or SQL is right once you need correct CSV parsing, types, tests or anything you will maintain.
+
+## Key takeaway
+
+Learn a dozen tools well: `head`, `tail`, `wc`, `cut`, `sort`, `uniq`, `grep`, `sed`, `awk`, `find`, `xargs` and `jq`. Combine them with pipes, keep errors on stderr, start every script with `set -euo pipefail`, and you can answer most questions about a file before writing any code. Next, put your work under version control with [Git for Data Engineers](/dev-tools/git-for-data-engineers/).

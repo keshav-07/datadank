@@ -6,8 +6,8 @@ technology: ["aws", "etl-elt"]
 topic: ["step-functions", "orchestration", "workflow"]
 difficulty: "Intermediate"
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
 learningObjectives:
   - "Read and write Amazon States Language definitions with Task, Choice, Map, Parallel, Succeed and Fail states"
   - "Choose between Standard and Express workflows from duration, semantics and cost"
@@ -15,11 +15,12 @@ learningObjectives:
   - "Design retries with backoff, catches and alerting"
   - "Integrate Glue, Lambda, Athena and EMR with the right integration pattern"
 prerequisites: ["articles:aws/glue-catalog-crawlers-etl", "articles:aws/lambda-for-data-pipelines"]
-related: ["articles:airflow/dags-scheduling-retries", "articles:etl-elt/pipeline-reliability-and-retries", "articles:etl-elt/idempotency-in-data-pipelines"]
+related: ["articles:airflow/dags-scheduling-retries", "articles:etl-elt/pipeline-reliability-and-retries", "articles:etl-elt/idempotency-in-data-pipelines", "interview-questions:aws/step-functions-vs-airflow-mwaa"]
 previous: "articles:aws/kinesis"
 next: "articles:aws/cloudwatch-monitoring"
 versionContext: "Workflow types and quotas checked against the AWS Step Functions Developer Guide in October 2026. The state machine definition was checked to parse as JSON and was run through a small local Python interpreter (Python 3.11) with mocked tasks; it models Task, Map, Parallel, Retry and Catch only and is not the Step Functions service. CLI commands were written from the documentation and not executed."
 sources:
+  - { label: "Amazon MWAA Serverless User Guide", url: "https://docs.aws.amazon.com/mwaa/latest/mwaa-serverless-userguide/what-is-mwaa-serverless.html" }
   - { label: "AWS Step Functions: Choosing workflow type", url: "https://docs.aws.amazon.com/step-functions/latest/dg/choosing-workflow-type.html" }
   - { label: "AWS Step Functions: Service quotas", url: "https://docs.aws.amazon.com/step-functions/latest/dg/service-quotas.html" }
   - { label: "AWS Step Functions: Map workflow state", url: "https://docs.aws.amazon.com/step-functions/latest/dg/state-map.html" }
@@ -485,7 +486,7 @@ Common shapes for data pipelines on Step Functions:
 
 | Need | Step Functions | Amazon MWAA (Airflow) |
 |---|---|---|
-| Serverless, pay per use | Yes | No, an environment runs continuously |
+| Serverless, pay per use | Yes | Provisioned MWAA: no, an environment runs continuously; MWAA Serverless (Airflow 3, YAML workflow definitions) bills task run time |
 | Python-defined DAGs, rich scheduling and backfill UI | No (JSON or JSONata; CDK can generate) | Yes |
 | Deep AWS integration with `.sync` waits | Yes | Through operators and sensors |
 | Multi-cloud and open-source operators | Limited | Yes |

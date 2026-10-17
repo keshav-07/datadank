@@ -6,8 +6,8 @@ technology: ["aws", "kafka"]
 topic: ["kinesis", "streaming", "real-time"]
 difficulty: "Intermediate"
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-09"
-reviewedDate: "2026-10-09"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
 learningObjectives:
   - "Explain streams, shards, partition keys, sequence numbers and retention in Kinesis Data Streams"
   - "Size a stream from shard limits and choose between provisioned and on-demand modes"
@@ -15,11 +15,12 @@ learningObjectives:
   - "Land streams in S3 with Amazon Data Firehose and process them with Managed Service for Apache Flink"
   - "Compare Kinesis Data Streams with Apache Kafka and Amazon MSK"
 prerequisites: ["articles:aws/lambda-for-data-pipelines", "articles:etl-elt/batch-vs-streaming"]
-related: ["articles:kafka/topics-partitions-consumer-groups", "articles:kafka/kafka-real-time-data-engineering", "system-designs:real-time-analytics-pipeline", "system-designs:clickstream-data-platform"]
+related: ["articles:kafka/topics-partitions-consumer-groups", "articles:kafka/kafka-real-time-data-engineering", "system-designs:real-time-analytics-pipeline", "system-designs:clickstream-data-platform", "interview-questions:aws/kinesis-data-streams-vs-msk"]
 previous: "articles:aws/emr"
 next: "articles:aws/step-functions"
 versionContext: "Limits and service names checked against the Kinesis Data Streams, Amazon Data Firehose and Managed Service for Apache Flink documentation in October 2026. The shard-sizing, partition-hashing and Firehose buffering models run locally on Python 3.11. AWS CLI and boto3 calls were written from the documentation and not executed."
 sources:
+  - { label: "Amazon Managed Service for Apache Flink 2.2", url: "https://docs.aws.amazon.com/managed-flink/latest/java/flink-2-2.html" }
   - { label: "Kinesis Data Streams: Terminology and concepts", url: "https://docs.aws.amazon.com/streams/latest/dev/key-concepts.html" }
   - { label: "Kinesis Data Streams: Quotas and limits", url: "https://docs.aws.amazon.com/streams/latest/dev/service-sizes-and-limits.html" }
   - { label: "Kinesis Data Streams: Enhanced fan-out consumers", url: "https://docs.aws.amazon.com/streams/latest/dev/enhanced-consumers.html" }
@@ -253,7 +254,7 @@ aws kinesisanalyticsv2 create-application --application-name sessionise-clicks \
   --application-configuration file://flink-app-config.json
 ```
 
-Check the documentation for the Flink runtime versions currently supported before choosing one.
+The example uses the Flink 1.20 runtime. The service now also supports **Apache Flink 2.2**, its first major-version upgrade, which brings breaking changes (removed APIs and metrics, new state-compatibility rules, connector version 6.0.0 for Kinesis), so new applications can start on 2.2 while existing ones need a tested upgrade plan.
 
 **Pitfalls.**
 

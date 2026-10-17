@@ -1,0 +1,427 @@
+---
+publishedDate: "2026-10-16"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
+title: "Makefiles and pre-commit Hooks for Data Repositories"
+seoTitle: "Makefiles and pre-commit Hooks for Data Repos"
+description: "Makefiles and pre-commit hooks for data repos: one-command install, lint, test and run targets, plus hooks that block secrets, large files and bad formatting."
+technology: ["dev-tools"]
+topic: ["make", "pre-commit", "developer-workflow"]
+difficulty: "Advanced"
+learningObjectives:
+  - "Write a Makefile whose targets give everyone the same install, lint, test and run commands"
+  - "Explain phony targets, variables with defaults, recipe tabs and how make reports failures"
+  - "Configure pre-commit hooks that stop secrets, large data files and formatting errors before they are committed"
+  - "Run the same checks in CI so skipped hooks still get caught"
+prerequisites: ["articles:dev-tools/git-for-data-engineers", "articles:dev-tools/python-environments-packaging"]
+related: ["articles:etl-elt/testing-data-pipelines-cicd", "articles:python/testing-with-pytest", "articles:airflow/best-practices-testing-cicd"]
+previous: "articles:dev-tools/docker-for-data-engineers"
+versionContext: "Run in a temporary Git repository with GNU Make 4.3, uv 0.8.17 (Python 3.13.7), ruff 0.17.1, pytest 9.1, pre-commit 4.7.0, pre-commit-hooks 6.0.0 and detect-secrets 1.5.0; the output shown is the real output."
+sources:
+  - { label: "GNU Make manual", url: "https://www.gnu.org/software/make/manual/make.html" }
+  - { label: "GNU Make manual: Phony Targets", url: "https://www.gnu.org/software/make/manual/html_node/Phony-Targets.html" }
+  - { label: "pre-commit documentation", url: "https://pre-commit.com/" }
+  - { label: "pre-commit-hooks", url: "https://github.com/pre-commit/pre-commit-hooks" }
+  - { label: "ruff-pre-commit", url: "https://github.com/astral-sh/ruff-pre-commit" }
+  - { label: "detect-secrets", url: "https://github.com/Yelp/detect-secrets" }
+---
+
+The previous lessons gave the repository a Git workflow, a lock file and a Docker image. The last step is to make the right thing the easy thing: one short command for every routine task, and automatic checks that run before a commit is created. A new teammate should be able to clone the repository and type `make install && make check`, and nobody should be able to commit a 700 KB CSV or a password by accident.
+
+This lesson adds both to the `orders-etl` project from the packaging lesson (a `src/` layout, `pyproject.toml` with a `dev` dependency group containing pytest and ruff, and a `uv.lock`).
+
+## Why a task runner
+
+Every repository accumulates commands: create the environment, run the linter with the right paths, run the tests, start the local database, run the pipeline for a date. Without a task runner they live in a README that drifts, in shell history, or in one person's head. A `Makefile` puts them in the repository, versioned and reviewed like code, and CI can call exactly the same targets as developers. `make` is installed on almost every Linux and macOS machine; alternatives such as `just` or `task` are fine too, the idea is the same.
+
+## A Makefile for a data repository
+
+```makefile
+# Every target is a command, not a file, so mark them phony.
+.PHONY: help install lint format test run check clean
+
+RUN_DATE ?= $(shell date -u +%Y-%m-%d)
+
+help:  ## Show this help
+	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
+
+install:  ## Create .venv from the lock file
+	uv sync --locked
+
+lint:  ## Check style and common bugs
+	uv run ruff check src tests
+	uv run ruff format --check src tests
+
+format:  ## Fix formatting in place
+	uv run ruff format src tests
+
+test:  ## Run the test suite
+	uv run pytest -q
+
+run:  ## Run the pipeline for RUN_DATE (default: today, UTC)
+	uv run orders-etl --date $(RUN_DATE)
+
+check: lint test  ## Everything CI runs
+
+clean:  ## Remove local build and cache files
+	rm -rf .venv .pytest_cache .ruff_cache
+```
+
+How it works:
+
+- A **rule** is `target: prerequisites` followed by recipe lines. Each recipe line **must start with a tab**, not spaces; this is the most common Makefile error.
+- make was designed to build files and skips a target whose file is up to date. `.PHONY` declares that these targets are commands, so a file or directory called `test` can never stop `make test` from running.
+- `RUN_DATE ?= ...` sets a default that the caller can override: `make run RUN_DATE=2026-10-15`. Inside a recipe, `$$` passes a literal `$` to the shell, which is why the awk program uses `$$1`.
+- `check: lint test` runs both prerequisites, in order, before `check` itself.
+- `@` at the start of a recipe line stops make from echoing the command.
+- The `## comment` convention plus the `help` target makes the Makefile self-documenting.
+
+```bash
+make help
+```
+
+```text
+  help       Show this help
+  install    Create .venv from the lock file
+  lint       Check style and common bugs
+  format     Fix formatting in place
+  test       Run the test suite
+  run        Run the pipeline for RUN_DATE (default: today, UTC)
+  check      Everything CI runs
+  clean      Remove local build and cache files
+```
+
+```bash
+make install
+make check; echo "exit=$?"
+make run RUN_DATE=2026-10-15
+make -n run RUN_DATE=2026-10-15     # dry run: print the commands without running them
+```
+
+```text
+uv sync --locked
+Using CPython 3.13.7
+Creating virtual environment at: .venv
+Resolved 17 packages in 3ms
+uv run ruff check src tests
+All checks passed!
+uv run ruff format --check src tests
+3 files already formatted
+uv run pytest -q
+.                                                                        [100%]
+1 passed in 0.01s
+exit=0
+uv run orders-etl --date 2026-10-15
+loading orders for 2026-10-15
+uv run orders-etl --date 2026-10-15
+```
+
+(The package install lines from `uv sync` are trimmed.) make stops at the first recipe line that exits non-zero and exits with status 2 itself, so a failed lint never reaches the tests and CI sees the failure. Adding an unused `import os` to the code:
+
+```bash
+make check; echo "exit=$?"
+```
+
+```text
+uv run ruff check src tests
+F401 [*] `os` imported but unused
+ --> src/orders_etl/cli.py:3:8
+  |
+1 | import argparse
+2 | import datetime as dt
+3 | import os
+  |        ^^
+help: Remove unused import: `os`
+  |
+2 | import datetime as dt
+  - import os
+3 |
+  |
+
+Found 1 error.
+[*] 1 fixable with `--fix`.
+make: *** [Makefile:13: lint] Error 1
+exit=2
+```
+
+And the tab mistake, in a file whose recipe is indented with four spaces:
+
+```bash
+printf 'test:\n    uv run pytest -q\n' > Bad.mk
+make -f Bad.mk test; echo "exit=$?"
+```
+
+```text
+Bad.mk:2: *** missing separator.  Stop.
+exit=2
+```
+
+Data repositories typically add targets such as `up` and `down` for `docker compose up -d --wait` and `docker compose down`, `backfill` with `START` and `END` variables, `dbt-build`, or `image` for `docker build`. Keep recipes short; anything longer than a few lines belongs in a script in `scripts/` that the target calls.
+
+## pre-commit: checks before every commit
+
+A Git *hook* is a script Git runs at certain points; the `pre-commit` hook runs before a commit is created, and a non-zero exit aborts the commit. The [pre-commit](https://pre-commit.com/) framework manages these hooks from a `.pre-commit-config.yaml` in the repository: it installs each hook's tool in an isolated environment, pins its version, and runs it only on the files being committed.
+
+The usual configuration points at the hook repositories on GitHub, pinned to a tag:
+
+{/* noexec */}
+```yaml
+# noexec: pre-commit clones these repositories on first run
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: check-yaml
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.1
+    hooks:
+      - id: ruff-check
+        args: ["--fix"]
+      - id: ruff-format
+```
+
+The environment used for this lesson could not clone from GitHub, so the run below uses the equivalent `repo: local` form, which installs the same tools at the same versions from PyPI. The behaviour is identical:
+
+```yaml
+# Hooks installed from PyPI ("repo: local") so this file works without cloning hook repositories.
+repos:
+  - repo: local
+    hooks:
+      - id: check-added-large-files
+        name: check for added large files
+        entry: check-added-large-files
+        args: ["--maxkb=500"]
+        language: python
+        additional_dependencies: ["pre-commit-hooks==6.0.0"]
+      - id: detect-private-key
+        name: detect private key
+        entry: detect-private-key
+        language: python
+        types: [text]
+        additional_dependencies: ["pre-commit-hooks==6.0.0"]
+      - id: end-of-file-fixer
+        name: fix end of files
+        entry: end-of-file-fixer
+        language: python
+        types: [text]
+        additional_dependencies: ["pre-commit-hooks==6.0.0"]
+      - id: check-yaml
+        name: check yaml
+        entry: check-yaml
+        language: python
+        types: [yaml]
+        additional_dependencies: ["pre-commit-hooks==6.0.0"]
+      - id: detect-secrets
+        name: detect secrets
+        entry: detect-secrets-hook
+        language: python
+        additional_dependencies: ["detect-secrets==1.5.0"]
+      - id: ruff-check
+        name: ruff check
+        entry: ruff check --fix --force-exclude
+        language: python
+        types_or: [python, pyi]
+        additional_dependencies: ["ruff==0.17.1"]
+      - id: ruff-format
+        name: ruff format
+        entry: ruff format --force-exclude
+        language: python
+        types_or: [python, pyi]
+        additional_dependencies: ["ruff==0.17.1"]
+```
+
+Install the framework (it belongs in the `dev` dependency group, or install it once with `uv tool install pre-commit`), then install the Git hook and run everything once over the whole repository:
+
+```bash
+pre-commit --version
+pre-commit install
+git add -A
+pre-commit run --all-files
+```
+
+```text
+pre-commit 4.7.0
+pre-commit installed at .git/hooks/pre-commit
+check for added large files..............................................Passed
+detect private key.......................................................Passed
+fix end of files.........................................................Passed
+check yaml...............................................................Passed
+detect secrets...........................................................Passed
+ruff check...............................................................Passed
+ruff format..............................................................Passed
+```
+
+(The first run also prints `[INFO] Installing environment` lines while it builds each hook's environment; later runs reuse them.)
+
+### Blocking a hard-coded password
+
+```bash
+printf 'DB_PASSWORD = "Xk9#mQ2v!pL7zR4t"\n' > src/orders_etl/settings.py
+git add src/orders_etl/settings.py
+git commit -m "Add settings"; echo "exit=$?"
+```
+
+```text
+check for added large files..............................................Passed
+detect private key.......................................................Passed
+fix end of files.........................................................Passed
+check yaml...........................................(no files to check)Skipped
+detect secrets...........................................................Failed
+- hook id: detect-secrets
+- exit code: 1
+
+ERROR: Potential secrets about to be committed to git repo!
+
+Secret Type: Secret Keyword
+Location:    src/orders_etl/settings.py:1
+
+Possible mitigations:
+  - For information about putting your secrets in a safer place, please ask in
+    #security
+  - Mark false positives with an inline `pragma: allowlist secret` comment
+
+If a secret has already been committed, visit
+https://help.github.com/articles/removing-sensitive-data-from-a-repository
+
+ruff check...............................................................Passed
+ruff format..............................................................Passed
+exit=1
+```
+
+The commit was not created. The fix is to read the value from the environment (`os.environ["DB_PASSWORD"]`) and inject it at run time. On a team, generate a baseline of known, reviewed findings with `detect-secrets scan > .secrets.baseline` and pass `--baseline .secrets.baseline` to the hook, so only new findings fail.
+
+### Blocking a data file
+
+Test fixtures creep up in size. A 60,000-row extract dropped into `tests/fixtures/` and force-added past `.gitignore`:
+
+```bash
+git add -f tests/fixtures/orders_full.csv
+git commit -m "Add fixture"; echo "exit=$?"
+```
+
+```text
+check for added large files..............................................Failed
+- hook id: check-added-large-files
+- exit code: 1
+
+tests/fixtures/orders_full.csv (738 KB) exceeds 500 KB.
+
+detect private key.......................................................Passed
+fix end of files.........................................................Passed
+check yaml...........................................(no files to check)Skipped
+detect secrets...........................................................Passed
+ruff check...........................................(no files to check)Skipped
+ruff format..........................................(no files to check)Skipped
+exit=1
+```
+
+Keep fixtures to the handful of rows that exercise each edge case, and generate larger test data in the test itself.
+
+### Hooks that fix files
+
+Some hooks modify files instead of only reporting. They still fail the commit, so you can review the change, stage it and commit again:
+
+```bash
+printf 'def double(x):\n    return x*2' > src/orders_etl/util.py
+git add src/orders_etl/util.py
+git commit -m "Add util"; echo "exit=$?"
+git diff --stat
+git add src/orders_etl/util.py
+git commit -q -m "Add util"; echo "exit=$?"
+```
+
+```text
+check for added large files..............................................Passed
+detect private key.......................................................Passed
+fix end of files.........................................................Failed
+- hook id: end-of-file-fixer
+- exit code: 1
+- files were modified by this hook
+
+Fixing src/orders_etl/util.py
+
+check yaml...........................................(no files to check)Skipped
+detect secrets...........................................................Passed
+ruff check...............................................................Passed
+ruff format..............................................................Failed
+- hook id: ruff-format
+- files were modified by this hook
+
+1 file reformatted
+
+exit=1
+ src/orders_etl/util.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+check for added large files..............................................Passed
+detect private key.......................................................Passed
+fix end of files.........................................................Passed
+check yaml...........................................(no files to check)Skipped
+detect secrets...........................................................Passed
+ruff check...............................................................Passed
+ruff format..............................................................Passed
+exit=0
+```
+
+For SQL-heavy repositories, [SQLFluff](https://docs.sqlfluff.com/) provides `sqlfluff-lint` and `sqlfluff-fix` hooks with dialect and dbt templating support; for notebooks, `nbstripout` removes outputs (which often contain data) before commit.
+
+## Run the same checks in CI
+
+Hooks run on each developer's machine, and only if they ran `pre-commit install`; anyone can skip them with `git commit --no-verify`. Treat them as fast feedback, and enforce the same checks in CI on every pull request, ideally through the Makefile so there is one definition:
+
+{/* noexec */}
+```yaml
+# noexec: GitHub Actions workflow, runs on GitHub
+name: checks
+on: [pull_request]
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7          # many teams pin actions to a full commit SHA instead
+      - uses: astral-sh/setup-uv@v10
+      - run: make install
+      - run: uv run --with pre-commit pre-commit run --all-files
+      - run: make check
+```
+
+Pin hook versions and update them deliberately with `pre-commit autoupdate`, review the diff and commit it, as you would a lock file.
+
+## Worked example: a clone-to-green repository
+
+What a reviewer of a take-home task, or a new teammate, should experience:
+
+1. `git clone ... && cd orders-etl`
+2. `make install` creates `.venv` from `uv.lock` (add a `.python-version` file so uv picks the same interpreter everywhere).
+3. `pre-commit install` once.
+4. `make check` runs lint and tests and passes.
+5. `make up` starts Postgres with Docker Compose; `make run RUN_DATE=2026-10-15` loads a day; `make down` stops it.
+6. A commit that contains a password, a large data file or unformatted code is stopped locally, and if someone bypasses the hook, CI fails the pull request.
+
+The README then needs only a few lines: prerequisites (uv, Docker), and "run `make help`".
+
+## Common mistakes
+
+- Indenting recipes with spaces, producing `missing separator`.
+- Forgetting `.PHONY`, so a directory named `test` or `build` makes `make test` do nothing.
+- Writing long shell programs inside the Makefile instead of calling a script.
+- Making `make install` resolve fresh versions (`pip install -r requirements.in`) instead of installing from the lock file.
+- Relying on pre-commit hooks as the only gate; they are optional on each machine.
+- Hook revisions like `rev: main` that change underneath you instead of pinned tags.
+- Adding so many slow hooks that people start committing with `--no-verify`; keep slow checks (full test suite, type checking of everything) in CI.
+- Marking real secrets as allowed in the baseline instead of removing them.
+
+## In an interview
+
+These rarely come up as direct questions, but they show in take-home submissions and in "how does your team keep code quality high" discussions. A good answer describes the layers: formatting and linting (ruff, SQLFluff) and secret and large-file checks as pre-commit hooks for fast feedback; the same checks plus tests in CI as the real gate; a Makefile so local and CI commands are identical; and dependency and hook versions pinned and updated on purpose. If asked about preventing leaked credentials, pair secret scanning hooks with the platform's push protection and with keeping secrets in a secrets manager.
+
+## Key takeaway
+
+A Makefile turns a repository's routine tasks into a small, discoverable set of commands that developers and CI share. pre-commit hooks stop the cheapest mistakes, secrets, large data files and formatting noise, before they become commits, and CI runs the same checks for anyone who skipped them. Together with Git, locked dependencies and a Docker image, they complete the toolkit from the [course overview](/dev-tools/dev-tools-for-data-engineers/).

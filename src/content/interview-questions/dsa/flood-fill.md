@@ -27,7 +27,7 @@ that pixel and of every pixel connected to it through up, down, left or right st
 colour as the start. Return the modified image. Pixels of other colours act as walls.
 
 This is LeetCode 733, Flood Fill. It is the "paint bucket" tool from image editors and the smallest possible grid
-traversal question. Assume grids of up to 50 by 50.
+traversal question. Grids are small enough to hold in memory, but large single-colour regions are possible.
 
 ## Examples
 

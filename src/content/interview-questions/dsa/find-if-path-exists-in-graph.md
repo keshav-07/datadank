@@ -26,7 +26,7 @@ You are given `n` vertices labelled `0` to `n - 1` and a list of undirected edge
 `source` and a `destination` vertex, decide whether you can walk from one to the other along edges. There are no
 duplicate edges and no self-loops.
 
-This is LeetCode 1971, Find if Path Exists in Graph. Assume up to about 200,000 vertices and edges, so the
+This is LeetCode 1971, Find if Path Exists in Graph. Graphs can have hundreds of thousands of vertices and edges, so the
 solution must be close to linear.
 
 ## Examples

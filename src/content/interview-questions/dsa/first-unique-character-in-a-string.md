@@ -23,7 +23,7 @@ next: "interview-questions:dsa/longest-palindrome"
 
 Given a string `s`, return the index of the first character that occurs exactly once in the whole string. If every character repeats, return -1. This is LeetCode 387, First Unique Character in a String.
 
-The string has between 1 and about 10^5 characters, all lowercase English letters.
+The string is non-empty, uses only lowercase English letters, and can be long, so an O(n²) check is too slow.
 
 ## Examples
 

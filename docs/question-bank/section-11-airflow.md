@@ -3544,3 +3544,483 @@ An engineer merged a refactor that renamed a task while the nightly run was half
 - How do you clean up old checkouts? — The `[dag_processor] stale_bundle_cleanup_*` settings control how long old bundle versions are kept on disk.
 
 ---
+
+### Q559. How do secrets backends work in Airflow 3, and what is the lookup order?
+**ID:** AF-41
+**Topic:** Airflow > Secrets Backends
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `airflow`, `secrets-backend`, `security`, `connections`
+
+**Short Answer (2–3 lines):**
+A secrets backend fetches Connections and Variables (and sensitive config values) from Vault, AWS Secrets Manager, GCP Secret Manager or Azure Key Vault when they are requested. Airflow checks the configured backend first, then environment variables, then the metadata DB, and the order can't be changed. Airflow 3 adds `[workers] secrets_backend`, so workers can use their own backend, which they check before the general one.
+
+**Detailed Explanation:**
+Configuration:
+```properties
+[secrets]
+backend = airflow.providers.amazon.aws.secrets.secrets_manager.SecretsManagerBackend
+backend_kwargs = {"connections_prefix": "airflow/connections", "variables_prefix": "airflow/variables"}
+use_cache = False          # True caches lookups for cache_ttl_seconds (900)
+[workers]
+secrets_backend =          # optional worker-only backend, checked first on workers
+```
+Each kwarg can also be set on its own as `AIRFLOW__SECRETS__BACKEND_KWARG__<KEY>`, which is handy for Kubernetes secrets.
+
+How it behaves:
+- **Search path:** custom backend → `AIRFLOW_CONN_*` / `AIRFLOW_VAR_*` → metadata DB. The first match wins, so a key that exists in two places can hide another.
+- **Writes** from the UI, CLI or `Variable.set` always go to the **metadata DB**. A value stored in the backend keeps winning on reads, which confuses people.
+- **The UI shows only DB-stored values.** Check backend-provided values in the backend itself.
+- **Cost and latency:** every `Variable.get` is an API call to the backend. Top-level lookups multiply that by the parse rate (see Q568). Turn on `use_cache` or read only inside tasks.
+- **Prefixes and lookup patterns** (`connections_lookup_pattern`, `variables_lookup_pattern` on several providers) limit which keys are sent to the backend, which saves calls for DB-stored keys.
+- **Masking:** values from backends are masked in logs like any connection password.
+
+A custom backend subclasses `BaseSecretsBackend` and implements `get_conn_value` (returning a URI or JSON) and `get_variable`. Returning `None` means "not here", and the next source is tried.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 — plugins/file_secrets.py; a toy backend. Real ones:
+# AWS Secrets Manager, GCP Secret Manager, Azure Key Vault, HashiCorp Vault (each in its provider)
+import json
+from airflow.secrets import BaseSecretsBackend
+
+
+class JsonFileSecretsBackend(BaseSecretsBackend):
+    def __init__(self, path: str, connections_prefix: str = "connections", variables_prefix: str = "variables"):
+        super().__init__()
+        with open(path) as f:
+            self.data = json.load(f)
+        self.cp, self.vp = connections_prefix, variables_prefix
+
+    def get_conn_value(self, conn_id: str):          # URI or JSON string, or None = "not here"
+        return self.data.get(self.cp, {}).get(conn_id)
+
+    def get_variable(self, key: str):
+        return self.data.get(self.vp, {}).get(key)
+```
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 — dags/secrets_demo.py
+# Run with: AIRFLOW__SECRETS__BACKEND=file_secrets.JsonFileSecretsBackend
+#           AIRFLOW__SECRETS__BACKEND_KWARGS='{"path": "/opt/airflow/secrets.json"}'
+# secrets.json: {"connections": {"warehouse": "postgres://etl:...@wh-prod.internal:5432/analytics"},
+#                "variables": {"export_bucket": "s3://exports-prod"}}
+import os
+from datetime import datetime
+from airflow.sdk import BaseHook, Variable, dag, task
+
+os.environ["AIRFLOW_VAR_EXPORT_BUCKET"] = "s3://exports-from-env"   # shadowed by the backend
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False)
+def secrets_demo():
+    @task
+    def show():
+        conn = BaseHook.get_connection("warehouse")
+        print("host:", conn.host, "| login:", conn.login,
+              "| bucket:", Variable.get("export_bucket"),
+              "| missing:", Variable.get("not_anywhere", default="(default)"))
+
+    show()
+
+
+dag_obj = secrets_demo()
+```
+```text
+host: wh-prod.internal | login: etl | bucket: s3://exports-prod | missing: (default)
+success
+```
+The backend's `s3://exports-prod` beat the environment variable, as the lookup order says it should.
+
+**Real-World Use Case:**
+A company moved 400 connections out of the metadata DB into AWS Secrets Manager under `airflow/connections/*`. They gave the workers an IAM role that can read only that prefix, and set a `connections_lookup_pattern`, so Variables still came from the DB without extra API calls. Credential rotation now happened in Secrets Manager, and Airflow needed no changes.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Editing a Variable in the UI and expecting it to override the backend's value.
+- Top-level `Variable.get` with a paid secrets API behind it, which turns into thousands of calls an hour.
+- Giving workers access to *all* secrets instead of a prefix.
+
+**Follow-up Questions Interviewers Ask:**
+- Can config values come from a backend? — Yes. Sensitive options can use the `_secret` suffix, such as `sql_alchemy_conn_secret`, to read from the backend.
+- How do you test a connection? — `airflow connections test <id>`, or the UI's test button if `[core] test_connection` is enabled.
+
+---
+
+### Q560. How do you write DAG integrity tests that catch broken DAGs before merge?
+**ID:** AF-42
+**Topic:** Airflow > Testing
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `airflow`, `testing`, `dagbag`, `pytest`
+
+**Short Answer (2–3 lines):**
+Load the DAG folder with `DagBag` in pytest and fail on any `import_errors`. That catches syntax errors, missing imports, duplicate task ids, cycles and invalid arguments. Then check team rules on each DAG, such as tags, owners, retries and allowed pools, and set a budget for parse time. These tests run in seconds and catch most of the problems that would otherwise surface as UI banners in production.
+
+**Detailed Explanation:**
+What a DagBag load catches, because it runs the same import the DAG processor runs:
+- Python errors and missing packages. CI must use the **same image or constraints** as production.
+- `DuplicateTaskIdFound`, cycles, unknown executors (see Q553), invalid `schedule` values and failed param defaults.
+- Removed Airflow 2 APIs, such as `airflow.datasets` or `schedule_interval` (see Q564).
+
+Convention checks worth adding:
+| Check | Why |
+|---|---|
+| Every DAG has an owner or team tag | Routing alerts, ownership |
+| `retries >= 1` on tasks | No silent single-attempt failures |
+| `catchup` set explicitly | Avoid surprise backfills when defaults change |
+| Pools used ∈ an allowed list | Missing pools mean tasks are never scheduled (see Q547) |
+| No `Variable.get` or network at module level | Parse cost (see Q568); enforce with a lint rule or a parse-time budget |
+| Parse time below a budget | Catches heavy top-level code early |
+
+Practical notes:
+- In 3.3, `DagBag(dag_folder=...)` no longer takes `include_examples`. Example DAGs are separate bundles.
+- Keep test files outside the DAG folder. A file that mentions "airflow" and "dag" inside the folder gets parsed as a DAG file.
+- Use **`dag.test()`** for behaviour and plain unit tests for logic (see Q561). Integrity tests only prove that a DAG loads.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3, pytest — tests/test_dag_integrity.py, run in CI on every PR
+import os
+import time
+import pytest
+from airflow.dag_processing.dagbag import DagBag
+
+DAG_FOLDER = os.path.join(os.path.dirname(__file__), "..", "dags")
+
+
+@pytest.fixture(scope="session")
+def dagbag():
+    start = time.perf_counter()
+    bag = DagBag(dag_folder=DAG_FOLDER)
+    bag.parse_seconds = time.perf_counter() - start
+    return bag
+
+
+def test_no_import_errors(dagbag):
+    assert dagbag.import_errors == {}, f"Import errors: {dagbag.import_errors}"
+
+
+def test_parse_time_budget(dagbag):
+    assert dagbag.parse_seconds < 5, f"DAG folder took {dagbag.parse_seconds:.1f}s to parse"
+
+
+@pytest.mark.parametrize("dag_id", sorted(DagBag(dag_folder=DAG_FOLDER).dag_ids))
+def test_dag_conventions(dagbag, dag_id):
+    dag = dagbag.get_dag(dag_id)
+    assert any(t.startswith("team:") for t in dag.tags), f"{dag_id}: add a team:<name> tag"
+    for t in dag.tasks:
+        assert t.retries >= 1, f"{dag_id}.{t.task_id}: set retries (default_args)"
+```
+```text
+# dags/ holds orders_daily (tagged, retries=2) and adhoc_export (no tags, no retries)
+>       assert any(t.startswith("team:") for t in dag.tags), f"{dag_id}: add a team:<name> tag"
+E       AssertionError: adhoc_export: add a team:<name> tag
+...
+FAILED tests/test_dag_integrity.py::test_dag_conventions[adhoc_export] - Asse...
+1 failed, 3 passed in 1.78s
+```
+
+**Real-World Use Case:**
+A platform team saw roughly one "DAG disappeared" incident a week, caused by typos and missing provider packages in merged code. A required CI check that runs these tests in the production image made such merges impossible, and the incidents stopped. The convention tests also made ownership tags universal within a month.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Running CI in an environment that doesn't match production, so it passes in CI and breaks in prod.
+- Treating "it loads" as "it works". Pair integrity tests with `dag.test()` and unit tests.
+- Calling real APIs or databases at import time, which makes CI depend on the network.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you test only the changed DAGs? — Load a DagBag per changed file (`DagBag(dag_folder=path)`), but keep a nightly full-folder check.
+- Where do linters fit? — `ruff` with the `AIR` rules catches deprecated or removed Airflow APIs before the tests run (see Q562, Q564).
+
+---
+
+### Q561. How do you test task logic and run a DAG end to end with `dag.test()`?
+**ID:** AF-43
+**Topic:** Airflow > Testing
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `airflow`, `testing`, `dag-test`, `pytest`
+
+**Short Answer (2–3 lines):**
+Keep business logic in plain functions and unit-test them without Airflow. That is fast and deterministic. Test TaskFlow tasks through their raw callable (`.function` on the decorated task, or `python_callable` on the operator). Use `dag.test()` to run a whole DAG in one process, with no scheduler, executor or triggerer. Its `run_conf`, `logical_date`, `conn_file_path`, `variable_file_path` and `mark_success_pattern` arguments make that run repeatable.
+
+**Detailed Explanation:**
+A testing pyramid for Airflow:
+| Layer | What | Speed |
+|---|---|---|
+| Unit | Pure functions such as transforms, SQL builders and file parsers | Milliseconds |
+| Task | `.function(...)` or `operator.execute(context)` with a fake or minimal context | Milliseconds |
+| Integrity | DagBag loads, conventions (see Q560) | Seconds |
+| DAG | `dag.test()`: real dependencies, XCom, trigger rules, branching, deferral (triggers run in-process) | Seconds |
+| Integration | Against real services in a staging environment, possibly with `use_executor=True` | Minutes |
+
+`dag.test()` in 3.3:
+- `logical_date=...` (timezone-aware) or `logical_date=None`, plus `run_after=` to simulate a run without a date (see Q537).
+- `run_conf={...}` validates against params (see Q533).
+- `conn_file_path` / `variable_file_path` load test Connections and Variables from a file.
+- `mark_success_pattern="publish|notify"` marks tasks whose ids match the regex as successful without running them, which skips side effects.
+- It needs a metadata DB. A local SQLite DB, created with `airflow db migrate`, is fine. It also syncs the DAG's bundle first, so keep the test harness *outside* the DAG folder.
+- It returns the DagRun, so you can assert on `run.state` and on each task instance's state.
+
+Mocking: patch hooks at their import path (`unittest.mock.patch("my_dag.S3Hook")`), or inject clients so tests can pass fakes. Avoid mocking Airflow internals.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 — dags/fx_pipeline.py
+from datetime import datetime
+from airflow.sdk import dag, task
+
+
+def to_eur(rows: list[dict], rates: dict) -> list[dict]:
+    """Pure business logic: no Airflow imports needed to test it."""
+    out = []
+    for r in rows:
+        if r["currency"] not in rates:
+            raise ValueError(f"no rate for {r['currency']}")
+        out.append({**r, "amount_eur": round(r["amount"] * rates[r["currency"]], 2)})
+    return out
+
+
+@dag(schedule="0 6 * * *", start_date=datetime(2026, 1, 1), catchup=False)
+def fx_pipeline():
+    @task
+    def extract() -> list[dict]:
+        return [{"id": 1, "amount": 100.0, "currency": "USD"}, {"id": 2, "amount": 50.0, "currency": "GBP"}]
+
+    @task
+    def convert(rows: list[dict]) -> list[dict]:
+        return to_eur(rows, {"USD": 0.92, "GBP": 1.17})
+
+    @task
+    def publish(rows: list[dict]) -> int:
+        print("publishing", rows)
+        return len(rows)
+
+    publish(convert(extract()))
+
+
+fx_pipeline()
+```
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3, pytest — tests/test_fx_pipeline.py (conftest adds dags/ to sys.path)
+import pytest
+from airflow.dag_processing.dagbag import DagBag
+from fx_pipeline import to_eur
+
+
+# 1) Plain unit tests for the logic: milliseconds, no scheduler, no DB.
+def test_to_eur_converts_and_rounds():
+    assert to_eur([{"id": 1, "amount": 10.0, "currency": "USD"}], {"USD": 0.9234}) == [
+        {"id": 1, "amount": 10.0, "currency": "USD", "amount_eur": 9.23}]
+
+
+def test_to_eur_rejects_unknown_currency():
+    with pytest.raises(ValueError, match="no rate for JPY"):
+        to_eur([{"id": 1, "amount": 1.0, "currency": "JPY"}], {})
+
+
+# 2) A TaskFlow task's raw function is reachable via python_callable
+def test_convert_task_function():
+    dag = DagBag(dag_folder="dags").get_dag("fx_pipeline")
+    convert = dag.get_task("convert").python_callable
+    assert convert([{"id": 9, "amount": 2.0, "currency": "GBP"}])[0]["amount_eur"] == 2.34
+
+
+# 3) One end-to-end run in-process; skip the side-effecting task with mark_success_pattern.
+def test_dag_runs_end_to_end():
+    dag = DagBag(dag_folder="dags").get_dag("fx_pipeline")
+    run = dag.test(mark_success_pattern="publish")
+    states = {ti.task_id: ti.state for ti in run.get_task_instances()}
+    assert run.state == "success", states
+```
+```text
+....                                                                     [100%]
+4 passed in 6.50s
+```
+
+**Real-World Use Case:**
+A team's DAGs held 300-line `@task` bodies mixing API calls and transformations, and nobody could test them. They moved the transforms into a package with 95% unit-test coverage, kept the tasks to a few lines of wiring, and added one `dag.test()` per DAG with publishing masked. Bugs in branching and trigger rules now showed up in CI instead of at 3 a.m.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Testing only through the Airflow UI.
+- Calling real external systems from `dag.test()` in CI.
+- Treating `dag.test()` as proof of production isolation. It runs in one process with DB access (see Q557).
+
+**Follow-up Questions Interviewers Ask:**
+- How do you test a custom operator? — Instantiate it and call `execute(context)` with a minimal context dict, with its hook mocked.
+- How do you run a DAG locally from the CLI? — `airflow dags test <dag_id> [logical_date]`.
+
+---
+
+### Q562. What does a good CI/CD pipeline for Airflow DAGs look like?
+**ID:** AF-44
+**Topic:** Airflow > CI/CD
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `airflow`, `ci-cd`, `deployment`, `dag-bundles`
+
+**Short Answer (2–3 lines):**
+On each pull request: lint with ruff and its `AIR` rules, run unit tests, load a DagBag in the production image, and optionally run `dag.test()` for the changed DAGs. On merge, deploy the DAG code by moving a Git bundle's `tracking_ref` or syncing files, and build a new image only when dependencies change. Promote through staging before prod, using the same code and different connections.
+
+**Detailed Explanation:**
+Split the two kinds of change:
+| Artifact | Changes how often | Deploy by |
+|---|---|---|
+| **DAG code** (Python, SQL, YAML) | Many times a day | `GitDagBundle` (versioned, see Q558), git-sync, or object-storage sync |
+| **Runtime image** (Airflow, providers, libraries) | Weekly or monthly | Image build with constraints, then a rolling restart of the components |
+
+Pipeline stages:
+1. **Static:** `ruff check --select AIR` and general lint, plus `sqlfluff` for SQL files and type checks.
+2. **Unit:** pure-function tests (see Q561).
+3. **Integrity:** DagBag with zero import errors, conventions, and a parse-time budget, all inside the production image (see Q560).
+4. **Behaviour:** `dag.test()` for DAGs whose files changed, with side effects masked.
+5. **Deploy to staging:** move the bundle ref, then smoke-test with `airflow dags list-import-errors` and one triggered run.
+6. **Promote to prod:** the same commit with prod connections from the secrets backend.
+
+Things worth calling out:
+- **Constraints files.** Install Airflow with the official `constraints-<version>/constraints-<python>.txt`, so providers and libraries don't change silently.
+- **Pools, Variables and connections as code.** Set them with Terraform, the REST API or `airflow pools import` in the pipeline, not by hand.
+- **Version pinning.** Because a `GitDagBundle` pins each run to a commit, a deploy in the middle of a run is safe. A local-folder sync is not.
+- **Rollback** means reverting the commit or moving the ref back. Running DAGs keep their versions.
+- **Managed platforms** have their own deploy tools, such as `astro deploy`, Composer's bucket sync and MWAA's S3 sync (see Q565).
+
+**Example / Code:**
+```yaml
+# Runtime: GitHub Actions; Apache Airflow 3.3 image used for test steps
+name: dags-ci
+on: [pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: registry.internal/data/airflow:3.3.2-2026.10   # same image as production
+    env:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+    steps:
+      - uses: actions/checkout@v4
+      - run: ruff check --select AIR3 dags/ plugins/
+      - run: airflow db migrate            # throwaway SQLite DB for DagBag and dag.test()
+      - run: pytest -q tests/unit tests/test_dag_integrity.py
+      - run: pytest -q tests/dag_runs -k "$(git diff --name-only origin/main -- dags | xargs -n1 basename | sed 's/.py$//' | paste -sd' or ' -)"
+```
+```bash
+# Runtime: ruff 0.17 — what the lint step reports for an Airflow 2-style file
+ruff check --select AIR3 --output-format concise legacy/
+```
+```text
+legacy/old_style.py:7:10: AIR311 [*] `airflow.datasets.Dataset` is removed in Airflow 3.0; It still works in Airflow 3.0 but is expected to be removed in a future version.
+legacy/old_style.py:10:14: AIR311 `airflow.models.Variable` is removed in Airflow 3.0; It still works in Airflow 3.0 but is expected to be removed in a future version.
+legacy/old_style.py:13:6: AIR311 `airflow.DAG` is removed in Airflow 3.0; It still works in Airflow 3.0 but is expected to be removed in a future version.
+legacy/old_style.py:13:23: AIR301 [*] `schedule_interval` is removed in Airflow 3.0
+legacy/old_style.py:14:5: AIR312 `airflow.operators.python.PythonOperator` is deprecated and moved into `standard` provider in Airflow 3.0; It still works in Airflow 3.0 but is expected to be removed in a future version.
+Found 5 errors.
+```
+The `-k` expression in the last workflow step assumes one test module per DAG file. Adapt it to your own layout.
+
+**Real-World Use Case:**
+A company used to `scp` DAG files to the production servers. A typo once took down 40 DAGs for an afternoon. They moved to PR checks, plus a `GitDagBundle` tracking a `release` branch that the pipeline fast-forwards after staging passes. Deploys became merges, rollbacks became reverts, and an import error never reached production again.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Rebuilding and redeploying the whole image for every SQL change.
+- CI that tests in a different Python, Airflow or provider version than production.
+- Hand-editing pools and connections in prod, so environments drift apart.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you handle dependency changes? — Bump the image with a constraints file, test it in staging, then do a rolling restart. DAGs that need new libraries go out *after* the image.
+- How do you test DAGs that use providers you don't run locally? — Use the production image, or a test image with the same providers installed.
+
+---
+
+### Q563. How do you design DAGs so any past interval can be reprocessed safely?
+**ID:** AF-45
+**Topic:** Airflow > Idempotent Design
+**Level:** Advanced
+**Frequency:** Very Common
+**Tags:** `airflow`, `idempotency`, `reprocessing`, `data-interval`
+
+**Short Answer (2–3 lines):**
+Every run should be a pure function of its interval: read only data inside `[data_interval_start, data_interval_end)`, and *replace* that interval's output in one transaction (partition overwrite, delete+insert, or MERGE). Don't use `now()`, "latest" reads or shared mutable state. Then clears, retries, catchup and backfills give the same result whenever they run. Q46 covers idempotency at the task level; this question is about the design across a whole DAG.
+
+**Detailed Explanation:**
+A checklist for a design review:
+| Rule | Breaks when ignored |
+|---|---|
+| Time comes from the run (`data_interval_*`, `logical_date`, or a partition key), never from `now()` | A backfill processes today's data 90 times |
+| Half-open intervals `>= start AND < end` | Boundary rows are counted twice or missed |
+| Output is keyed by the interval: `.../dt=2026-03-01/`, `WHERE day = ...` | Reruns append duplicates |
+| Replace atomically: partition overwrite, `DELETE`+`INSERT` in one transaction, `MERGE`, `INSERT OVERWRITE` | A half-written partition is visible |
+| Inputs are frozen or versioned: snapshot tables, time travel, immutable raw zone | Reprocessing gives different numbers from the original run |
+| Reference data "as of" the interval: SCD2, effective dates | Old days are re-priced with today's FX rates |
+| Side effects (emails, API posts) deduplicated by `run_id` or interval | Customers get duplicate notifications |
+| Writes per interval don't conflict; `max_active_runs` set | Parallel backfill runs fight over the same table |
+| Choose the timetable on purpose (see Q535) | Zero-length intervals select nothing |
+
+Late data has two remedies: re-run a trailing window (`lookback` days, MERGE by key), or schedule on assets so runs start when data lands (see Q538, Q541). For **non-time-based** runs (`logical_date=None`), make the unit of work explicit with a param or partition key (see Q537).
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 (sqlite3 stands in for the warehouse)
+import os
+import sqlite3
+import tempfile
+from datetime import datetime, timezone
+from airflow.sdk import dag, task
+from airflow.timetables.interval import CronDataIntervalTimetable
+
+WAREHOUSE = os.path.join(tempfile.gettempdir(), "af_reprocess_demo.db")
+
+
+@dag(schedule=CronDataIntervalTimetable("0 0 * * *", timezone="UTC"),   # explicit interval semantics
+     start_date=datetime(2026, 1, 1), catchup=False, max_active_runs=1)
+def daily_revenue_rebuild():
+    @task
+    def rebuild_partition(data_interval_start=None, data_interval_end=None):
+        day = data_interval_start.strftime("%Y-%m-%d")       # derived from the run, never from now()
+        con = sqlite3.connect(WAREHOUSE)
+        with con:                                             # one transaction: delete + insert
+            con.execute("CREATE TABLE IF NOT EXISTS orders (id INT, ts TEXT, amount REAL)")
+            con.execute("CREATE TABLE IF NOT EXISTS revenue_daily (day TEXT, revenue REAL)")
+            if con.execute("SELECT COUNT(*) FROM orders").fetchone()[0] == 0:
+                con.executemany("INSERT INTO orders VALUES (?,?,?)", [
+                    (1, "2026-03-01T10:00:00", 40.0), (2, "2026-03-01T23:59:59", 60.0),
+                    (3, "2026-03-02T00:00:00", 99.0)])            # belongs to the NEXT day
+            con.execute("DELETE FROM revenue_daily WHERE day = ?", (day,))   # replace, never append
+            con.execute("""INSERT INTO revenue_daily
+                           SELECT ?, COALESCE(SUM(amount), 0) FROM orders
+                           WHERE ts >= ? AND ts < ?""",           # half-open interval [start, end)
+                        (day, data_interval_start.strftime("%Y-%m-%dT%H:%M:%S"),
+                         data_interval_end.strftime("%Y-%m-%dT%H:%M:%S")))
+        rows = con.execute("SELECT * FROM revenue_daily ORDER BY day").fetchall()
+        con.close()
+        print("interval:", data_interval_start, "->", data_interval_end, "| revenue_daily:", rows)
+
+    rebuild_partition()
+
+
+dag_obj = daily_revenue_rebuild()
+
+if __name__ == "__main__":
+    if os.path.exists(WAREHOUSE):
+        os.remove(WAREHOUSE)
+    # A manual run's interval is inferred by the timetable: for CronDataIntervalTimetable a run
+    # triggered "at" 2026-03-02 00:00 covers the interval that just ended, i.e. 1 March.
+    for _ in range(2):          # run the same interval twice: same end state
+        dag_obj.test(logical_date=datetime(2026, 3, 2, tzinfo=timezone.utc))
+```
+```text
+interval: 2026-03-01 00:00:00+00:00 -> 2026-03-02 00:00:00+00:00 | revenue_daily: [('2026-03-01', 100.0)]
+interval: 2026-03-01 00:00:00+00:00 -> 2026-03-02 00:00:00+00:00 | revenue_daily: [('2026-03-01', 100.0)]
+```
+The second run gives identical output, and the order at exactly midnight on 2 March is left for the next interval. The inferred interval shows why Q537 warns against assuming a manual run's interval equals its logical date.
+
+**Real-World Use Case:**
+A finance team found that a "daily" job used `CURRENT_DATE - 1` in its SQL. After an outage, a three-day backfill reprocessed *yesterday* three times and left a two-day gap. Rewriting the SQL to use `data_interval_start`/`end` with a partition overwrite made every rerun exact. The quarter-end restatement became a routine backfill.
+
+**Common Mistakes / Interviewer Red Flags:**
+- `INSERT INTO ... SELECT` with no delete or overwrite step.
+- Joining to "current" dimension tables when reprocessing history.
+- Reading "the latest file" in the landing bucket instead of the file for the run's interval.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you reprocess one day safely while the daily schedule keeps running? — Clear that run or backfill it with `--reprocess-behavior completed`. Interval-keyed writes can't collide with other days.
+- What if the source isn't replayable? — Land raw data immutably first (an append-only bronze layer), and build every later step from that copy.
+
+---

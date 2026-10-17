@@ -2511,3 +2511,407 @@ A team ran a Postgres CDC source and an S3 sink on a three-worker Connect cluste
 - How do you keep secrets out of connector configs? — Config providers, such as `${file:/secrets/db.properties:password}` or vault-backed providers.
 
 ---
+
+### Q499. Converters vs SMTs vs serializers in Kafka Connect
+**ID:** KFK-31
+**Topic:** Kafka > Kafka Connect
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `kafka-connect`, `converters`, `smt`, `json`, `avro`
+
+**Short Answer (2–3 lines):**
+Connectors work with Connect's internal record model (schema plus struct). **Converters** turn that model into bytes on the way into Kafka and back on the way out: JSON, Avro, Protobuf, String, ByteArray. **Single Message Transforms (SMTs)** change one record at a time: rename, mask, route, insert a field. Both are set by configuration. Converters must match how the topic was actually written, or the sink fails to deserialise.
+
+**Detailed Explanation:**
+**Order on a source connector:** connector → SMTs → converter → producer → Kafka. On a sink it's the reverse: Kafka → consumer → converter → SMTs → connector.
+
+**Common converters**
+| Converter | Notes |
+|---|---|
+| `JsonConverter` | `schemas.enable=true` embeds a schema in every message (bulky); `false` gives plain JSON with no types |
+| `AvroConverter` / `ProtobufConverter` / `JsonSchemaConverter` | Need a Schema Registry; compact and typed (see Q504) |
+| `StringConverter` / `ByteArrayConverter` | Pass-through; good for keys or opaque payloads |
+
+Set them per worker (`key.converter`, `value.converter`) and override per connector. Key and value converters can differ: a String key with an Avro value is common.
+
+**Useful built-in SMTs** (Apache Kafka): `InsertField`, `ReplaceField` (include, exclude, rename), `MaskField`, `Cast`, `ExtractField`, `HoistField`, `ValueToKey`, `TimestampRouter`, `RegexRouter`, `Filter` with predicates, `HeaderFrom`, `InsertHeader`, `DropHeaders`, `TimestampConverter`, `Flatten`. Debezium adds `ExtractNewRecordState` and the outbox router (see Q503).
+
+**When not to use SMTs.** SMTs are stateless and per record. Joins, aggregations, lookups and anything needing state belong in Kafka Streams or Flink. Long SMT chains are hard to test and to version.
+
+**Predicates** let an SMT apply conditionally, for example only to tombstones or to topics matching a pattern.
+
+**Example / Code:**
+Source connector: wrap each log line, add a field, then route to a daily topic.
+```json
+{
+  "connector.class": "org.apache.kafka.connect.file.FileStreamSourceConnector",
+  "tasks.max": "1",
+  "file": "/var/log/web/access.log",
+  "topic": "web-access",
+  "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+  "value.converter.schemas.enable": "false",
+  "transforms": "wrap,addSource,route",
+  "transforms.wrap.type": "org.apache.kafka.connect.transforms.HoistField$Value",
+  "transforms.wrap.field": "line",
+  "transforms.addSource.type": "org.apache.kafka.connect.transforms.InsertField$Value",
+  "transforms.addSource.static.field": "source_host",
+  "transforms.addSource.static.value": "web-01",
+  "transforms.route.type": "org.apache.kafka.connect.transforms.TimestampRouter",
+  "transforms.route.topic.format": "${topic}-${timestamp}",
+  "transforms.route.timestamp.format": "yyyyMMdd"
+}
+```
+```text
+$ bin/kafka-console-consumer.sh --bootstrap-server localhost:19092 --topic web-access-20261017 --from-beginning
+{"line":"GET /home 200","source_host":"web-01"}
+{"line":"GET /cart 200","source_host":"web-01"}
+{"line":"POST /checkout 500","source_host":"web-01"}
+```
+`TimestampRouter` renamed `web-access` to `web-access-20261017`. `HoistField` turned the raw string into a struct, so `InsertField` had a struct to add `source_host` to. The two would fail the other way round.
+
+**Real-World Use Case:**
+A sink team received Avro from upstream but configured the sink with `JsonConverter`. Every record failed with "Converting byte[] to Kafka Connect data failed". Switching the sink's `value.converter` to `AvroConverter` with the registry URL fixed it, and a `MaskField` SMT redacted PII before the data reached the warehouse.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Mixing up converters (Connect) with serializers (plain producers and consumers).
+- Leaving `schemas.enable=true` on, then wondering why every JSON message has a schema envelope.
+- Building business logic as a chain of ten SMTs.
+- Ordering SMTs wrongly (they run in the listed order).
+
+**Follow-up Questions Interviewers Ask:**
+- How do you route only some records through an SMT? — Use `predicates`, such as `TopicNameMatches` or `RecordIsTombstone`, with `transforms.<name>.predicate`.
+- Where is the record key set for a JDBC source? — Use `ValueToKey` then `ExtractField$Key` to build the key from columns.
+- Can you write your own SMT? — Yes, implement `Transformation<R>` and add the JAR to the plugin path.
+
+---
+
+### Q500. Error handling in Kafka Connect: errors.tolerance and dead letter queues
+**ID:** KFK-32
+**Topic:** Kafka > Kafka Connect
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `kafka-connect`, `dlq`, `error-handling`, `poison-messages`
+
+**Short Answer (2–3 lines):**
+By default (`errors.tolerance=none`) one bad record fails the task, and the pipeline stops until someone acts. With `errors.tolerance=all`, failures in conversion or transforms are skipped. For **sink** connectors you can send those records to a dead letter queue topic, with headers describing the error. Connect's DLQ covers converter and SMT failures; errors inside the connector's own `put()` (such as a database constraint) are handled by the connector or fail the task.
+
+**Detailed Explanation:**
+Handling poison messages in general is on this site's poison-messages page and in Q39. This question covers Connect's built-in features.
+
+**Settings (per connector)**
+| Setting | Default | Meaning |
+|---|---|---|
+| `errors.tolerance` | `none` | `all` skips bad records instead of failing |
+| `errors.retry.timeout` | `0` | How long to retry retriable failures; `-1` retries forever |
+| `errors.retry.delay.max.ms` | 60000 | Backoff cap between retries |
+| `errors.log.enable`, `errors.log.include.messages` | `false` | Log failures, optionally with the record content |
+| `errors.deadletterqueue.topic.name` | (none) | Sink only: where failed records go |
+| `errors.deadletterqueue.context.headers.enable` | `false` | Adds `__connect.errors.*` headers: topic, partition, offset, stage, exception |
+| `errors.deadletterqueue.topic.replication.factor` | 3 | Lower it for small labs |
+
+**What the DLQ catches.** Failures in the key/value/header **converter** and in **transforms**. Since KIP-610, a sink connector may also report records with the `ErrantRecordReporter`, so a JDBC sink can route a row that hits a constraint violation. Whether it does depends on the connector.
+
+**Sources have no DLQ.** A source connector produces records; if conversion fails, `errors.tolerance=all` skips and logs them.
+
+**Operating a DLQ**
+- Alert on DLQ growth. A DLQ nobody reads is silent data loss.
+- Keep the original bytes (Connect writes the raw record) so a fixed pipeline can replay it.
+- Replay with a small consumer or a second connector after fixing the cause.
+
+**Example / Code:**
+```json
+{
+  "connector.class": "org.apache.kafka.connect.file.FileStreamSinkConnector",
+  "tasks.max": "1",
+  "topics": "customers",
+  "file": "/data/out/customers.out",
+  "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+  "value.converter.schemas.enable": "false",
+  "transforms": "mask,drop",
+  "transforms.mask.type": "org.apache.kafka.connect.transforms.MaskField$Value",
+  "transforms.mask.fields": "email",
+  "transforms.drop.type": "org.apache.kafka.connect.transforms.ReplaceField$Value",
+  "transforms.drop.exclude": "internal_note",
+  "errors.tolerance": "all",
+  "errors.retry.timeout": "0",
+  "errors.log.enable": "true",
+  "errors.deadletterqueue.topic.name": "dlq.customers-sink",
+  "errors.deadletterqueue.topic.replication.factor": "1",
+  "errors.deadletterqueue.context.headers.enable": "true"
+}
+```
+```bash
+# Runtime: Apache Kafka 4.3.1 — two good records and one that is not JSON
+printf '%s\n' '{"id":1,"name":"Asha","email":"asha@example.com","internal_note":"vip"}' 'not-json{' \
+  '{"id":2,"name":"Ben","email":"ben@example.com","internal_note":"-"}' \
+  | bin/kafka-console-producer.sh --bootstrap-server localhost:19092 --topic customers
+curl -s -X PUT -H 'Content-Type: application/json' --data @customers-sink.json \
+  localhost:18083/connectors/customers-sink/config
+cat /data/out/customers.out
+bin/kafka-console-consumer.sh --bootstrap-server localhost:19092 --topic dlq.customers-sink \
+  --from-beginning --formatter-property print.headers=true
+```
+```text
+{name=Asha, email=, id=1}
+{name=Ben, email=, id=2}
+__connect.errors.topic:customers
+__connect.errors.partition:0
+__connect.errors.offset:1
+__connect.errors.connector.name:customers-sink
+__connect.errors.stage:VALUE_CONVERTER
+__connect.errors.class.name:org.apache.kafka.connect.json.JsonConverter
+__connect.errors.exception.class.name:org.apache.kafka.connect.errors.DataException
+__connect.errors.exception.message:Converting byte[] to Kafka Connect data failed due to serialization error: 
+	not-json{
+```
+(Header output reformatted one per line.) The task stayed `RUNNING`, the good records were written with `email` masked and `internal_note` dropped, and the poison record landed in the DLQ with its source offset.
+
+**Real-World Use Case:**
+An S3 sink stopped for a weekend because one producer briefly sent malformed JSON, and `errors.tolerance` was at its default. After the incident, sinks used `errors.tolerance=all` with a DLQ and a lag alert on it. The next malformed burst went to the DLQ, was fixed and replayed within the hour, and the main flow never stopped.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Setting `errors.tolerance=all` without a DLQ or logging, which silently drops data.
+- Expecting a DLQ on a source connector.
+- Assuming every sink-side failure (like a database outage) goes to the DLQ; retriable errors are retried, and connector-level errors may fail the task.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you build retry topics with delays for plain consumers? — Route failures to `retry-5m` / `retry-1h` topics consumed with a delay, then to a final DLQ (or use share groups' delivery count, see Q488).
+- Which header tells you where the failure happened? — `__connect.errors.stage` (for example `VALUE_CONVERTER`, `TRANSFORMATION`, `TASK_PUT`).
+- How do you replay a DLQ? — Fix the cause, then consume the DLQ and re-produce the original bytes to the source topic or straight to the sink.
+
+---
+
+### Q501. Exactly-once source connectors and what "exactly-once" means for sinks
+**ID:** KFK-33
+**Topic:** Kafka > Kafka Connect
+**Level:** Advanced
+**Frequency:** Occasional
+**Tags:** `kafka-connect`, `exactly-once`, `kip-618`, `transactions`, `source-connectors`
+
+**Short Answer (2–3 lines):**
+Since Kafka 3.3 (KIP-618), distributed workers with `exactly.once.source.support=enabled` run each source task with a transactional producer. The records and the task's source offsets commit in the same Kafka transaction, so a crash can't cause duplicates or gaps in Kafka. Sinks don't use Kafka transactions. They are exactly-once only if the connector writes idempotently or stores offsets in the target atomically (see Q493).
+
+**Detailed Explanation:**
+**Without EOS (the default, `exactly.once.source.support=disabled`).** A source task produces records and, separately, flushes source offsets every `offset.flush.interval.ms` (60 s). A crash between the two replays everything since the last flush, so you get duplicates.
+
+**With EOS**
+- Turn it on cluster-wide in two rolls: `preparing`, then `enabled`. All workers must be 3.3 or newer and in distributed mode.
+- Each task gets a transactional ID like `<group.id>-<connector>-<task>`, as the lab output below shows. The leader also uses a transactional producer to write configs, which fences zombie workers.
+- `transaction.boundary` (per connector): `poll` (default, one transaction per poll batch), `interval` (time-based), or `connector` (the connector defines its own boundaries).
+- `exactly.once.support=required` makes connector creation fail if the plugin can't support EOS. The default `requested` is best-effort.
+- Downstream consumers need `isolation.level=read_committed` (the default in librdkafka, but not in Java).
+- ACLs: the worker principal needs transactional ID and idempotent-write permissions.
+
+**What the connector must do.** It must report precise source offsets and be able to resume from them. Debezium supports this for several databases; check each connector's documentation.
+
+**Sinks**
+- The Kafka side is just consumer offsets.
+- Exactly-once into the target needs idempotent upserts (JDBC `insert.mode=upsert`), deterministic object names (S3 sinks name files by partition and start offset), or atomic offset storage in the target.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Kafka 4.3.1 — worker started with exactly.once.source.support=enabled (see Q498's worker.properties)
+bin/kafka-transactions.sh --bootstrap-server localhost:19092 list
+```
+```text
+TransactionalId            	Coordinator	ProducerId	TransactionState	
+connect-cluster-connect-lab	1          	2000      	CompleteCommit  	
+connect-lab-access-source-0	1          	2001      	CompleteCommit  	
+enricher-tx-0              	1          	1001      	CompleteCommit  	
+```
+`connect-cluster-connect-lab` is the worker leader's config producer, and `connect-lab-access-source-0` is task 0 of the `access-source` connector, which commits a transaction per poll. (`enricher-tx-0` is the Python app from Q494.)
+```json
+{
+  "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+  "exactly.once.support": "required",
+  "transaction.boundary": "poll"
+}
+```
+
+**Real-World Use Case:**
+A CDC pipeline into a ledger topic produced a few duplicate change events after each Connect worker crash, and downstream balance calculations needed de-duplication. After enabling exactly-once source support (in two rolling steps) and setting `read_committed` on consumers, worker crashes no longer produced duplicates in the topic.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Thinking enabling EOS on the worker makes sink connectors exactly-once.
+- Enabling it in one step on a mixed-version cluster.
+- Forgetting `read_committed` downstream, so consumers still see aborted records.
+- Missing ACLs for transactional IDs, which shows up as tasks failing at start-up.
+
+**Follow-up Questions Interviewers Ask:**
+- Does EOS cost throughput? — Some: commit markers and coordinator round trips per transaction; `interval` boundaries can batch more.
+- Where are source offsets stored with EOS? — Still in the offsets topic (or a per-connector `offsets.storage.topic`), written inside the task's transaction.
+- What if the source system itself replays? — EOS covers Connect's own crash window, not a source that re-emits data; downstream idempotency still helps.
+
+---
+### Q502. Debezium snapshots, incremental snapshots and replication-slot risks
+**ID:** KFK-34
+**Topic:** Kafka > CDC with Debezium
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `debezium`, `cdc`, `snapshots`, `postgres`, `replication-slot`
+
+**Short Answer (2–3 lines):**
+On first start, Debezium usually takes a **snapshot**: it reads existing rows as `op=r` events, then switches to streaming changes from the transaction log. **Incremental snapshots**, triggered by a signal, re-read tables in chunks *while* streaming continues, so you can backfill or add a table without stopping. The operational risk is the source side: an inactive or lagging Postgres replication slot keeps WAL on the database until the disk fills.
+
+**Detailed Explanation:**
+The end-to-end CDC design is covered in Q50 and on the Debezium page. This question is about running it.
+
+**`snapshot.mode` (Postgres connector, Debezium 3.x)**
+| Mode | Behaviour |
+|---|---|
+| `initial` (default) | Snapshot if no offsets exist, then stream |
+| `initial_only` | Snapshot, then stop |
+| `no_data` | Skip existing rows; stream from now (formerly `never`) |
+| `when_needed` | Snapshot again if stored offsets are no longer available in the log |
+| `always` | Snapshot on every start |
+| `configuration_based` / `custom` | Fine-grained or pluggable control |
+
+**Incremental snapshots** (a watermark-based design)
+- Configure a signalling table (`signal.data.collection`) or a Kafka signal topic.
+- Insert an `execute-snapshot` signal. Debezium reads the table in primary-key chunks (`incremental.snapshot.chunk.size`, 1024) and interleaves them with live changes, so a row being updated isn't overwritten by a stale snapshot read.
+- Events carry `op=r` with `source.snapshot="incremental"`.
+- Use them to add a table to `table.include.list`, to repair a downstream sink, or to backfill after a long outage.
+
+**Replication slot hazards (Postgres)**
+- The slot keeps WAL until Debezium confirms it. A stopped connector means WAL grows without limit.
+- Even an *active* slot can lag when the captured tables are quiet but the database is busy. Set `heartbeat.interval.ms` (default 0, off), and possibly a `heartbeat.action.query`, so offsets advance.
+- Guard rails: monitor `pg_replication_slots` lag, set Postgres `max_slot_wal_keep_size`, and drop slots of retired connectors.
+- On failover to a replica, the slot must exist there (Postgres 17+ failover slots, or recreate it and re-snapshot).
+
+**Example / Code:**
+```json
+{
+  "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+  "database.hostname": "localhost",
+  "database.port": "5498",
+  "database.user": "postgres",
+  "database.password": "postgres",
+  "database.dbname": "shop",
+  "topic.prefix": "shop",
+  "plugin.name": "pgoutput",
+  "slot.name": "shop_cdc",
+  "publication.autocreate.mode": "filtered",
+  "table.include.list": "public.customers",
+  "snapshot.mode": "initial",
+  "signal.data.collection": "public.debezium_signal",
+  "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+  "key.converter.schemas.enable": "false",
+  "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+  "value.converter.schemas.enable": "false",
+  "tasks.max": "1"
+}
+```
+```bash
+# Runtime: PostgreSQL 16 (wal_level=logical), Debezium 3.7.0.Final on Kafka Connect 4.3.1
+psql -h localhost -p 5498 -U postgres -d shop -c "SELECT slot_name, plugin, active,
+  pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn)) AS lag_behind
+  FROM pg_replication_slots;"
+# Trigger an incremental snapshot of one table while streaming continues
+psql -h localhost -p 5498 -U postgres -d shop -c "INSERT INTO debezium_signal VALUES ('adhoc-1',
+  'execute-snapshot', '{\"data-collections\": [\"public.customers\"], \"type\": \"incremental\"}');"
+```
+```text
+ slot_name |  plugin  | active | lag_behind 
+-----------+----------+--------+------------
+ shop_cdc  | pgoutput | t      | 273 kB
+(1 row)
+
+INSERT 0 1
+```
+Events on `shop.public.customers`, summarised (initial snapshot, live changes, then the incremental snapshot):
+```text
+key={"id":1}  op=r snapshot=first lsn=26362464 before=null after={"id": 1, "name": "Asha", "tier": "gold"}
+key={"id":2}  op=r snapshot=last  lsn=26362464 before=null after={"id": 2, "name": "Ben", "tier": "silver"}
+key={"id":3}  op=c snapshot=false lsn=26362504 before=null after={"id": 3, "name": "Chen", "tier": "bronze"}
+key={"id":1}  op=u snapshot=false lsn=26362640 before={"id": 1, "name": "Asha", "tier": "gold"} after={"id": 1, "name": "Asha", "tier": "platinum"}
+key={"id":2}  op=d snapshot=false lsn=26362744 before={"id": 2, "name": "Ben", "tier": "silver"} after=null
+key={"id":1}  op=r snapshot=incremental after={"id": 1, "name": "Asha", "tier": "platinum"}
+key={"id":3}  op=r snapshot=incremental after={"id": 3, "name": "Chen", "tier": "bronze"}
+```
+The slot showed 273 kB of lag although active, because nothing in the captured table had changed recently. That is what heartbeats are for.
+
+**Real-World Use Case:**
+A team paused a Debezium connector over a long weekend during a migration. The Postgres primary's disk filled with retained WAL and the database stopped accepting writes. They now alert on slot lag, set `max_slot_wal_keep_size`, and enable heartbeats on every CDC connector.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Deleting a connector but leaving its replication slot behind.
+- Using `snapshot.mode=always` on big tables, which re-reads them on every restart.
+- Re-snapshotting a huge table by resetting offsets, when an incremental snapshot would avoid downtime.
+- Not knowing that tables without a primary key complicate incremental snapshots (you need a surrogate key via `message.key.columns`).
+
+**Follow-up Questions Interviewers Ask:**
+- How do you add a new table to a running connector? — Add it to `table.include.list`, then send an incremental snapshot signal for it.
+- What is `REPLICA IDENTITY FULL` for? — It makes Postgres log the full old row, so `before` is populated for updates and deletes.
+- How do downstream consumers tell snapshot rows from live inserts? — `op=r` versus `op=c`, and `source.snapshot`.
+
+---
+
+### Q503. Debezium change events: the envelope, tombstones and flattening with ExtractNewRecordState
+**ID:** KFK-35
+**Topic:** Kafka > CDC with Debezium
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `debezium`, `cdc`, `smt`, `tombstones`, `compaction`
+
+**Short Answer (2–3 lines):**
+Each Debezium event carries `before`, `after`, `op` (c, u, d, r), `source` metadata (LSN, transaction ID, timestamp, table) and `ts_ms`, keyed by the primary key. A delete is sent as a `d` event followed by a **tombstone** (null value), so compacted topics can drop the key. Most sinks want just the row, which the `ExtractNewRecordState` SMT produces, optionally adding `__op` and a `__deleted` flag.
+
+**Detailed Explanation:**
+**Envelope fields**
+| Field | Meaning |
+|---|---|
+| `before` | Row before the change (nulls unless `REPLICA IDENTITY FULL` or the key-only default) |
+| `after` | Row after the change (null for deletes) |
+| `op` | `c` create, `u` update, `d` delete, `r` snapshot read, `t` truncate, `m` message |
+| `source` | Connector, database, schema, table, `lsn`, `txId`, `snapshot`, source timestamp |
+| `ts_ms` / `ts_us` | When Debezium processed the event |
+
+**Keys and ordering.** The record key is the primary key, so all changes to one row go to one partition in order (see Q69). Downstream "latest wins" logic should compare `source.lsn` (or a similar position), not arrival order (see Q50).
+
+**Deletes**
+- `d` event: the consumer learns *what* was deleted.
+- Tombstone: lets log compaction remove the key (see Q71). Controlled by `tombstones.on.delete` (default `true`).
+
+**Flattening with `ExtractNewRecordState`**
+- Emits only `after`, which is what JDBC, Elasticsearch or lake sinks expect.
+- `add.fields=op,source.ts_ms` copies metadata in as `__op` and `__source_ts_ms`.
+- `delete.tombstone.handling.mode`: `tombstone` (keep tombstones), `drop`, `rewrite` (a delete becomes the last known row with `__deleted=true`), `rewrite-with-tombstone`, or `delete-to-tombstone` (the delete becomes just a tombstone).
+
+**Outbox pattern.** For domain events (not raw table changes), services write to an `outbox` table in the same transaction as their state change, and Debezium's `EventRouter` SMT routes each row to a topic. This avoids dual writes and keeps internal table schemas private.
+
+**Example / Code:**
+```json
+{
+  "topic.prefix": "shopflat",
+  "slot.name": "shop_flat",
+  "publication.name": "shop_flat_pub",
+  "transforms": "unwrap",
+  "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
+  "transforms.unwrap.add.fields": "op,source.ts_ms",
+  "transforms.unwrap.delete.tombstone.handling.mode": "rewrite"
+}
+```
+(Added to the connector config shown in Q502.) After `UPDATE customers SET tier='gold' WHERE id=3; DELETE FROM customers WHERE id=1;`:
+```text
+{"id":3}	{"id":3,"name":"Chen","tier":"bronze","__deleted":"false","__op":"r","__source_ts_ms":1792264243073}
+{"id":1}	{"id":1,"name":"Asha","tier":"platinum","__deleted":"false","__op":"r","__source_ts_ms":1792264243073}
+{"id":3}	{"id":3,"name":"Chen","tier":"gold","__deleted":"false","__op":"u","__source_ts_ms":1792264247678}
+{"id":1}	{"id":1,"name":"Asha","tier":"platinum","__deleted":"true","__op":"d","__source_ts_ms":1792264247678}
+```
+Compare the raw envelope in Q502, where the delete was a `d` event (`after=null`) followed by a `null` tombstone for key `{"id":2}`.
+
+**Real-World Use Case:**
+A team loaded CDC into a warehouse with a JDBC sink that couldn't parse the nested envelope. Adding `ExtractNewRecordState` with `rewrite` let a dbt model treat `__deleted='true'` as a soft delete, with `__source_ts_ms` for ordering, which fed the SCD logic in Q51.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Dropping tombstones on a compacted CDC topic, so deleted keys live forever.
+- Ordering updates by Kafka timestamp instead of the source LSN.
+- Exposing raw table CDC as a public contract instead of an outbox topic.
+- Forgetting that `before` is mostly empty without `REPLICA IDENTITY FULL`.
+
+**Follow-up Questions Interviewers Ask:**
+- What does `op=t` mean? — A truncate event (Postgres), emitted only if enabled; many sinks can't apply it.
+- How do you get schema changes downstream? — Use Avro or Protobuf with a Schema Registry (see Q504); Debezium registers new schema versions as columns change.
+- Can you capture only some columns? — Yes, `column.include.list` or `column.exclude.list`, and `column.mask.*` options for PII.
+
+---

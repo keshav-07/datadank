@@ -57,7 +57,7 @@ def count_triplets_brute(arr, limit):
 
 Walkthrough on sorted `[-2, 0, 1, 3]`, `limit = 2`, `i = 0` (value −2):
 
-| lo | hi | sum | action | count |
+| value at lo | value at hi | sum | action | count |
 |---|---|---|---|---|
 | 0 | 3 | 1 | below: add hi − lo = 2, lo right | 2 |
 | 1 | 3 | 2 | not below: hi left | 2 |

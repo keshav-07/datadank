@@ -32,7 +32,7 @@ Design an in-memory class for a tiny social network with four operations:
 
 Users always see their own posts. Following yourself, or unfollowing someone you do not follow, has no effect. This is widely known as LeetCode 355 (Design Twitter). It combines a small object design with a heap-based merge of sorted lists.
 
-Constraints for this version: up to 500 users, up to 30,000 calls in total, post ids unique.
+Post ids are unique, user ids are small integers, and calls can number in the tens of thousands, so a feed should not rescan the whole history.
 
 ## Examples
 

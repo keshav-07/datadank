@@ -31,9 +31,9 @@ The string can be up to around 100,000 digits, so you cannot try every subset of
 ```text
 num = "4273",     k = 1   ->  "273"     (delete 4, the first digit followed by a smaller one)
 num = "4273",     k = 2   ->  "23"
-num = "30200",    k = 1   ->  "200"     ("0200" loses its leading zero)
+num = "50601",    k = 1   ->  "601"     ("0601" loses its leading zero)
 num = "12345",    k = 2   ->  "123"     (increasing: delete from the end)
-num = "90",       k = 2   ->  "0"
+num = "74",       k = 2   ->  "0"       (nothing is left)
 ```
 
 ## Approach 1: brute force (one peak per pass)
@@ -98,8 +98,8 @@ def smallest_exhaustive(num, k):
             best = s
     return best if best is not None else "0"
 
-cases = [("4273", 1, "273"), ("4273", 2, "23"), ("30200", 1, "200"),
-         ("12345", 2, "123"), ("90", 2, "0"), ("0", 0, "0"), ("10", 1, "0"),
+cases = [("4273", 1, "273"), ("4273", 2, "23"), ("50601", 1, "601"),
+         ("12345", 2, "123"), ("74", 2, "0"), ("0", 0, "0"), ("10", 1, "0"),
          ("100200", 1, "200"), ("1111", 2, "11"), ("54321", 0, "54321")]
 for num, k, want in cases:
     assert remove_k_digits(num, k) == want, (num, k)
@@ -121,7 +121,7 @@ assert remove_k_digits("9" * 50_000 + "1" * 50_000, 50_000) == "1" * 50_000
 
 - **Leftover deletions.** For non-decreasing input such as `"12345"`, the loop never pops; you must cut the remaining `k` from the end.
 - **`stack[:-k]` with k = 0** would return an empty list, so guard it with `if k`.
-- **Leading zeros** appear after deleting the first digit (`"10"` → `"0"`, `"30200"` → `"0200"`). Strip them once at the end, and return `"0"` for an empty string.
+- **Leading zeros** appear after deleting the first digit (`"10"` → `"0"`, `"50601"` → `"0601"`). Strip them once at the end, and return `"0"` for an empty string.
 - **Strictly greater when popping.** Popping equal digits wastes deletions: `"1111"` with k = 2 should be `"11"` either way, but `"112"` with k = 1 must become `"11"`, not `"12"`.
 - **Do not convert to an integer** to compare candidates; the string can be far longer than is practical to convert repeatedly.
 

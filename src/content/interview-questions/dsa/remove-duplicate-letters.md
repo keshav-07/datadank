@@ -27,8 +27,8 @@ Given a string of lowercase letters, delete characters so that every distinct le
 ## Examples
 
 ```text
-"cbacdcbc"  ->  "acdb"
-"bcabc"     ->  "abc"
+"dbcadcbd"  ->  "acbd"
+"bcab"      ->  "bca"     (the only c comes before the a, so it cannot be dropped)
 "abacb"     ->  "abc"
 "zyx"       ->  "zyx"     (no duplicates: nothing to choose)
 "aaaa"      ->  "a"
@@ -71,18 +71,18 @@ def remove_dups(s):
     return "".join(stack)
 ```
 
-Walkthrough on `"cbacdcbc"`:
+Walkthrough on `"dbcadcbd"` (last positions: a 3, c 5, b 6, d 7):
 
 | i | char | action | stack |
 |---|---|---|---|
-| 0 | c | push | c |
-| 1 | b | c > b and c appears later: pop c; push b | b |
-| 2 | a | b > a and b appears later: pop b; push a | a |
-| 3 | c | push | a c |
-| 4 | d | push | a c d |
-| 5 | c | already in stack: skip | a c d |
-| 6 | b | d > b but d never appears again: stop; push b | a c d b |
-| 7 | c | already in stack: skip | a c d b |
+| 0 | d | push | d |
+| 1 | b | d > b and d appears later: pop d; push b | b |
+| 2 | c | push | b c |
+| 3 | a | c > a and c appears later: pop c; b > a and b appears later: pop b; push a | a |
+| 4 | d | push | a d |
+| 5 | c | d > c and d appears later: pop d; push c | a c |
+| 6 | b | c > b but c never appears again: stop; push b | a c b |
+| 7 | d | push | a c b d |
 
 **Why it is correct:** the stack always holds the smallest possible prefix that can still be completed with every remaining letter. A pop only happens when the removed letter can be picked up later, so feasibility is kept, and placing the smaller letter earlier makes the result strictly smaller in dictionary order.
 
@@ -94,8 +94,8 @@ Walkthrough on `"cbacdcbc"`:
 import random
 
 for f in (remove_dups, remove_dups_brute):
-    assert f("cbacdcbc") == "acdb"
-    assert f("bcabc") == "abc"
+    assert f("dbcadcbd") == "acbd"
+    assert f("bcab") == "bca"
     assert f("abacb") == "abc"
     assert f("zyx") == "zyx"
     assert f("aaaa") == "a"
@@ -113,7 +113,7 @@ print("ok")
 
 - Check `last[top] > i` before popping. Popping a letter whose last copy has already passed loses it from the answer entirely.
 - Skip letters already on the stack; without the set, a later copy can pop letters and create duplicates or a worse order.
-- Sorting the distinct letters (`"abcd"`) is wrong: the result must be a subsequence, so order constraints from the input still apply, as `"cbacdcbc" -> "acdb"` shows.
+- Sorting the distinct letters (`"abcd"`) is wrong: the result must be a subsequence, so order constraints from the input still apply, as `"dbcadcbd" -> "acbd"` shows.
 - Remove from the set when you pop, so the letter can be pushed again later.
 
 ## Where this shows up in data engineering

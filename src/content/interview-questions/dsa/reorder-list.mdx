@@ -12,8 +12,8 @@ shortAnswer: "Split the list at its middle with slow and fast pointers, reverse 
 followUps: ["Why does the first half get the middle node when the length is odd?", "How would you check if a linked list is a palindrome using the same steps?", "Can you restore the original list afterwards?"]
 versionContext: "Python 3 solutions verified with assert-based tests"
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-09"
+reviewedDate: "2026-10-09"
 practice: {"platform": "LeetCode", "number": 143, "title": "Reorder List", "url": "https://leetcode.com/problems/reorder-list/"}
 previous: "interview-questions:dsa/palindrome-linked-list"
 next: "interview-questions:dsa/find-the-duplicate-number"
@@ -25,14 +25,14 @@ Given the head of a singly linked list with nodes `N0, N1, ..., Nk`, rearrange t
 
 This is widely known as LeetCode 143 (Reorder List). It is a favourite because it chains three smaller techniques: finding the middle, reversing a list and merging two lists.
 
-Constraints for this version: 1 to 50,000 nodes.
+The list is non-empty and can be long, so an O(n^2) approach that walks to the tail repeatedly is too slow.
 
 ## Examples
 
 | Before | After |
 |---|---|
 | `a -> b -> c -> d -> e -> f` | `a -> f -> b -> e -> c -> d` |
-| `1 -> 2 -> 3 -> 4 -> 5` | `1 -> 5 -> 2 -> 4 -> 3` |
+| `10 -> 20 -> 30 -> 40 -> 50` | `10 -> 50 -> 20 -> 40 -> 30` |
 | `9 -> 8` | `9 -> 8` |
 | `6` | `6` |
 
@@ -74,13 +74,13 @@ O(n) time and O(n) space. A clear, correct answer to give first.
 2. **Cut and reverse** the second half.
 3. **Interleave**: take one node from the first half, then one from the reversed second half, until the second half runs out.
 
-**Walkthrough** for `1 -> 2 -> 3 -> 4 -> 5`:
+**Walkthrough** for `10 -> 20 -> 30 -> 40 -> 50`:
 
 | Phase | State |
 |---|---|
-| Middle | `slow` stops at 3; first half `1 -> 2 -> 3`, second half `4 -> 5` |
-| Reverse | second half becomes `5 -> 4` |
-| Interleave | `1 -> 5 -> 2 -> 4 -> 3` |
+| Middle | `slow` stops at 30; first half `10 -> 20 -> 30`, second half `40 -> 50` |
+| Reverse | second half becomes `50 -> 40` |
+| Interleave | `10 -> 50 -> 20 -> 40 -> 30` |
 
 ```python
 def reorder_list(head):
@@ -145,7 +145,7 @@ def expected_order(values):
     return out
 
 for fn in (reorder_with_array, reorder_list):
-    for values in [[6], [9, 8], [1, 2, 3], [1, 2, 3, 4, 5], list("abcdef"),
+    for values in [[6], [9, 8], [1, 2, 3], [10, 20, 30, 40, 50], list("abcdef"),
                    [3, 3, 3, 3], list(range(101))]:
         head = build_list(values)
         fn(head)

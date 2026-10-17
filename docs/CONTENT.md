@@ -81,7 +81,7 @@ section (never edit those by hand):
 |---|---|
 | Core Data Engineering (100) | `/career/data-engineering-interview-questions/` |
 | SQL, Snowflake, Databricks, PySpark, Python (50 each) | `/<course>/<course>-interview-questions/` |
-| dbt (50) | `/etl-elt/dbt-interview-questions/` |
+| dbt (50) | `/dbt/dbt-interview-questions/` (dbt course) |
 | Scenario-based (50), Behavioral (18) | `/career/…-interview-questions/` |
 
 Each question is an `<h3>` ("17. ROWS vs RANGE window frames") with its short answer (or scenario) visible and

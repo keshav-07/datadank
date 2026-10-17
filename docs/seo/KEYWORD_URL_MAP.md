@@ -34,7 +34,7 @@ CTR, average position, indexing status, last substantive update.
 | top PySpark / Spark interview questions | `/pyspark/pyspark-interview-questions/` | Top 50 PySpark Interview Questions and Answers |
 | Snowflake interview questions | `/snowflake/snowflake-interview-questions/` | Top 50 Snowflake Interview Questions and Answers |
 | Databricks interview questions | `/databricks/databricks-interview-questions/` | Top 50 Databricks Interview Questions and Answers |
-| dbt interview questions | `/etl-elt/dbt-interview-questions/` | Top 50 dbt Interview Questions and Answers |
+| dbt interview questions | `/dbt/dbt-interview-questions/` | Top 50 dbt Interview Questions and Answers |
 | Python interview questions for data engineers | `/python/python-interview-questions/` | Top 50 Python Interview Questions for Data Engineers |
 | top data engineering interview questions | `/career/data-engineering-interview-questions/` | Top 100 Data Engineer Interview Questions & Answers |
 | scenario based data engineering interview questions | `/career/scenario-based-data-engineering-interview-questions/` | 50 Scenario-Based Data Engineer Interview Questions |

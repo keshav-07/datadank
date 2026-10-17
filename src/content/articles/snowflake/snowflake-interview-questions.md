@@ -502,7 +502,7 @@ A dbt project's 300 staging and intermediate models were transient (dbt's defaul
 
 **Common uses**
 - **Dev and test environments:** clone production into `DEV_DB` in seconds for realistic testing (see [Dev/test/prod environments and promoting data code](/career/data-engineering-interview-questions/#68-devtestprod-environments-and-promoting-data-code)).
-- **CI:** per-pull-request clones that are dropped after the run (see [dbt clone and zero-copy CI environments](/etl-elt/dbt-interview-questions/#50-dbt-clone-and-zero-copy-ci-environments) for `dbt clone`).
+- **CI:** per-pull-request clones that are dropped after the run (see [dbt clone and zero-copy CI environments](/dbt/dbt-interview-questions/#50-dbt-clone-and-zero-copy-ci-environments) for `dbt clone`).
 - **Safe experiments and backfills:** clone, run the risky change, compare, swap (see [Write-Audit-Publish and blue-green deployments for data](/career/data-engineering-interview-questions/#98-write-audit-publish-and-blue-green-deployments-for-data)).
 - **Point-in-time snapshots** for audits or month-end freezes.
 
@@ -1751,7 +1751,7 @@ An e-commerce silver model explodes order JSON into `order_lines` and `line_disc
 - Limits apply: a cap on how many columns can be added per COPY, and type changes are not evolved automatically. Check the docs.
 
 **Governance**
-- Automatic evolution is convenient in **bronze or raw** landing. In silver and gold, explicit, reviewed schema changes and contracts are safer (see [What are data contracts, and how do you enforce them?](/career/data-engineering-interview-questions/#83-what-are-data-contracts-and-how-do-you-enforce-them), [Model contracts](/etl-elt/dbt-interview-questions/#41-model-contracts)).
+- Automatic evolution is convenient in **bronze or raw** landing. In silver and gold, explicit, reviewed schema changes and contracts are safer (see [What are data contracts, and how do you enforce them?](/career/data-engineering-interview-questions/#83-what-are-data-contracts-and-how-do-you-enforce-them), [Model contracts](/dbt/dbt-interview-questions/#41-model-contracts)).
 - Monitor added columns through `INFORMATION_SCHEMA.COLUMNS` changes, or by alerting on DDL in query history.
 
 **Alternative:** land raw data as a single VARIANT column (see [VARIANT and semi-structured data](#12-variant-and-semi-structured-data)). Schema changes then never break loads, and typing happens downstream.
@@ -1929,7 +1929,7 @@ Every new dbt model used to need a manual grant ticket, until the team added fut
 <p class="qb-label">Follow-up questions</p>
 
 - How do you audit who can access a table? — `SHOW GRANTS ON TABLE ...`, `GRANTS_TO_ROLES` / `GRANTS_TO_USERS` in ACCOUNT_USAGE, plus role hierarchy traversal.
-- What does dbt do with grants? — The `grants` config applies privileges after each build (see [grants and persist_docs configs](/etl-elt/dbt-interview-questions/#32-grants-and-persist_docs-configs)).
+- What does dbt do with grants? — The `grants` config applies privileges after each build (see [grants and persist_docs configs](/dbt/dbt-interview-questions/#32-grants-and-persist_docs-configs)).
 
 </details>
 
@@ -3087,7 +3087,7 @@ Find the costliest queries from query history, then read each one's profile. Fix
 - Clustering keys for large tables with mismatched filters (see [Clustering keys, clustering depth and Automatic Clustering](#17-clustering-keys-clustering-depth-and-automatic-clustering)).
 - Search optimization for point lookups (see [Search Optimization Service vs clustering](#38-search-optimization-service-vs-clustering)).
 - Materialized views or dynamic tables for repeated aggregates (see [Dynamic Tables: target lag and refresh modes](#22-dynamic-tables-target-lag-and-refresh-modes), [Materialized views in Snowflake and their limitations](#23-materialized-views-in-snowflake-and-their-limitations)).
-- Incremental models instead of full rebuilds (see [Incremental models and is_incremental()](/etl-elt/dbt-interview-questions/#15-incremental-models-and-is_incremental)).
+- Incremental models instead of full rebuilds (see [Incremental models and is_incremental()](/dbt/dbt-interview-questions/#15-incremental-models-and-is_incremental)).
 - Type and extract hot VARIANT paths into columns (see [VARIANT and semi-structured data](#12-variant-and-semi-structured-data)).
 
 **4. Warehouse and workload**

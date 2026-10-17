@@ -2992,7 +2992,7 @@ A team maintained 25 SCD2 dimensions with custom MERGE notebooks and kept hittin
 <p class="qb-label">Follow-up questions</p>
 
 - How do you query current rows? — Filter `__END_AT IS NULL`.
-- How does this compare to dbt snapshots? — Same SCD2 idea; dbt snapshots compare state on each run, AUTO CDC applies streamed change events (see [Snapshots: timestamp vs check strategy (See also Q12)](/etl-elt/dbt-interview-questions/#17-snapshots-timestamp-vs-check-strategy-see-also-q12)).
+- How does this compare to dbt snapshots? — Same SCD2 idea; dbt snapshots compare state on each run, AUTO CDC applies streamed change events (see [Snapshots: timestamp vs check strategy (See also Q12)](/dbt/dbt-interview-questions/#17-snapshots-timestamp-vs-check-strategy-see-also-q12)).
 
 </details>
 

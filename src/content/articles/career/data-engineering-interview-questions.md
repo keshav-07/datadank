@@ -588,7 +588,7 @@ Before migrating a CRM, the team agrees a conceptual model with sales operations
 <p class="qb-label">Follow-up questions</p>
 
 - Which tools do you use? — ER diagram tools for design, and dbt docs or a catalog to keep the model documented next to the code.
-- How do you keep models in sync with reality? — Generate documentation from the code and enforce contracts (see [Model contracts](/etl-elt/dbt-interview-questions/#41-model-contracts)).
+- How do you keep models in sync with reality? — Generate documentation from the code and enforce contracts (see [Model contracts](/dbt/dbt-interview-questions/#41-model-contracts)).
 
 </details>
 
@@ -718,7 +718,7 @@ A full load reads and replaces the entire dataset every run. An incremental load
 - Much cheaper at scale, and often the only way to meet tight SLAs on large tables.
 - Risks: missed changes if the watermark is unreliable, deletes not captured, late-arriving records skipped, and drift from the source over time.
 
-A common compromise: **incremental daily, with a periodic full refresh** (weekly or monthly) or a reconciliation job comparing counts and checksums against the source. Another is a **lookback window**: reprocess the last N days on each run to catch late updates (see [Late-arriving data in incremental models (lookback windows)](/etl-elt/dbt-interview-questions/#47-late-arriving-data-in-incremental-models-lookback-windows)).
+A common compromise: **incremental daily, with a periodic full refresh** (weekly or monthly) or a reconciliation job comparing counts and checksums against the source. Another is a **lookback window**: reprocess the last N days on each run to catch late updates (see [Late-arriving data in incremental models (lookback windows)](/dbt/dbt-interview-questions/#47-late-arriving-data-in-incremental-models-lookback-windows)).
 
 | Aspect | Full load | Incremental load |
 |---|---|---|
@@ -1697,7 +1697,7 @@ CI (continuous integration) means every change goes through version control and 
 **Typical CI stages** (on every pull request)
 1. **Static checks:** formatting and linting (SQLFluff, ruff), type checks, secret scanning.
 2. **Unit tests:** pure-function and transformation tests on small fixtures (pytest, dbt unit tests).
-3. **Build and integration tests:** run changed models plus their downstream models in an isolated CI schema, often with dbt slim CI (see [Slim CI with state:modified and `--defer`](/etl-elt/dbt-interview-questions/#44-slim-ci-with-statemodified-and---defer)) or zero-copy clones (see [Zero-copy cloning](/snowflake/snowflake-interview-questions/#7-zero-copy-cloning)).
+3. **Build and integration tests:** run changed models plus their downstream models in an isolated CI schema, often with dbt slim CI (see [Slim CI with state:modified and `--defer`](/dbt/dbt-interview-questions/#44-slim-ci-with-statemodified-and---defer)) or zero-copy clones (see [Zero-copy cloning](/snowflake/snowflake-interview-questions/#7-zero-copy-cloning)).
 4. **Data diff:** compare outputs between production and the branch (row counts, key metrics).
 5. **Review and approval.**
 
@@ -2173,7 +2173,7 @@ An insurer keeps policyholder risk tier as SCD2. Claims facts look up the tier v
 <p class="qb-label">Follow-up questions</p>
 
 - How do you test an SCD2 table? — Exactly one current row per natural key, no overlapping ranges, and `valid_from < valid_to`.
-- How does dbt do this? — Snapshots implement the same pattern (see [Snapshots: timestamp vs check strategy (See also Q12)](/etl-elt/dbt-interview-questions/#17-snapshots-timestamp-vs-check-strategy-see-also-q12)). On Databricks, AUTO CDC can maintain it (see [AUTO CDC (formerly APPLY CHANGES) for SCD Type 1/2 in pipelines](/databricks/databricks-interview-questions/#42-auto-cdc-formerly-apply-changes-for-scd-type-12-in-pipelines)).
+- How does dbt do this? — Snapshots implement the same pattern (see [Snapshots: timestamp vs check strategy (See also Q12)](/dbt/dbt-interview-questions/#17-snapshots-timestamp-vs-check-strategy-see-also-q12)). On Databricks, AUTO CDC can maintain it (see [AUTO CDC (formerly APPLY CHANGES) for SCD Type 1/2 in pipelines](/databricks/databricks-interview-questions/#42-auto-cdc-formerly-apply-changes-for-scd-type-12-in-pipelines)).
 
 </details>
 
@@ -2506,7 +2506,7 @@ The three can differ by seconds or by days. A phone that was offline on a flight
 
 **Why it matters**
 - Windowed aggregations by processing time change when you replay or when the system lags. By event time they are reproducible.
-- Event-time processing needs a rule for **how long to wait for late data**. In streaming this is the **watermark** (see [Watermarks and late data in Structured Streaming](/pyspark/pyspark-interview-questions/#47-watermarks-and-late-data-in-structured-streaming)). In batch it is a **lookback window** (see [Late-arriving data in incremental models (lookback windows)](/etl-elt/dbt-interview-questions/#47-late-arriving-data-in-incremental-models-lookback-windows)).
+- Event-time processing needs a rule for **how long to wait for late data**. In streaming this is the **watermark** (see [Watermarks and late data in Structured Streaming](/pyspark/pyspark-interview-questions/#47-watermarks-and-late-data-in-structured-streaming)). In batch it is a **lookback window** (see [Late-arriving data in incremental models (lookback windows)](/dbt/dbt-interview-questions/#47-late-arriving-data-in-incremental-models-lookback-windows)).
 - Partitioning raw data by ingestion date and modelling by event date is a common, robust combination.
 
 | Time | Set by | Use for | Pitfall |
@@ -2617,7 +2617,7 @@ Put checks at each layer boundary: schema and format at ingestion, keys, nulls a
 - **Row-level quarantine:** send invalid rows to a quarantine table with a reason code and publish the rest (see [How do you handle bad records: quarantine tables and dead-letter queues](#46-how-do-you-handle-bad-records-quarantine-tables-and-dead-letter-queues)). Use this when partial data is better than none.
 
 **Implementation options**
-- dbt tests (generic, singular, unit; see [The four built-in generic data tests](/etl-elt/dbt-interview-questions/#7-the-four-built-in-generic-data-tests)–[Unit tests](/etl-elt/dbt-interview-questions/#19-unit-tests)).
+- dbt tests (generic, singular, unit; see [The four built-in generic data tests](/dbt/dbt-interview-questions/#7-the-four-built-in-generic-data-tests)–[Unit tests](/dbt/dbt-interview-questions/#19-unit-tests)).
 - Great Expectations, Soda or similar frameworks.
 - Platform-native features: Lakeflow pipeline expectations (see [Pipeline expectations for data quality](/databricks/databricks-interview-questions/#25-pipeline-expectations-for-data-quality)), Snowflake data metric functions.
 - Custom SQL assertions in the orchestrator.
@@ -4130,7 +4130,7 @@ Keep separate environments (dev, test or staging, prod) with isolated databases 
 - **Zero-copy clones** (Snowflake `CLONE`, Delta shallow clone) of production for realistic testing, with masking policies still applied (see [Zero-copy cloning](/snowflake/snowflake-interview-questions/#7-zero-copy-cloning), [Shallow clone vs deep clone](/databricks/databricks-interview-questions/#36-shallow-clone-vs-deep-clone)).
 - **Sampling** (latest N days) to cut cost.
 - **Synthetic or masked data** where PII rules forbid production copies.
-- **Defer** to production for unchanged upstream models in dbt CI (see [Slim CI with state:modified and `--defer`](/etl-elt/dbt-interview-questions/#44-slim-ci-with-statemodified-and---defer)).
+- **Defer** to production for unchanged upstream models in dbt CI (see [Slim CI with state:modified and `--defer`](/dbt/dbt-interview-questions/#44-slim-ci-with-statemodified-and---defer)).
 
 **Promotion flow**
 1. Feature branch, developing in a personal dev schema.
@@ -4581,7 +4581,7 @@ A semantic layer defines business entities, dimensions and metrics (such as reve
 - Interfaces: SQL or JDBC endpoints, APIs, BI tool integrations, and LLM or AI agents that ground natural-language questions in governed definitions.
 
 **Implementations**
-- **dbt Semantic Layer / MetricFlow** (see [dbt Semantic Layer and MetricFlow (See also Q99)](/etl-elt/dbt-interview-questions/#43-dbt-semantic-layer-and-metricflow-see-also-q99)).
+- **dbt Semantic Layer / MetricFlow** (see [dbt Semantic Layer and MetricFlow (See also Q99)](/dbt/dbt-interview-questions/#43-dbt-semantic-layer-and-metricflow-see-also-q99)).
 - **Snowflake semantic views**, used by Cortex Analyst and BI.
 - **Databricks metric views** (Unity Catalog).
 - **Cube**, **AtScale**, **LookML (Looker)**, Power BI semantic models.
@@ -5054,7 +5054,7 @@ Most pipeline breakages start upstream. An application team renames a column, ch
 1. **Producer CI:** contract tests run on the producer's pull requests, so a breaking schema change fails *their* build.
 2. **Schema registry** for event streams, with compatibility modes (backward, forward, full; see [What is a schema registry, and what are compatibility modes?](#60-what-is-a-schema-registry-and-what-are-compatibility-modes)).
 3. **Ingestion validation:** reject or quarantine records that violate the contract.
-4. **Warehouse-side contracts:** dbt model contracts (see [Model contracts](/etl-elt/dbt-interview-questions/#41-model-contracts)) enforce column names and types on published models.
+4. **Warehouse-side contracts:** dbt model contracts (see [Model contracts](/dbt/dbt-interview-questions/#41-model-contracts)) enforce column names and types on published models.
 5. **Process:** breaking changes need a new version, a deprecation window and consumer sign-off.
 
 Contracts are as much organisational as technical. They work when producers accept ownership of the data they emit, and that usually needs leadership support.

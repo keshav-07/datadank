@@ -1878,8 +1878,8 @@
     "hub": "dbt",
     "label": "dbt",
     "title": "Top 50 dbt Interview Questions and Answers",
-    "url": "/etl-elt/dbt-interview-questions/",
-    "ref": "articles:etl-elt/dbt-interview-questions",
+    "url": "/dbt/dbt-interview-questions/",
+    "ref": "articles:dbt/dbt-interview-questions",
     "count": 50,
     "levels": {
       "Beginner": 14,

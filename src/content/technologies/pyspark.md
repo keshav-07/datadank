@@ -9,7 +9,7 @@ whatToLearnFirst: ["articles:pyspark/pyspark-fundamentals", "articles:pyspark/da
 relatedTechnologies: ["spark","sql","python","delta-lake"]
 cheatSheet: "cheat-sheets:pyspark"
 monogram: "PS"
-lessons: ["articles:pyspark/pyspark-fundamentals", "articles:pyspark/dataframes-and-schemas", "articles:pyspark/transformations-vs-actions", "articles:pyspark/aggregations-pivot-views", "articles:pyspark/joins-and-join-strategy", "articles:pyspark/window-functions", "articles:pyspark/udfs-and-safer-alternatives", "articles:pyspark/nested-data-explode", "articles:pyspark/reading-writing-data", "articles:pyspark/writing-efficient-output"]
+lessons: ["articles:pyspark/pyspark-fundamentals", "articles:pyspark/dataframes-and-schemas", "articles:pyspark/transformations-vs-actions", "articles:pyspark/aggregations-pivot-views", "articles:pyspark/joins-and-join-strategy", "articles:pyspark/window-functions", "articles:pyspark/udfs-and-safer-alternatives", "articles:pyspark/nested-data-explode", "articles:pyspark/reading-writing-data", "articles:pyspark/writing-efficient-output", "articles:pyspark/pyspark-interview-questions"]
 updatedDate: 2026-10-09
 ---
 

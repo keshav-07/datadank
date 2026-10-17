@@ -2272,7 +2272,7 @@ A retail chain's weekly business review shows YTD sales against last year on a 4
 
 <p class="qb-label">Follow-up questions</p>
 
-- How would a semantic layer handle this? — Time-intelligence metrics (cumulative, offset windows) defined once and applied to any grain (see [dbt Semantic Layer and MetricFlow (See also Q99)](/etl-elt/dbt-interview-questions/#43-dbt-semantic-layer-and-metricflow-see-also-q99)).
+- How would a semantic layer handle this? — Time-intelligence metrics (cumulative, offset windows) defined once and applied to any grain (see [dbt Semantic Layer and MetricFlow (See also Q99)](/dbt/dbt-interview-questions/#43-dbt-semantic-layer-and-metricflow-see-also-q99)).
 - How do you do QTD? — Same pattern, partitioned by quarter.
 
 </details>

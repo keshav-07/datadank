@@ -44,6 +44,7 @@ const MODULE_TEXT: Record<string, { title: string; summary: string }> = {
   Beginner: { title: "Beginner", summary: "Core concepts you will use every day." },
   Intermediate: { title: "Intermediate", summary: "Patterns used in production pipelines." },
   Advanced: { title: "Advanced", summary: "Performance, internals and edge cases." },
+  interview: { title: "Interview preparation", summary: "The top interview questions, with answers." },
 };
 
 const courseCache = new Map<string, Promise<Course | undefined>>();
@@ -68,14 +69,18 @@ async function buildCourse(tech: string): Promise<Course | undefined> {
   const ordered = [...inFolder].sort((a, b) => rank(a) - rank(b) || a.title.localeCompare(b.title));
 
   const intro = ordered.filter((a) => a.entry.data.pillar);
+  // Question-bank articles ("Top 50 … interview questions") close the course in their own module.
+  const isInterview = (a: ItemOf<"articles">) => a.entry.data.topic.includes("interview-questions");
   const modules: CourseModule[] = [];
   if (intro.length) modules.push({ id: "intro", ...MODULE_TEXT.intro, lessons: intro });
   for (const level of DIFFICULTY_ORDER) {
     const lessons = ordered.filter(
-      (a) => !a.entry.data.pillar && a.entry.data.difficulty === level,
+      (a) => !a.entry.data.pillar && !isInterview(a) && a.entry.data.difficulty === level,
     );
     if (lessons.length) modules.push({ id: level.toLowerCase(), ...MODULE_TEXT[level], lessons });
   }
+  const interview = ordered.filter((a) => !a.entry.data.pillar && isInterview(a));
+  if (interview.length) modules.push({ id: "interview", ...MODULE_TEXT.interview, lessons: interview });
   const lessons = modules.flatMap((m) => m.lessons);
 
   const questions = inLearningOrder(

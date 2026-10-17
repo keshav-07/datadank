@@ -9,7 +9,7 @@ whatToLearnFirst: ["articles:databricks/workspace-jobs-lakehouse","articles:data
 relatedTechnologies: ["spark","pyspark","delta-lake"]
 cheatSheet: "cheat-sheets:databricks"
 monogram: "Db"
-lessons: ["articles:databricks/databricks-for-data-engineers", "articles:databricks/workspace-jobs-lakehouse", "articles:databricks/unity-catalog-governance", "articles:databricks/auto-loader-declarative-pipelines"]
+lessons: ["articles:databricks/databricks-for-data-engineers", "articles:databricks/workspace-jobs-lakehouse", "articles:databricks/unity-catalog-governance", "articles:databricks/auto-loader-declarative-pipelines", "articles:databricks/databricks-interview-questions"]
 updatedDate: 2026-10-05
 ---
 

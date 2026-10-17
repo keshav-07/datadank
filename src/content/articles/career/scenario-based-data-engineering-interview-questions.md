@@ -312,9 +312,9 @@ Document in metric glossary / semantic layer
 
 <p class="qb-label">Follow-up questions</p>
 
-- How do you avoid this happening repeatedly? — Semantic layer, metric owners, descriptions on dashboards (see [What is a semantic/metrics layer?](/career/data-engineering-interview-questions/#75-what-is-a-semanticmetrics-layer), [dbt Semantic Layer and MetricFlow (See also Q99)](/etl-elt/dbt-interview-questions/#43-dbt-semantic-layer-and-metricflow-see-also-q99)).
+- How do you avoid this happening repeatedly? — Semantic layer, metric owners, descriptions on dashboards (see [What is a semantic/metrics layer?](/career/data-engineering-interview-questions/#75-what-is-a-semanticmetrics-layer), [dbt Semantic Layer and MetricFlow (See also Q99)](/dbt/dbt-interview-questions/#43-dbt-semantic-layer-and-metricflow-see-also-q99)).
 - What if it was a bug and numbers were presented already? — Issue a correction with impact, root cause and fix.
-- How do you find which tables feed the dashboard? — Exposures/lineage tools (see [Exposures](/etl-elt/dbt-interview-questions/#26-exposures)).
+- How do you find which tables feed the dashboard? — Exposures/lineage tools (see [Exposures](/dbt/dbt-interview-questions/#26-exposures)).
 
 </details>
 
@@ -818,7 +818,7 @@ SLA: ≤75 min data age in business hours; freshness alerts
    - SQL linting (SQLFluff).
    - Unit tests for complex logic, and data tests (PK unique and not_null, relationships, accepted values).
    - Source freshness.
-   - Slim CI with deferral to prod (see [Slim CI with state:modified and `--defer`](/etl-elt/dbt-interview-questions/#44-slim-ci-with-statemodified-and---defer)).
+   - Slim CI with deferral to prod (see [Slim CI with state:modified and `--defer`](/dbt/dbt-interview-questions/#44-slim-ci-with-statemodified-and---defer)).
 4. **Environments:** dev (personal schemas), CI (per-PR schema), and prod (service accounts only).
 5. **CI pipeline (on PR):** lint, unit tests, `dbt build --select state:modified+` in the CI schema, and test results posted to the PR.
 6. **CD (on merge):** build and push the extractor image, then `dbt build` in prod through the orchestrator. Infra changes go through Terraform plan and apply with approval.
@@ -979,7 +979,7 @@ Improvements: auto-chunked catch-up, alert dedup, upstream status checks
 <p class="qb-label">Follow-up questions</p>
 
 - What if the fix needs an upstream team who is asleep? — Escalate per runbook, publish stale-but-correct data, and fix when they're available.
-- How would you prevent this class of failure? — Source contract/schema checks, freshness gates, and alerts before transformations (see [What are data contracts, and how do you enforce them?](/career/data-engineering-interview-questions/#83-what-are-data-contracts-and-how-do-you-enforce-them), [Source freshness](/etl-elt/dbt-interview-questions/#21-source-freshness)).
+- How would you prevent this class of failure? — Source contract/schema checks, freshness gates, and alerts before transformations (see [What are data contracts, and how do you enforce them?](/career/data-engineering-interview-questions/#83-what-are-data-contracts-and-how-do-you-enforce-them), [Source freshness](/dbt/dbt-interview-questions/#21-source-freshness)).
 - How do you make reruns safe? — Idempotent models and partition replacement (see [What changed in Airflow 3 (Assets, DAG versioning, Task SDK)?](/career/data-engineering-interview-questions/#86-what-changed-in-airflow-3-assets-dag-versioning-task-sdk)).
 
 </details>
@@ -1042,7 +1042,7 @@ Kafka ─▶ bronze_events (event_ts, ingested_at)
 
 - How do you handle a device that uploads 30 days late? — Count it in monitoring; the weekly/monthly correction or targeted backfill picks it up.
 - Why not just merge late events into the aggregate? — Distinct counts aren't additive; you'd double-count users.
-- How does dbt help? — Incremental models with lookback or microbatch `lookback` (see [The microbatch incremental strategy](/etl-elt/dbt-interview-questions/#39-the-microbatch-incremental-strategy), [Late-arriving data in incremental models (lookback windows)](/etl-elt/dbt-interview-questions/#47-late-arriving-data-in-incremental-models-lookback-windows)).
+- How does dbt help? — Incremental models with lookback or microbatch `lookback` (see [The microbatch incremental strategy](/dbt/dbt-interview-questions/#39-the-microbatch-incremental-strategy), [Late-arriving data in incremental models (lookback windows)](/dbt/dbt-interview-questions/#47-late-arriving-data-in-incremental-models-lookback-windows)).
 
 </details>
 
@@ -1104,7 +1104,7 @@ Detect (analyst / test) ─▶ quantify (keys, dates, cause)
 
 - What if duplicates differ in amount? — Determine the authoritative version (latest sync or source system of record) and document the rule.
 - How would you detect this earlier? — PK tests, row-count anomaly monitors, and source-to-target reconciliation.
-- Why did append fail here? — Append isn't idempotent under replays/resyncs (see [What changed in Airflow 3 (Assets, DAG versioning, Task SDK)?](/career/data-engineering-interview-questions/#86-what-changed-in-airflow-3-assets-dag-versioning-task-sdk), [Incremental strategies by adapter (append, merge, delete+insert, insert_overwrite, microbatch)](/etl-elt/dbt-interview-questions/#38-incremental-strategies-by-adapter-append-merge-deleteinsert-insert_overwrite-microbatch)).
+- Why did append fail here? — Append isn't idempotent under replays/resyncs (see [What changed in Airflow 3 (Assets, DAG versioning, Task SDK)?](/career/data-engineering-interview-questions/#86-what-changed-in-airflow-3-assets-dag-versioning-task-sdk), [Incremental strategies by adapter (append, merge, delete+insert, insert_overwrite, microbatch)](/dbt/dbt-interview-questions/#38-incremental-strategies-by-adapter-append-merge-deleteinsert-insert_overwrite-microbatch)).
 
 </details>
 
@@ -1194,7 +1194,7 @@ Tableau ─▶ BI warehouse (Small, multi-cluster 1–3) ─▶ ~1 s, result cac
 5. **Prevention:**
    - A data contract (schema registry or JSON Schema) with CI checks in the producer repo.
    - Deprecation windows: send both fields for N days.
-   - Contract-enforced silver models (see [Model contracts](/etl-elt/dbt-interview-questions/#41-model-contracts)).
+   - Contract-enforced silver models (see [Model contracts](/dbt/dbt-interview-questions/#41-model-contracts)).
 6. **Communicate,** and do a post-mortem with the producer team.
 
 <p class="qb-label">Sample strong answer</p>
@@ -1825,7 +1825,7 @@ Check each layer for the binding limit; stagger schedules / asset triggers to fl
 
 1. **Scope:** list the 25 reports and their source tables. Trace backwards only what's needed first.
 2. **Use native lineage:**
-   - dbt manifest and docs for model lineage, with exposures for the reports (see [Exposures](/etl-elt/dbt-interview-questions/#26-exposures)).
+   - dbt manifest and docs for model lineage, with exposures for the reports (see [Exposures](/dbt/dbt-interview-questions/#26-exposures)).
    - Snowflake `ACCESS_HISTORY` and object dependencies, or Unity Catalog lineage.
    - OpenLineage from Airflow for task-level lineage.
 3. **Fill the gaps:** Python scripts outside dbt need manual documentation or instrumentation (OpenLineage integration), or should be migrated into dbt.
@@ -2130,7 +2130,7 @@ Governance: data sharing agreement, change policy, access logs, instant revocati
 <p class="qb-label">Step-by-step approach</p>
 
 1. **Profile:** the target scan reads most micro-partitions or files, because `event_id` is random relative to the physical layout.
-2. **Add a pruning predicate:** include `t.event_date >= :min_source_date` (computed from the source batch) in the ON clause, or use `incremental_predicates` in dbt (see [Incremental strategies by adapter (append, merge, delete+insert, insert_overwrite, microbatch)](/etl-elt/dbt-interview-questions/#38-incremental-strategies-by-adapter-append-merge-deleteinsert-insert_overwrite-microbatch)).
+2. **Add a pruning predicate:** include `t.event_date >= :min_source_date` (computed from the source batch) in the ON clause, or use `incremental_predicates` in dbt (see [Incremental strategies by adapter (append, merge, delete+insert, insert_overwrite, microbatch)](/dbt/dbt-interview-questions/#38-incremental-strategies-by-adapter-append-merge-deleteinsert-insert_overwrite-microbatch)).
 3. **Cluster the target** by `event_date` (or liquid clustering on `event_date` and `event_id`), so the date predicate prunes well.
 4. **Narrow the source:** dedupe to one row per key, and remove rows identical to the target (hash compare) to shrink the MERGE.
 5. **Split the work:**
@@ -2168,7 +2168,7 @@ Metrics: partitions scanned/total, bytes written, duration
 <p class="qb-label">Follow-up questions</p>
 
 - What if updates can be years old? — Partition the MERGE by date ranges, or route very old corrections to a separate periodic job.
-- Why dedupe the source? — Duplicate source keys cause errors or nondeterministic results (see [unique_key and on_schema_change](/etl-elt/dbt-interview-questions/#16-unique_key-and-on_schema_change)).
+- Why dedupe the source? — Duplicate source keys cause errors or nondeterministic results (see [unique_key and on_schema_change](/dbt/dbt-interview-questions/#16-unique_key-and-on_schema_change)).
 - How do you verify pruning? — Query profile partitions scanned; Delta operation metrics for files read/rewritten.
 
 </details>
@@ -2271,7 +2271,7 @@ Derived marts: agg_daily_revenue, customer_ltv
    - **Skew growth** (big customers getting bigger).
    - **Shared warehouse contention** growing over time.
 3. **Fix:**
-   - Convert large steps to incremental processing (see [Incremental models and is_incremental()](/etl-elt/dbt-interview-questions/#15-incremental-models-and-is_incremental)).
+   - Convert large steps to incremental processing (see [Incremental models and is_incremental()](/dbt/dbt-interview-questions/#15-incremental-models-and-is_incremental)).
    - Partition or cluster for pruning.
    - Incremental or state-based computations for cumulative metrics (keep running totals and add the daily delta).
    - Compaction and maintenance schedules.
@@ -2366,7 +2366,7 @@ Glossary + certified badges + reconciliation report + changelog
 
 - How do you handle a team that needs a variant metric? — Create a separately named, documented metric (e.g. `active_customers_incl_trials`).
 - How do you detect drift later? — Periodic comparisons of dashboard values vs certified metric outputs.
-- Where do warehouse-native semantic views fit? — Same goal, defined in the warehouse and usable by AI/BI tools (see [What is a semantic/metrics layer?](/career/data-engineering-interview-questions/#75-what-is-a-semanticmetrics-layer), [dbt Semantic Layer and MetricFlow (See also Q99)](/etl-elt/dbt-interview-questions/#43-dbt-semantic-layer-and-metricflow-see-also-q99)).
+- Where do warehouse-native semantic views fit? — Same goal, defined in the warehouse and usable by AI/BI tools (see [What is a semantic/metrics layer?](/career/data-engineering-interview-questions/#75-what-is-a-semanticmetrics-layer), [dbt Semantic Layer and MetricFlow (See also Q99)](/dbt/dbt-interview-questions/#43-dbt-semantic-layer-and-metricflow-see-also-q99)).
 
 </details>
 
@@ -2428,7 +2428,7 @@ raw/bronze ─────┤                                       ├─▶ fc
 
 - What if raw data for year one is gone? — Backfill from the oldest available layer (silver), or apply the rule only from available history, documenting the limitation.
 - How do you stop the backfill starving production? — Separate compute, concurrency limits, schedule off-peak.
-- How would you do this in dbt? — Microbatch with `--event-time-start/end`, or var-driven date ranges (see [The microbatch incremental strategy](/etl-elt/dbt-interview-questions/#39-the-microbatch-incremental-strategy)).
+- How would you do this in dbt? — Microbatch with `--event-time-start/end`, or var-driven date ranges (see [The microbatch incremental strategy](/dbt/dbt-interview-questions/#39-the-microbatch-incremental-strategy)).
 
 </details>
 
@@ -3042,7 +3042,7 @@ DQ dashboard: score per table/owner, MTTD, % caught before users
 
 - How do you avoid alert fatigue? — Tiering, thresholds, grouping, and reviewing noisy checks weekly.
 - Who fixes issues? — Table owners with platform support; clear RACI.
-- How do you measure success? — % incidents detected by checks, MTTD/MTTR, number of user-reported issues (see [Data observability vs data quality testing](/career/data-engineering-interview-questions/#45-data-observability-vs-data-quality-testing), [Designing a test strategy across layers](/etl-elt/dbt-interview-questions/#35-designing-a-test-strategy-across-layers)).
+- How do you measure success? — % incidents detected by checks, MTTD/MTTR, number of user-reported issues (see [Data observability vs data quality testing](/career/data-engineering-interview-questions/#45-data-observability-vs-data-quality-testing), [Designing a test strategy across layers](/dbt/dbt-interview-questions/#35-designing-a-test-strategy-across-layers)).
 
 </details>
 

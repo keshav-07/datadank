@@ -910,7 +910,7 @@ Describe an improvement you identified and drove without being asked. For exampl
 **Strong examples in data engineering**
 - **Compute cost:** right-sizing warehouses, auto-suspend, incremental models, job compute vs interactive clusters, removing unused pipelines (see [Controlling DBU cost on Databricks](/databricks/databricks-interview-questions/#35-controlling-dbu-cost-on-databricks), [Snowflake cost doubled overnight](/career/scenario-based-data-engineering-interview-questions/#20-snowflake-cost-doubled-overnight)).
 - **Reliability:** idempotent reruns, alert tuning, or a data quality framework that reduced incidents (see [Build a data quality framework for 200 tables](/career/scenario-based-data-engineering-interview-questions/#47-build-a-data-quality-framework-for-200-tables)).
-- **Developer productivity:** Slim CI cutting PR checks from 2 hours to 8 minutes (see [Slim CI with state:modified and `--defer`](/etl-elt/dbt-interview-questions/#44-slim-ci-with-statemodified-and---defer)).
+- **Developer productivity:** Slim CI cutting PR checks from 2 hours to 8 minutes (see [Slim CI with state:modified and `--defer`](/dbt/dbt-interview-questions/#44-slim-ci-with-statemodified-and---defer)).
 - **Business process:** automating a manual monthly reconciliation that took 3 analyst-days.
 
 **What interviewers assess:** initiative, data-driven reasoning, influence, execution, and measuring impact.

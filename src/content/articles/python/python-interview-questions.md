@@ -2884,7 +2884,7 @@ Define the validation rules explicitly: required fields, types and parse-ability
 
 **At scale**
 - Columnar validation (pandera, Great Expectations, Polars expressions, Spark) is much faster than per-row Python for millions of rows.
-- In warehouses: dbt tests, constraints and expectations (see [Pipeline expectations for data quality](/databricks/databricks-interview-questions/#25-pipeline-expectations-for-data-quality), [The four built-in generic data tests](/etl-elt/dbt-interview-questions/#7-the-four-built-in-generic-data-tests)).
+- In warehouses: dbt tests, constraints and expectations (see [Pipeline expectations for data quality](/databricks/databricks-interview-questions/#25-pipeline-expectations-for-data-quality), [The four built-in generic data tests](/dbt/dbt-interview-questions/#7-the-four-built-in-generic-data-tests)).
 
 **Typical rules**
 | Category | Example |

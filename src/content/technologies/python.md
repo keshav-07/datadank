@@ -8,7 +8,7 @@ keyFacts: ["The default language for pipelines and orchestration","Generators ke
 whatToLearnFirst: ["articles:python/python-for-data-engineering", "articles:python/functions-modules-reusable-code", "articles:python/idempotent-csv-loader"]
 relatedTechnologies: ["sql","pyspark","airflow"]
 monogram: "Py"
-lessons: ["articles:python/python-for-data-engineering", "articles:python/functions-modules-reusable-code", "articles:python/data-structures-for-interviews", "articles:python/file-io-csv-json", "articles:python/iterators-generators", "articles:python/error-handling-logging", "articles:python/working-with-apis", "articles:python/pandas-for-data-engineers", "articles:python/testing-with-pytest", "articles:python/idempotent-csv-loader"]
+lessons: ["articles:python/python-for-data-engineering", "articles:python/functions-modules-reusable-code", "articles:python/data-structures-for-interviews", "articles:python/file-io-csv-json", "articles:python/iterators-generators", "articles:python/error-handling-logging", "articles:python/working-with-apis", "articles:python/pandas-for-data-engineers", "articles:python/testing-with-pytest", "articles:python/idempotent-csv-loader", "articles:python/python-interview-questions"]
 updatedDate: 2026-10-10
 ---
 

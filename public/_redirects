@@ -5,9 +5,11 @@
 /data-engineering/projects/ /projects/ 301
 /interview/dsa/maximum-average-subarray-i /interview/dsa/max-sum-subarray-of-size-k/ 301
 /interview/dsa/maximum-average-subarray-i/ /interview/dsa/max-sum-subarray-of-size-k/ 301
-/interview/dbt /etl-elt/dbt-interview-questions/ 301
-/interview/dbt/ /etl-elt/dbt-interview-questions/ 301
+/interview/dbt /dbt/dbt-interview-questions/ 301
+/interview/dbt/ /dbt/dbt-interview-questions/ 301
 /interview/scenario-based /career/scenario-based-data-engineering-interview-questions/ 301
 /interview/scenario-based/ /career/scenario-based-data-engineering-interview-questions/ 301
 /interview/behavioral /career/behavioral-interview-questions/ 301
 /interview/behavioral/ /career/behavioral-interview-questions/ 301
+/etl-elt/dbt-interview-questions /dbt/dbt-interview-questions/ 301
+/etl-elt/dbt-interview-questions/ /dbt/dbt-interview-questions/ 301

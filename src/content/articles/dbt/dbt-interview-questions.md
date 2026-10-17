@@ -2,7 +2,7 @@
 title: "Top 50 dbt Interview Questions and Answers"
 seoTitle: "Top 50 dbt Interview Questions and Answers"
 description: "Top 50 dbt interview questions with answers: models and materializations, incremental models, tests, snapshots, Jinja and macros, and CI/CD."
-technology: ["etl-elt", "dbt", "data-engineering"]
+technology: ["dbt", "etl-elt", "data-engineering"]
 topic: ["interview-questions"]
 difficulty: "Intermediate"
 section: "learn"

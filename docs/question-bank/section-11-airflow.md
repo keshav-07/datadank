@@ -2614,7 +2614,7 @@ Twenty teams' DAGs all ran heavy SQL against one shared warehouse around 04:00, 
 - Referencing a pool in code that was never created in production.
 
 **Follow-up Questions Interviewers Ask:**
-- How do you see pool pressure? — The Pools page shows running, queued and scheduled slots. The `pool.open_slots.<pool>` and `pool.starving_tasks.<pool>` metrics expose it too.
+- How do you see pool pressure? — The Pools page shows running, queued and scheduled slots. The `pool.open_slots` and `pool.starving_tasks` metrics, tagged by pool, expose it too.
 - Can pools be team-scoped? — In 3.2+ multi-team deployments, pools can be assigned to a team.
 
 ---

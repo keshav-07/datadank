@@ -1,0 +1,287 @@
+---
+publishedDate: "2026-10-16"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
+title: "dbt Incremental Models: Strategies, unique_key, Late Data and Microbatch"
+seoTitle: "dbt Incremental Models Explained"
+description: "dbt incremental models in practice: is_incremental(), unique_key, merge vs append vs delete+insert vs microbatch, lookback windows, schema changes and full refresh."
+technology: ["dbt", "etl-elt", "sql"]
+topic: ["incremental-models", "late-data", "backfills"]
+difficulty: "Intermediate"
+learningObjectives:
+  - "Write an incremental model whose SQL is valid with and without is_incremental()"
+  - "Choose a strategy (append, merge, delete+insert, insert_overwrite, microbatch) for your adapter and data"
+  - "Use unique_key correctly and know what happens when it is not unique"
+  - "Catch late-arriving rows with a lookback window and filter on the right timestamp"
+  - "Handle schema changes and know when to run a full refresh or a targeted microbatch backfill"
+prerequisites: ["articles:dbt/materializations", "articles:etl-elt/incremental-loading-watermarks-backfills"]
+related: ["articles:etl-elt/idempotency-in-data-pipelines", "interview-questions:data-engineering/late-arriving-data", "interview-questions:data-engineering/design-incremental-load"]
+previous: "articles:dbt/materializations"
+versionContext: "Run on dbt Core 1.12.6 with dbt-duckdb 1.11.0 (DuckDB 1.5.6, Python 3.11) on 16 October 2026, against two days of simulated loads. Output is trimmed and timestamps are removed. Strategy support per adapter is taken from the dbt documentation."
+sources:
+  - { label: "dbt documentation: Configure incremental models", url: "https://docs.getdbt.com/docs/build/incremental-models" }
+  - { label: "dbt documentation: About incremental strategy", url: "https://docs.getdbt.com/docs/build/incremental-strategy" }
+  - { label: "dbt documentation: About microbatch incremental models", url: "https://docs.getdbt.com/docs/build/incremental-microbatch" }
+  - { label: "dbt documentation: Incremental models overview", url: "https://docs.getdbt.com/docs/build/incremental-models-overview" }
+  - { label: "dbt documentation: full_refresh config", url: "https://docs.getdbt.com/reference/resource-configs/full_refresh" }
+---
+
+An incremental model is a table that dbt updates instead of rebuilding. On the first run it is built like any table. On later runs your SQL selects only the rows that are new or changed, and dbt applies them to the existing table with a **strategy** such as `merge` or `append`. Done well, a fact table with years of history rebuilds in seconds. Done carelessly, it silently drops late rows or duplicates updated ones. This lesson builds `fct_orders` and `fct_events` from the course project and shows both outcomes from real runs.
+
+## The anatomy of an incremental model
+
+{/* noexec */}
+```sql
+{{
+    config(
+        materialized='incremental',
+        unique_key='order_id',
+        incremental_strategy='merge',
+        on_schema_change='append_new_columns'
+    )
+}}
+
+with orders as (
+    select * from {{ ref('stg_shop__orders') }}
+    {% if is_incremental() %}
+    -- only rows changed since the last run, minus a lookback window for late updates
+    where updated_at >= (
+        select coalesce(max(updated_at), timestamp '1900-01-01')
+               - interval '{{ var("order_lookback_days") }} days'
+        from {{ this }}
+    )
+    {% endif %}
+),
+
+payments as (
+    select * from {{ ref('int_order_payments') }}
+)
+
+select
+    orders.order_id,
+    orders.customer_id,
+    orders.order_date,
+    orders.status,
+    coalesce(payments.total_amount, 0)   as amount,
+    coalesce(payments.payment_count, 0)  as payment_count,
+    orders.updated_at
+from orders
+left join payments using (order_id)
+```
+
+Four pieces do the work:
+
+- **`is_incremental()`** is true only when the model already exists as a table, `--full-refresh` was not passed, and the model is materialized as incremental (the three conditions listed in the dbt docs). The SQL must be valid both ways: on the first run the `where` clause disappears and every row is selected.
+- **`{{ this }}`** is the model's own existing table, so the filter can ask "what is the newest row I already have?"
+- **`unique_key`** tells the strategy how to match incoming rows to existing ones. With `merge`, a matching key updates the row and a new key inserts it.
+- **`var("order_lookback_days")`** (3, set in `dbt_project.yml`) widens the window so rows that changed shortly before the last high-water mark are reprocessed.
+
+On the second run, the compiled filter in `target/compiled/` reads:
+
+{/* noexec */}
+```sql
+    where updated_at >= (
+        select coalesce(max(updated_at), timestamp '1900-01-01')
+               - interval '3 days'
+        from "shop"."dbt_dev"."fct_orders"
+    )
+```
+
+## Worked example: two days of orders
+
+Day one loads six orders. After `dbt run`, `fct_orders` holds:
+
+```text
+│ order_id │ customer_id │ order_date │  status   │ amount │ payment_count │     updated_at      │
+│      101 │           1 │ 2026-10-12 │ completed │  25.99 │             1 │ 2026-10-12 09:00:00 │
+│      102 │           2 │ 2026-10-12 │ completed │  12.50 │             1 │ 2026-10-12 10:00:00 │
+│      103 │           3 │ 2026-10-13 │ shipped   │  50.00 │             2 │ 2026-10-13 11:00:00 │
+│      104 │           1 │ 2026-10-13 │ placed    │   8.99 │             1 │ 2026-10-13 12:00:00 │
+│      105 │           4 │ 2026-10-14 │ placed    │  31.00 │             1 │ 2026-10-14 09:30:00 │
+│      106 │           5 │ 2026-10-14 │ cancelled │   0.00 │             0 │ 2026-10-14 10:15:00 │
+```
+
+Day two's load does three things: order 104 ships (its `updated_at` moves to 15 October), order 107 is new, and order 108 arrives **late**: it was placed on 13 October but only reached the warehouse on the 15th. After `dbt build`, dbt ran a `MERGE ... ON (DBT_INTERNAL_SOURCE.order_id = DBT_INTERNAL_DEST.order_id)` and the table became:
+
+```text
+│ order_id │ customer_id │ order_date │  status   │ amount │ payment_count │     updated_at      │
+│      101 │           1 │ 2026-10-12 │ completed │  25.99 │             1 │ 2026-10-12 09:00:00 │
+│      102 │           2 │ 2026-10-12 │ completed │  12.50 │             1 │ 2026-10-12 10:00:00 │
+│      103 │           3 │ 2026-10-13 │ shipped   │  50.00 │             2 │ 2026-10-13 11:00:00 │
+│      104 │           1 │ 2026-10-13 │ shipped   │   8.99 │             1 │ 2026-10-15 08:00:00 │
+│      105 │           4 │ 2026-10-14 │ placed    │  31.00 │             1 │ 2026-10-14 09:30:00 │
+│      106 │           5 │ 2026-10-14 │ cancelled │   0.00 │             0 │ 2026-10-14 10:15:00 │
+│      107 │           6 │ 2026-10-15 │ placed    │  19.99 │             1 │ 2026-10-15 09:00:00 │
+│      108 │           2 │ 2026-10-13 │ shipped   │   0.00 │             0 │ 2026-10-15 09:05:00 │
+```
+
+Order 104 was updated in place rather than duplicated, because `unique_key` matched it. Order 108 was picked up even though its `order_date` is two days old, because the filter is on `updated_at`, the time the row last changed. **Filter on a change or load timestamp, never on a business date.** A filter like `order_date > max(order_date)` would have skipped order 108 for good.
+
+## Choosing a strategy
+
+The strategy is how dbt applies the selected rows. The dbt docs describe them like this:
+
+| Strategy | What it does | Needs `unique_key`? | Watch out for |
+|---|---|---|---|
+| `append` | Inserts the selected rows, no matching | No | Duplicates if a row is selected twice (for example by a lookback window) |
+| `merge` | Updates rows whose key matches, inserts the rest (SCD Type 1 behaviour) | Yes, otherwise it behaves like `append` | Can scan the whole target table to match; costly on very large tables |
+| `delete+insert` | Deletes target rows with the incoming keys, then inserts the new rows | Yes | Two statements; useful where `merge` is unsupported or the key is not truly unique |
+| `insert_overwrite` | Replaces whole partitions that appear in the new data | Uses partitions, not keys | Only on adapters with partition overwrite (BigQuery, Spark, Databricks, Snowflake, Athena, ClickHouse per the docs) |
+| `microbatch` | Splits the work into time batches by `event_time` and replaces each batch | No | Needs a reliable event-time column on the model and its parents |
+
+Support varies by adapter: for example, the docs list no `append` for BigQuery and no `insert_overwrite` for Postgres, Redshift or DuckDB. DuckDB rejects it at run time:
+
+```text
+[ERROR]: in model tmp_check (models/marts/tmp_check.sql)
+  Runtime Error in model tmp_check (models/marts/tmp_check.sql)
+  The incremental strategy 'insert_overwrite' is not valid for this adapter
+```
+
+With `merge` you can also limit what an update touches: `merge_update_columns` lists the only columns to overwrite, and `merge_exclude_columns` lists columns to keep (a typical case is `created_at`).
+
+A practical rule: use `merge` with a real unique key for entity-like facts that change (orders, subscriptions); use `append` only for immutable events with no lookback; use `insert_overwrite` or `microbatch` for very large time-partitioned tables where whole partitions or days can be recomputed.
+
+## unique_key must really be unique
+
+The docs warn that if the key is duplicated, in the target or in the new rows, the run may fail or produce duplicates depending on the adapter and strategy, and that key columns must not contain nulls. Two defences:
+
+- Put a `unique` and `not_null` test on the key of every incremental model (this project tests `fct_orders.order_id`).
+- For composite grains, pass a list (`unique_key=['order_id', 'line_number']`) or build one surrogate key with `dbt_utils.generate_surrogate_key`.
+
+## Late data and the lookback window
+
+A lookback window reprocesses rows that are slightly older than the high-water mark. Why is it needed when the filter already uses `updated_at`? Because the source's timestamps are not always written in commit order: a long transaction, a replica lag or a retried batch can land a row whose `updated_at` is earlier than rows you already loaded. A window of a few hours or days, combined with `merge` on a unique key, reprocesses that slice idempotently: rows already present are overwritten with identical values.
+
+The window costs work on every run, so size it from evidence (how late do rows actually arrive?) and back it with a periodic full refresh or backfill for anything later.
+
+## The empty-table trap
+
+Write the high-water-mark query so it still works when `{{ this }}` is empty. Without the `coalesce`, the filter is `updated_at >= (select max(updated_at) - interval '3 days' from ...)`, and `max()` over an empty table is null, so the comparison is never true. This happened in a copy of the project: `dbt run --empty` created an empty `fct_orders`, the next `dbt run` saw an existing table, treated the run as incremental, and selected nothing.
+
+```text
+$ dbt run --empty -s +fct_orders
+3 of 3 OK created sql incremental model dbt_dev.fct_orders ..................... [OK in 0.10s]
+$ dbt run -s fct_orders
+1 of 1 OK created sql incremental model dbt_dev.fct_orders ..................... [OK in 0.22s]
+
+fct_orders_rows = 0     raw_orders_rows = 6
+```
+
+Every run reported success. Tests that look for bad rows (`unique`, `not_null`) also pass on an empty table, so nothing flagged it. The `coalesce(max(updated_at), timestamp '1900-01-01')` in the model above makes an empty target behave like a first load. A row-count or freshness check on important facts catches the rest.
+
+## Schema changes: on_schema_change
+
+When you add a column to an incremental model, the existing table does not have it. `on_schema_change` decides what happens:
+
+| Value | Behaviour (from the dbt docs) |
+|---|---|
+| `ignore` (default) | New columns are not added; removing a column makes the run fail |
+| `fail` | Error when the model's columns and the table's diverge |
+| `append_new_columns` | Adds new columns; never drops old ones |
+| `sync_all_columns` | Adds new columns and drops missing ones, including type changes |
+
+None of them backfill the new column for rows outside the incremental window. Adding `payments.order_id is not null as is_paid` to `fct_orders` with `append_new_columns` and running incrementally produced:
+
+```text
+│ order_id │  status   │     updated_at      │ is_paid │
+│      101 │ completed │ 2026-10-12 09:00:00 │ NULL    │
+│      102 │ completed │ 2026-10-12 10:00:00 │ true    │
+│      103 │ shipped   │ 2026-10-13 11:00:00 │ true    │
+│      104 │ shipped   │ 2026-10-15 08:00:00 │ true    │
+│      105 │ placed    │ 2026-10-14 09:30:00 │ true    │
+│      106 │ cancelled │ 2026-10-14 10:15:00 │ false   │
+│      107 │ placed    │ 2026-10-15 09:00:00 │ true    │
+│      108 │ shipped   │ 2026-10-15 09:05:00 │ false   │
+```
+
+Order 101 fell just outside the window (the cut-off was 15 October 09:05 minus three days, so 12 October 09:05) and kept a null. To populate history, run a full refresh.
+
+## Full refresh
+
+`--full-refresh` drops and rebuilds the incremental table from all source data, and `is_incremental()` returns false for that run:
+
+```text
+$ dbt run -s fct_orders --full-refresh
+1 of 1 OK created sql incremental model dbt_dev.fct_orders ..................... [OK in 0.15s]
+```
+
+After it, order 101 has `is_paid = true`. Run a full refresh when the model's logic changes in a way that affects old rows, after a long outage beyond your lookback, or to repair drift. On very large tables a full refresh may be too expensive to run casually; the `full_refresh: false` config makes dbt ignore the flag for a model, which protects tables that cannot be rebuilt from their source (for example because the source only keeps 30 days).
+
+## Microbatch: incremental by time batch
+
+The `microbatch` strategy (dbt 1.9+) removes the hand-written `is_incremental()` filter. You declare the event-time column and the batch size, and dbt runs one query per batch, filtering the model's inputs automatically:
+
+{/* noexec */}
+```sql
+{{
+    config(
+        materialized='incremental',
+        incremental_strategy='microbatch',
+        event_time='event_at',
+        begin='2026-10-12',
+        batch_size='day',
+        lookback=1
+    )
+}}
+
+select
+    event_id,
+    customer_id,
+    event_type,
+    event_at,
+    cast(event_at as date) as event_date
+from {{ source('shop', 'events') }}
+```
+
+The source also declares `event_time: event_at` (see the sources YAML in lesson 2), which is what lets dbt filter it per batch. `begin` is where history starts on the first or a full-refresh build; `batch_size` is `hour`, `day`, `month` or `year`; `lookback` (default 1) is how many batches before the current one each normal run reprocesses.
+
+The first run built one batch per day from `begin` to the day of the run:
+
+```text
+1 of 8 START sql microbatch model dbt_dev.fct_events ........................... [RUN]
+Batch 1 of 5 OK created batch 2026-10-12 of dbt_dev.fct_events ....................... [OK in 0.10s]
+Batch 2 of 5 OK created batch 2026-10-13 of dbt_dev.fct_events ....................... [OK in 0.05s]
+Batch 3 of 5 OK created batch 2026-10-14 of dbt_dev.fct_events ....................... [OK in 0.03s]
+Batch 4 of 5 OK created batch 2026-10-15 of dbt_dev.fct_events ....................... [OK in 0.03s]
+Batch 5 of 5 OK created batch 2026-10-16 of dbt_dev.fct_events ....................... [OK in 0.02s]
+1 of 8 OK created sql microbatch model dbt_dev.fct_events ...................... [SUCCESS in 0.26s]
+```
+
+Then day two delivered event 9, which happened on 13 October but arrived late. A normal run on 16 October processed only the current batch and one lookback batch:
+
+```text
+$ dbt run -s fct_events
+Batch 1 of 2 OK created batch 2026-10-15 of dbt_dev.fct_events ....................... [OK in 0.12s]
+Batch 2 of 2 OK created batch 2026-10-16 of dbt_dev.fct_events ....................... [OK in 0.03s]
+```
+
+Event 9 was not in the table afterwards: its batch (13 October) was outside the lookback. Microbatch is only as late-tolerant as `lookback` allows. The fix is a targeted backfill with `--event-time-start` and `--event-time-end` (the docs require both together), which reprocesses exactly that day:
+
+```text
+$ dbt run -s fct_events --event-time-start "2026-10-13" --event-time-end "2026-10-14"
+Batch 1 of 1 OK created batch 2026-10-13 of dbt_dev.fct_events ....................... [OK in 0.13s]
+
+│ event_id │ customer_id │ event_type  │      event_at       │
+│        4 │           3 │ page_view   │ 2026-10-13 10:50:00 │
+│        5 │           3 │ add_to_cart │ 2026-10-13 10:55:00 │
+│        9 │           2 │ page_view   │ 2026-10-13 22:10:00 │
+```
+
+Each batch replaces its time slice, so re-running a batch is idempotent. Batches are independent, so a failed batch can be retried alone, and on adapters that support it batches can run in parallel. The docs also note that `--full-refresh` on a microbatch model only reloads history if `begin` is set, and recommend targeted backfills for reprocessing.
+
+## Common mistakes
+
+- **Filtering on a business date** (`order_date`) instead of a change or load timestamp, which loses late rows forever.
+- **No `unique_key` with a lookback window**, so every reprocessed row is appended again.
+- **A key that is not unique or contains nulls**, which leads to duplicates or merge errors depending on the adapter.
+- **A high-water mark that is null on an empty target**, which turns every run into a silent no-op.
+- **Changing model logic without a full refresh**, leaving old rows computed the old way.
+- **Assuming microbatch catches all late data.** It reprocesses `lookback` batches only; anything later needs a backfill.
+
+## In an interview
+
+A typical prompt: "Your incremental model is missing rows that arrive late. What do you do?" Walk through it: check that the filter uses a load or update timestamp, add a lookback window sized from observed lateness, make sure `unique_key` plus `merge` (or `delete+insert`) makes reprocessing idempotent, and schedule a full refresh or targeted backfill for anything beyond the window. Be ready to compare strategies by adapter, explain `is_incremental()` and `{{ this }}`, and say what `on_schema_change` does and does not do (it never backfills old rows).
+
+## Key takeaway
+
+An incremental model is a contract between three things: a filter that finds every changed row (on the right timestamp, with a lookback), a key that makes reprocessing idempotent, and a strategy your adapter supports. Test the key, guard the empty-table case, and keep a full-refresh or backfill path for when the contract is broken.

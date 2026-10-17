@@ -3130,3 +3130,417 @@ A company ran Celery for about 5,000 short "submit and poll" tasks a day. A few 
 - Does the scheduler run the executors? — Yes. Executor logic runs inside each scheduler process; there is no separate executor service.
 
 ---
+
+### Q554. What is the Edge Executor, and when would you use it?
+**ID:** AF-36
+**Topic:** Airflow > Executors
+**Level:** Advanced
+**Frequency:** Occasional
+**Tags:** `airflow`, `edge-executor`, `remote-execution`, `hybrid`
+
+**Short Answer (2–3 lines):**
+The `EdgeExecutor`, from the `apache-airflow-providers-edge3` package, sends tasks to lightweight **edge workers** that run anywhere with outbound HTTPS to the API server: a factory, a branch office, another cloud or an on-premises data centre. Workers pull jobs over HTTP, so nothing needs inbound firewall rules, a message broker or database access. It usually runs alongside Celery or Kubernetes as one of several executors.
+
+**Detailed Explanation:**
+How it works:
+- The central scheduler queues jobs for the `EdgeExecutor`. The API server exposes the edge API (`[edge] api_enabled = True`, `[edge] api_url`).
+- An edge worker started with `airflow edge worker -q <queues>` polls for jobs, runs them with the Task SDK, and sends back heartbeats and logs over HTTPS. It authenticates with the shared `[api_auth] jwt_secret`.
+- Tasks are routed with `executor="EdgeExecutor"` plus a `queue` that only the right site's workers listen on. If the Edge Executor isn't the default, both are needed.
+- On Airflow 3.2+, the provider registers its own database tables automatically. Older versions need `[database] external_db_managers`.
+- From 3.2, multi-team mode can give each team its own Edge Executor and workers.
+
+Requirements and limits:
+- Each worker needs Airflow, the Task SDK, the edge3 provider and the libraries its tasks use. DAG files must be synced to it, for example by Git sync, because the worker parses them.
+- Configuration must match the central site.
+- Throughput and latency depend on HTTP polling. It suits tens to hundreds of remote tasks, not tens of thousands of short tasks a minute.
+
+| Use Edge when | Use something else when |
+|---|---|
+| Data can't leave a site, or the network only allows outbound connections | Everything runs in one cloud network (use Celery or Kubernetes) |
+| You need hardware on site (OT systems, GPUs on premises) | You only need a different image (KubernetesPodOperator) |
+| A few hybrid tasks in an otherwise central platform | The remote site runs its own full Airflow anyway |
+
+**Example / Code:**
+```properties
+# Runtime: Apache Airflow 3.3 + apache-airflow-providers-edge3 — airflow.cfg on central site AND workers
+[core]
+executor = CeleryExecutor,airflow.providers.edge3.executors.EdgeExecutor
+[api_auth]
+jwt_secret = <same random secret everywhere>
+[edge]
+api_enabled = True
+api_url = https://airflow.example.internal/edge_worker/v1/rpcapi
+```
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3, apache-airflow-providers-edge3
+# [core] executor = CeleryExecutor,airflow.providers.edge3.executors.EdgeExecutor
+from datetime import datetime
+from airflow.sdk import dag, task
+
+
+@dag(schedule="*/30 * * * *", start_date=datetime(2026, 1, 1), catchup=False)
+def plant_sync():
+    # Runs on an edge worker inside the factory network, started with:
+    #   airflow edge worker -q plant_berlin
+    @task(executor="EdgeExecutor", queue="plant_berlin")
+    def read_scada_export() -> str:
+        return "/data/exports/latest.csv"
+
+    @task                       # default executor in the central cluster
+    def load_to_lake(path: str):
+        print("uploading", path)
+
+    load_to_lake(read_scada_export())
+
+
+plant_sync()
+```
+```text
+# DagBag parse with executor = LocalExecutor,airflow.providers.edge3.executors.EdgeExecutor
+errors: {}
+{'read_scada_export': ('EdgeExecutor', 'plant_berlin'), 'load_to_lake': (None, 'default')}
+```
+
+**Real-World Use Case:**
+A manufacturer had to read machine exports that lived on a plant network, which allowed no inbound connections. One edge worker per plant, each on its own queue, read the files locally and uploaded summaries. Everything else ran on the central Kubernetes executor, and operators managed all of it in one Airflow UI.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Expecting edge workers to work without the DAG files or the tasks' libraries.
+- Setting `queue="site_a"` but not `executor="EdgeExecutor"` when Edge isn't the default executor.
+- Treating it as a way around security reviews. The worker still runs arbitrary DAG code inside that network.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you take an edge worker out of service? — Put it into maintenance mode from the UI or CLI, so it stops taking jobs and drains.
+- Edge or a remote Celery worker? — Celery needs the worker to reach the broker, and in practice the metadata/result backends too. Edge only needs outbound HTTPS to the API server.
+
+---
+
+### Q555. How do you scale and make the scheduler highly available?
+**ID:** AF-37
+**Topic:** Airflow > Scheduler Scaling
+**Level:** Advanced
+**Frequency:** Common
+**Tags:** `airflow`, `scheduler`, `high-availability`, `performance`
+
+**Short Answer (2–3 lines):**
+Run two or more schedulers against a Postgres or MySQL 8+ metadata DB. They coordinate through row-level locks (`SELECT … FOR UPDATE SKIP LOCKED`), so all of them are active at once and if one dies the others carry on. Scale the DAG processor and triggerer separately. Tune the loop with `max_dagruns_per_loop_to_schedule`, `max_tis_per_query` and `parallelism`, and look at the database first when things get slow.
+
+**Detailed Explanation:**
+In Airflow 3 there are several components to scale, not one:
+| Component | Scales by | Bottleneck symptoms |
+|---|---|---|
+| Scheduler | More replicas (active-active) | Runs late to start, tasks slow to queue |
+| DAG processor | `parsing_processes`, more replicas, separate bundles | DAGs update slowly, parse timeouts (see Q568) |
+| Triggerer | Replicas × `[triggerer] capacity` (1000) | Deferred tasks resume late |
+| API server | Replicas, workers | Slow UI, slow Execution API calls from tasks |
+| Executor/workers | Celery workers, K8s nodes | Tasks sit in `queued` |
+| Metadata DB | Instance size, connection pooling (PgBouncer), cleanup | Everything is slow |
+
+Scheduler essentials:
+- **HA needs** `[scheduler] use_row_level_locking = True` (the default) and a database with `SKIP LOCKED`. SQLite supports neither, so it is for local development only.
+- **`parallelism` is per scheduler.** Three schedulers with 32 each can have 96 task instances running or queued.
+- **Loop tuning:** `max_dagruns_to_create_per_loop` (10), `max_dagruns_per_loop_to_schedule` (20) and `max_tis_per_query` (16). Raise them carefully; larger batches mean longer locks.
+- **Database hygiene:** `airflow db clean --clean-before-timestamp ...` trims old runs, task instances, XComs and logs metadata. Large tables slow every query the scheduler makes.
+- **Health checks:** `airflow jobs check --job-type SchedulerJob --allow-multiple`, which can serve as a liveness probe, plus `scheduler_heartbeat` metrics.
+
+Before adding schedulers, check whether the problem is parsing (top-level code), the database, or concurrency limits (see Q549). A second scheduler fixes none of those.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Airflow 3.3 CLI (run on any host with the deployment's config)
+airflow jobs check --job-type SchedulerJob --allow-multiple --limit 5   # exits 0 if a scheduler is alive
+airflow jobs check --job-type TriggererJob --allow-multiple
+airflow jobs check --job-type DagProcessorJob --allow-multiple
+airflow db clean --clean-before-timestamp "$(date -u -d '-90 days' +%Y-%m-%dT%H:%M:%S)" --yes
+```
+```text
+# On a machine where no scheduler is running, the first command prints and exits non-zero:
+No alive jobs found.
+```
+```properties
+# airflow.cfg values worth knowing (3.3 defaults shown)
+[core]
+parallelism = 32
+[scheduler]
+use_row_level_locking = True
+max_dagruns_to_create_per_loop = 10
+max_dagruns_per_loop_to_schedule = 20
+max_tis_per_query = 16
+[dag_processor]
+parsing_processes = 2
+[triggerer]
+capacity = 1000
+```
+
+**Real-World Use Case:**
+A deployment with about 1,500 DAGs had runs starting up to 10 minutes late. Metrics showed the scheduler loop was fine, but DB CPU sat at 90%. The task-instance table held three years of history. After `airflow db clean` to keep 90 days, PgBouncer in front of Postgres, and a second scheduler for redundancy, start latency dropped below 30 seconds.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Thinking only one scheduler can be active, an active-passive model. Since 2.0, all schedulers are active.
+- Running HA schedulers on SQLite, or on MySQL 5.x without `SKIP LOCKED`.
+- Scaling schedulers to fix slow parsing, which is the DAG processor's job in Airflow 3.
+
+**Follow-up Questions Interviewers Ask:**
+- What does `--only-idle` do (3.2+)? — Starts a scheduler that only does idle-time housekeeping, so the main scheduler loops spend less time on it.
+- How do you see the scheduler loop time? — The `scheduler.scheduler_loop_duration` metric, plus the `dag_processing.*` metrics for parsing.
+
+---
+
+### Q556. KubernetesPodOperator vs KubernetesExecutor vs virtualenv tasks: how do you isolate dependencies?
+**ID:** AF-38
+**Topic:** Airflow > Task Isolation
+**Level:** Intermediate
+**Frequency:** Very Common
+**Tags:** `airflow`, `kubernetes-pod-operator`, `isolation`, `dependencies`
+
+**Short Answer (2–3 lines):**
+`KubernetesPodOperator` runs **any container image** as one task, from any executor. The Airflow task only launches the pod and watches it. `KubernetesExecutor` runs the *Airflow task itself* in a new pod. `@task.virtualenv` and `@task.external_python` isolate Python packages on the worker without building an image. `@task.docker` and `@task.kubernetes` run a Python function inside a container.
+
+**Detailed Explanation:**
+| Option | What is isolated | Startup cost | Best for |
+|---|---|---|---|
+| `@task.virtualenv(requirements=[...])` | Python packages; venv built per run (cacheable) | Seconds to minutes | Occasional conflicting libraries |
+| `@task.external_python(python="/opt/venvs/x/bin/python")` | A venv that already exists | Low | Stable, heavy dependencies baked into the worker image |
+| `@task.docker` / `DockerOperator` | Container on a Docker host | Medium | Docker-based setups |
+| `@task.kubernetes` | A Python function in a pod with a chosen image | Pod start | Python code with its own image |
+| `KubernetesPodOperator` | Any image, any language, own CPU/RAM/GPU | Pod start | Spark-submit, dbt, ML, non-Python tools |
+| `KubernetesExecutor` (`executor=` routing) | The whole Airflow task process | Pod start | Per-task resources while keeping normal operators |
+
+KubernetesPodOperator settings that matter:
+- `image` with a pinned tag, `cmds`/`arguments` (templated), and `container_resources` requests and limits.
+- `namespace`, `service_account_name` for cloud IAM through workload identity, and `node_selector`/`tolerations`.
+- `on_finish_action="delete_succeeded_pod"` keeps failed pods around for debugging.
+- `get_logs=True` streams logs. `do_xcom_push=True` reads `/airflow/xcom/return.json` from a sidecar.
+- `deferrable=True` waits in the triggerer instead of keeping a worker busy while the pod runs (see Q543).
+- `reattach_on_restart=True`, the default, avoids launching a second pod after a worker restart.
+
+The usual mistake is mixing up KPO and `KubernetesExecutor` (see Q42). KPO works fine on Celery.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3, apache-airflow-providers-cncf-kubernetes 10.x
+from datetime import datetime
+from kubernetes.client import models as k8s
+from airflow.sdk import dag, task
+from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
+
+
+@dag(schedule="0 3 * * *", start_date=datetime(2026, 1, 1), catchup=False)
+def isolated_tasks():
+    # 1) Any container image, any language, own CPU/memory; works with ANY executor.
+    score = KubernetesPodOperator(
+        task_id="score_customers",
+        name="score-customers",
+        namespace="data-jobs",
+        image="registry.internal/ml/scorer:2026.05.1",        # pinned tag, not :latest
+        cmds=["python", "-m", "scorer"],
+        arguments=["--date", "{{ ds }}"],                       # templated
+        container_resources=k8s.V1ResourceRequirements(
+            requests={"cpu": "2", "memory": "8Gi"}, limits={"memory": "8Gi"}),
+        env_vars={"OUTPUT": "s3://lake/gold/scores/{{ ds }}/"},
+        on_finish_action="delete_succeeded_pod",                # keep failed pods for debugging
+        get_logs=True,
+        deferrable=True,                                        # wait in the triggerer, not a worker
+    )
+
+    # 2) Python with conflicting libraries, no image build: a throwaway virtualenv on the worker.
+    @task.virtualenv(requirements=["pandas==2.2.3"], system_site_packages=False)
+    def legacy_report():
+        import pandas as pd
+        return pd.__version__
+
+    score >> legacy_report()
+
+
+isolated_tasks()
+```
+```text
+# DagBag parse (no cluster needed to parse):
+errors: {}
+{'score_customers': 'KubernetesPodOperator', 'legacy_report': '_PythonVirtualenvDecoratedOperator'}
+image: registry.internal/ml/scorer:2026.05.1 | requests: {'cpu': '2', 'memory': '8Gi'} | namespace: data-jobs | deferrable: True
+```
+
+**Real-World Use Case:**
+A data-science team needed CUDA libraries and a newer scikit-learn than the Airflow image allowed. Their scoring job became a KubernetesPodOperator on a GPU node pool with its own image, built and versioned by the DS team. The Airflow image stayed small and stable, and the platform team no longer had to settle dependency conflicts between teams.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Using the `:latest` tag, which makes reruns not reproducible.
+- No resource requests or limits, so pods get evicted or starve their neighbours.
+- `@task.virtualenv` with a large requirements list on every run, without caching (`venv_cache_path`).
+
+**Follow-up Questions Interviewers Ask:**
+- How does a KPO pod return a value? — Write JSON to `/airflow/xcom/return.json` and set `do_xcom_push=True`.
+- How does a pod get cloud credentials? — Through a Kubernetes service account mapped to a cloud IAM role, such as IRSA or GKE Workload Identity, not through keys in environment variables.
+
+---
+
+### Q557. What are the Task SDK and the Task Execution API, and why do they matter?
+**ID:** AF-39
+**Topic:** Airflow > Task SDK
+**Level:** Advanced
+**Frequency:** Common
+**Tags:** `airflow`, `task-sdk`, `execution-api`, `airflow-3`
+
+**Short Answer (2–3 lines):**
+In Airflow 3, task code talks to Airflow only through the **Task SDK** (`airflow.sdk`). A supervisor process on the worker sends those calls to the API server's **Task Execution API** over HTTP, using a short-lived JWT for that task instance. Workers no longer need metadata-DB credentials. This brings security, independent upgrades of the SDK, remote execution (Edge), and task SDKs in other languages (Java and Go, experimental in 3.3).
+
+**Detailed Explanation:**
+Airflow 2: every worker had the DB connection string. Any task could open an ORM session and read or change anything in the database.
+
+Airflow 3:
+1. The executor starts the **supervisor** on the worker. The supervisor starts the task process and relays its requests: Variables, Connections, XCom, state changes, heartbeats and logs.
+2. The supervisor calls the Execution API (`/execution/...` on the API server) with a token scoped to that task instance.
+3. The task process sees a stable interface: `airflow.sdk` classes, `get_current_context()`, `Variable`, `Connection`, XCom and `outlet_events`.
+
+What this means for DAG authors:
+| Old pattern | Airflow 3 replacement |
+|---|---|
+| `from airflow.settings import Session` in task code | Not supported. Use the SDK, or the REST API / Python client for admin operations |
+| `DagRun.find(...)` or `TaskInstance` queries in a task | The context (`dag_run`, `ti`), or the REST API |
+| `from airflow.models import Variable` | `from airflow.sdk import Variable` |
+| Raising `airflow.exceptions.AirflowSkipException` | `airflow.sdk.exceptions` |
+
+Operational effects: API-server capacity now affects running tasks. Network rules must allow workers to reach the API server. `[core] execution_api_server_url` must be correct on the workers. The Task SDK can be upgraded on a different cadence from airflow-core (since 3.1). Note that the DAG processor and the triggerer still run user code with DB access, so that boundary is not complete.
+
+The 3.3 **Coordinator** layer (AIP-108) lets `@task.stub(queue=...)` tasks run in Java or Go runtimes that use the same Execution API. *Product behaviour changes; checked October 2026.*
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.sdk import Variable, dag, get_current_context, task
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False)
+def sdk_boundary():
+    @task
+    def produce(dag_run=None) -> dict:
+        # Each call below is a Task SDK call that the worker's supervisor sends to the
+        # Execution API (HTTP + a short-lived JWT for this task instance) - no DB session.
+        Variable.set("last_seen_run", dag_run.run_id)
+        return {"rows": 10}
+
+    @task
+    def consume(payload: dict):
+        ctx = get_current_context()
+        prev = ctx["ti"].xcom_pull(task_ids="produce")
+        print("variable ok:", Variable.get("last_seen_run") == ctx["dag_run"].run_id,
+              "| xcom:", prev, "| arg:", payload, "| try:", ctx["ti"].try_number)
+
+    consume(produce())
+
+
+dag_obj = sdk_boundary()
+
+if __name__ == "__main__":
+    print(dag_obj.test().state)
+```
+```text
+variable ok: True | xcom: {'rows': 10} | arg: {'rows': 10} | try: 1
+success
+```
+`dag.test()` runs in one process that has the database configured. An ORM query inside a task would therefore "work" locally but fail on real workers, which get no DB credentials. Catch it in code review, and with `ruff --select AIR` in CI (see Q564), not with `dag.test()`.
+
+**Real-World Use Case:**
+A security review flagged that every Airflow 2 worker pod held the metadata-DB password. After the move to Airflow 3, worker pods held only the API URL and per-task tokens. Two legacy tasks that queried `TaskInstance` directly were rewritten to use the context and the REST API's Python client.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Saying tasks "can't access Variables any more". They can, through the SDK.
+- Leaving the API server undersized, even though every running task now calls it.
+- Claiming the DAG processor is isolated as well. It still runs user code with DB access.
+
+**Follow-up Questions Interviewers Ask:**
+- What is `airflowctl`? — The remote CLI that talks to the REST API. It is separate from the `airflow` CLI that runs components (AIP-81).
+- How does a task get a Connection with a secrets backend? — The supervisor gets it from the worker's secrets backend if one is configured, otherwise through the Execution API (see Q559).
+
+---
+
+### Q558. What are DAG bundles and DAG versioning in Airflow 3?
+**ID:** AF-40
+**Topic:** Airflow > DAG Bundles and Versioning
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `airflow`, `dag-bundles`, `dag-versioning`, `airflow-3`
+
+**Short Answer (2–3 lines):**
+A DAG bundle is a source of DAG code: a local folder, a Git repository, or an S3 or GCS prefix. Airflow records a new **DAG version** whenever a DAG's structure changes after it has run. Versioned bundles, today `GitDagBundle`, also pin each run to the commit it started with. A run's tasks keep running that code even if `main` moves during the run, and the UI shows each run's own graph.
+
+**Detailed Explanation:**
+| Bundle | Versioned? | Notes |
+|---|---|---|
+| `LocalDagBundle` (default `dags-folder`) | No | Same behaviour as Airflow 2's DAGs folder; always the latest code |
+| `GitDagBundle` (git provider) | **Yes** | `tracking_ref` (branch, tag or SHA), `git_conn_id` or `repo_url`, `subdir`, `sparse_dirs` |
+| `S3DagBundle` / `GCSDagBundle` | No | Bucket and prefix; latest code |
+
+Configure bundles with `[dag_processor] dag_bundle_config_list`, a JSON list of `{name, classpath, kwargs}`. You can mix bundle types and have several repositories, for example one per team.
+
+DAG versioning behaviour:
+- The DAG processor serialises each DAG. If the result differs and the current version already has task instances, a new version number is created. Otherwise the current version is updated in place.
+- Each run records `created_dag_version`. The grid and graph views show history *as it was*, so removed tasks no longer vanish from the history.
+- **Rerun and clear (3.3).** `rerun_with_latest_version` (DAG argument, `[core]` setting, or a per-request flag) chooses between the original bundle version and the latest one. The default is the original version for clear and rerun, and the latest version for backfills.
+- `disable_bundle_versioning=True` on a DAG opts it out of versioning.
+
+Why interviewers care: Airflow 2 always reran with the latest code. A fix deployed in the middle of a run could leave half a run on old code and half on new. Versioned bundles make reruns reproducible and deploys safer.
+
+**Example / Code:**
+```properties
+# Runtime: Apache Airflow 3.3 + apache-airflow-providers-git — airflow.cfg
+[dag_processor]
+dag_bundle_config_list = [
+    {"name": "analytics-dags",
+     "classpath": "airflow.providers.git.bundles.git.GitDagBundle",
+     "kwargs": {"git_conn_id": "github_analytics", "tracking_ref": "main", "subdir": "dags"}},
+    {"name": "dags-folder",
+     "classpath": "airflow.dag_processing.bundles.local.LocalDagBundle",
+     "kwargs": {}}
+  ]
+[core]
+rerun_with_latest_version = False
+```
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.sdk import dag, task
+
+
+@dag(
+    schedule="0 5 * * *", start_date=datetime(2026, 1, 1), catchup=False,
+    rerun_with_latest_version=False,   # clears/reruns use the commit the run started with (3.3)
+    disable_bundle_versioning=False,   # opt a single DAG out of versioning if it must always run latest
+)
+def versioned_pipeline():
+    @task
+    def extract():
+        return 1
+
+    extract()
+
+
+versioned_pipeline()
+```
+```text
+# Parsed with DagBag; the default bundle list printed by "airflow config get-value dag_processor dag_bundle_config_list":
+{'rerun_with_latest_version': False, 'disable_bundle_versioning': False}
+[
+{
+"name": "dags-folder",
+"classpath": "airflow.dag_processing.bundles.local.LocalDagBundle",
+"kwargs": {}
+}
+]
+```
+
+**Real-World Use Case:**
+An engineer merged a refactor that renamed a task while the nightly run was halfway through. In Airflow 2, the remaining tasks would have picked up the new code and the rename would have broken the run. With a `GitDagBundle`, the run finished on the commit it started with, and the next night's run used the new version. Both graphs stayed visible in the UI history.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Assuming versioning pins code when you use the local DAGs folder. Only versioned bundles pin code. The local folder still records DAG *structure* versions.
+- Expecting a clear to use new code by default in 3.3. Clears default to the original version; use "run on latest version" when you are deploying a fix.
+- Not giving the DAG processor and the workers Git credentials and network access.
+
+**Follow-up Questions Interviewers Ask:**
+- Where does a worker get the right code? — It checks out the bundle version recorded on the run, such as a Git commit, before parsing the DAG file.
+- How do you clean up old checkouts? — The `[dag_processor] stale_bundle_cleanup_*` settings control how long old bundle versions are kept on disk.
+
+---

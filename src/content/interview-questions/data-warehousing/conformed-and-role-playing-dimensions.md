@@ -4,7 +4,7 @@ updatedDate: "2026-10-16"
 reviewedDate: "2026-10-16"
 title: "What are conformed and role-playing dimensions, and how do you use them?"
 seoTitle: "Conformed and Role-Playing Dimensions"
-description: "Conformed and role-playing dimensions interview answer: share dimensions across fact tables, drill across without double counting, and reuse one dimension in many roles."
+description: "Conformed and role-playing dimensions interview answer: share dimensions across facts, drill across without double counting, reuse one dimension in roles."
 technology: ["data-warehousing", "data-engineering"]
 topic: ["conformed-dimensions", "role-playing-dimensions", "bus-matrix", "drill-across"]
 difficulty: "Medium"

@@ -4,14 +4,14 @@ updatedDate: "2026-10-16"
 reviewedDate: "2026-10-16"
 title: "Kimball vs Inmon vs Data Vault: which would you choose for a new warehouse?"
 seoTitle: "Kimball vs Inmon vs Data Vault: Interview"
-description: "Kimball vs Inmon vs Data Vault interview answer: how each layers the warehouse, what each costs, and how to choose, with a small Data Vault to star example in SQL."
+description: "Kimball vs Inmon vs Data Vault interview answer: how each layers the warehouse, what each costs, how to choose, plus a Data Vault to dimension SQL example."
 technology: ["data-warehousing", "data-engineering"]
 topic: ["kimball", "inmon", "data-vault", "modeling-methodologies"]
 difficulty: "Medium"
 questionType: ["architecture", "conceptual"]
 estimatedMinutes: 12
 interviewRelevance: "High"
-shortAnswer: "They answer different questions, so I would say what each optimises and then choose by constraints. Kimball builds conformed star schemas per business process, bottom-up; it is fastest to value and easiest to query, but integration depends on discipline around conformed dimensions and restructuring is painful. Inmon builds a normalised, subject-oriented enterprise warehouse first and derives dimensional marts from it; it gives one integrated, consistent core at the cost of a long upfront modelling effort. Data Vault 2.0 models the integration layer as hubs (business keys), links (relationships) and satellites (attributes over time), loaded insert-only and in parallel; it absorbs new sources and changing rules well and keeps full history for audit, but it is not queryable by analysts and always needs marts on top. In practice many teams combine them: a raw or vault layer for integration and history, and Kimball stars (often in dbt) for consumption."
+shortAnswer: "Say what each optimises, then choose by constraints. Kimball builds conformed star schemas per business process, bottom-up: fastest to value and easiest to query, but integration depends on discipline with conformed dimensions. Inmon builds a normalised enterprise warehouse first and derives marts from it: one consistent core, long upfront effort. Data Vault 2.0 models integration as hubs, links and satellites, loaded insert-only and in parallel: it absorbs new sources and keeps full history for audit, but analysts cannot query it and it always needs marts on top. Many teams combine them: a raw or vault layer for integration, Kimball stars for consumption."
 followUps: ["Why can analysts not query a Data Vault directly?", "Where does the medallion architecture fit?", "What would you pick for a 5-person startup with one source system?", "What does 'insert-only' buy you in Data Vault?"]
 related: ["articles:data-warehousing/modeling-methodologies", "articles:data-warehousing/star-schema", "interview-questions:data-warehousing/one-big-table-vs-star-schema", "interview-questions:data-engineering/lake-warehouse-lakehouse"]
 versionContext: "SQL verified on PostgreSQL 16 with scripts/verify-examples.py; outputs copied from psql. Data Vault hash keys use md5 for brevity; Data Vault 2.0 guidance commonly uses MD5 or SHA-1/SHA-256."

@@ -4,14 +4,14 @@ updatedDate: "2026-10-16"
 reviewedDate: "2026-10-16"
 title: "How do you model late-arriving dimensions and late-arriving facts in a star schema?"
 seoTitle: "Late-Arriving Dimensions and Facts"
-description: "Late-arriving dimensions interview answer: inferred members for facts that beat their dimension, historical key lookup for late facts, and backdated Type 2 changes."
+description: "Late-arriving dimensions interview answer: inferred members for facts that beat their dimension, as-of key lookup for late facts, backdated Type 2 changes."
 technology: ["data-warehousing", "data-engineering"]
 topic: ["late-arriving-dimensions", "late-arriving-facts", "inferred-members", "scd-type-2"]
 difficulty: "Hard"
 questionType: ["scenario", "coding"]
 estimatedMinutes: 14
 interviewRelevance: "High"
-shortAnswer: "There are three cases. A fact that arrives before its dimension row (an early fact, often called a late-arriving dimension) should not be dropped or parked forever: insert an inferred member, a placeholder dimension row with the natural key, a new surrogate and default attributes flagged as inferred, and point the fact at it; when the real row arrives, overwrite the inferred row in place rather than creating a Type 2 version, so the fact needs no update. A fact that arrives late, after its dimension has changed, must look up the dimension version that was valid at the event time, not the current one, and its event-date partitions must be rebuilt. A dimension change that arrives late and is backdated splits an existing Type 2 range, and facts in the split period must be re-pointed to the new version."
+shortAnswer: "Three cases. A fact that arrives before its dimension row gets an inferred member: a placeholder row with the natural key, a new surrogate, default attributes and an inferred flag; when the real row arrives it overwrites the placeholder in place (no new Type 2 version), so the fact needs no update. A fact that arrives late must look up the dimension version valid at its event time, not the current one, and its event-date aggregates must be rebuilt. A backdated dimension change splits an existing Type 2 range, and facts in the split period are re-pointed to the new version."
 followUps: ["Why not just reject facts with an unknown key and retry later?", "Why is the inferred row overwritten instead of versioned?", "How do you find facts that need re-pointing after a backdated change?", "How does this differ in a lakehouse with hash keys?"]
 related: ["articles:data-warehousing/dimension-tables", "articles:data-warehousing/fact-tables", "interview-questions:data-engineering/late-arriving-data", "interview-questions:data-warehousing/scd-type-2-as-of-joins"]
 versionContext: "SQL verified on PostgreSQL 16 with scripts/verify-examples.py; outputs copied from psql."

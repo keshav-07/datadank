@@ -4,7 +4,7 @@ updatedDate: "2026-10-16"
 reviewedDate: "2026-10-16"
 title: "One big table or a star schema: how do you decide?"
 seoTitle: "One Big Table vs Star Schema: Interview"
-description: "One big table vs star schema interview answer: when a wide denormalised table wins on columnar engines, what it costs in freshness and grain, and why most teams keep both."
+description: "One big table vs star schema interview answer: when a wide pre-joined table wins on columnar engines, what it costs in freshness and grain, and the hybrid."
 technology: ["data-warehousing", "data-engineering"]
 topic: ["one-big-table", "star-schema", "denormalization", "columnar-storage"]
 difficulty: "Medium"

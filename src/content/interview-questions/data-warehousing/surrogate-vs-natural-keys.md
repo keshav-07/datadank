@@ -4,7 +4,7 @@ updatedDate: "2026-10-16"
 reviewedDate: "2026-10-16"
 title: "Surrogate keys vs natural keys: which should a dimension use, and why?"
 seoTitle: "Surrogate vs Natural Keys in Data Warehouses"
-description: "Surrogate vs natural keys interview answer: why dimensions get warehouse-owned keys, how to map source IDs, and when hash keys beat sequences, with Postgres SQL."
+description: "Surrogate vs natural keys interview answer: why dimensions get warehouse-owned keys, how to map source IDs, and when hash keys beat sequences, in SQL."
 technology: ["data-warehousing", "data-engineering"]
 topic: ["surrogate-keys", "natural-keys", "dimension-tables", "hash-keys"]
 difficulty: "Medium"

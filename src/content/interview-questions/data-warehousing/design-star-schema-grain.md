@@ -4,7 +4,7 @@ updatedDate: "2026-10-16"
 reviewedDate: "2026-10-16"
 title: "Design a star schema for a business process. What is the grain?"
 seoTitle: "Design a Star Schema and Declare the Grain"
-description: "Star schema design interview answer: pick the business process, declare the grain, choose dimensions and facts, and keep order-level measures from double counting."
+description: "Star schema design interview answer: pick the business process, declare the grain, choose dimensions and facts, and stop order-level measures double counting."
 technology: ["data-warehousing", "data-engineering"]
 topic: ["star-schema", "grain", "dimensional-modeling", "fact-tables"]
 difficulty: "Medium"

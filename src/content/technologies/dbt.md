@@ -5,7 +5,7 @@ description: "dbt turns SQL select statements into tested, documented warehouse 
 group: processing
 order: 14
 keyFacts: ["A model is a select statement; dbt writes the DDL and runs models in DAG order","ref() and source() build the lineage graph, so never hard-code table names","Tests, contracts and slim CI catch bad data and breaking changes before production"]
-whatToLearnFirst: ["articles:dbt/dbt-for-data-engineers"]
+whatToLearnFirst: ["articles:dbt/dbt-for-data-engineers", "articles:dbt/models-ref-and-sources", "articles:dbt/incremental-models"]
 relatedTechnologies: ["sql","etl-elt","data-warehousing","airflow"]
 cheatSheet: "cheat-sheets:dbt"
 monogram: "dbt"

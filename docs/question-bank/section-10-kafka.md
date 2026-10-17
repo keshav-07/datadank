@@ -1666,3 +1666,428 @@ A document-OCR service had bursts of 50,000 jobs on a 12-partition topic. Each j
 - Which clients support it? — The Java `KafkaShareConsumer` is production-ready; librdkafka's share consumer (used by `confluent-kafka`'s `ShareConsumer`) is still marked Preview in its changelog, so check before relying on it.
 
 ---
+
+### Q489. How replication works: leaders, followers, the ISR and the high watermark
+**ID:** KFK-21
+**Topic:** Kafka > Replication & Durability
+**Level:** Intermediate
+**Frequency:** Very Common
+**Tags:** `kafka`, `replication`, `isr`, `high-watermark`, `min-insync-replicas`
+
+**Short Answer (2–3 lines):**
+Each partition has one leader that takes all writes. Followers copy from it by sending fetch requests, just as consumers do. Followers that keep up within `replica.lag.time.max.ms` (30 s) form the in-sync replica set (ISR). The high watermark is the highest offset every ISR member has, and consumers only see records below it. Since Kafka 4.0 the high watermark also won't advance while the ISR is smaller than `min.insync.replicas`, whatever `acks` the producer used.
+
+**Detailed Explanation:**
+How `acks`, replication factor and `min.insync.replicas` combine into a durability choice is covered on this site's durability page. This question is about the mechanism underneath.
+
+**Follower fetching.** Followers send `Fetch` requests to the leader with their log-end offset. The leader learns how far each follower has got from these requests, and it returns its current high watermark (HW) in the response, so followers learn the HW too.
+
+**ISR membership.** A follower drops out of the ISR if it hasn't caught up to the leader's log end within `replica.lag.time.max.ms`. A cleanly stopped broker is removed straight away. The leader asks the KRaft controller to shrink or expand the ISR, and the change is recorded in the metadata log.
+
+**The high watermark**
+- HW = the minimum log-end offset across ISR members.
+- Consumers fetch only up to the HW, so they never see a record that could disappear in a leader failover.
+- "Strict min ISR" (KIP-966, Kafka 4.0+): if ISR size < `min.insync.replicas`, the HW stops. Even `acks=1` writes are stored on the leader but stay invisible until enough replicas catch up. The run below shows this.
+
+**`acks=all` + `min.insync.replicas=2` with replication factor 3**
+- 3 in sync: writes succeed.
+- 2 in sync: writes still succeed (you can lose one broker).
+- 1 in sync: `acks=all` producers get `NOT_ENOUGH_REPLICAS`, retry, and finally time out. The partition is effectively read-only for them.
+
+**Leader epochs.** Each leader change bumps an epoch. Followers use epoch boundaries to truncate divergent records after a failover, which replaced the older HW-based truncation and its edge cases.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Kafka 4.3.1 lab: 1 KRaft controller + 3 brokers (racks az-1..az-3) on one host; Python 3.11 + confluent-kafka 2.16
+# send.py <acks> <value> produces one record to "ledger" with delivery.timeout.ms=8000 and prints the outcome
+C=localhost:29091
+kafka-topics.sh --bootstrap-server $C --create --topic ledger --replica-assignment 1:2:3 --config min.insync.replicas=2
+python send.py all "deposit 100"
+./stop.sh 3; python send.py all "deposit 50"
+./stop.sh 2; python send.py all "withdraw 30"; python send.py 1 "withdraw 20"
+kafka-get-offsets.sh --bootstrap-server $C --topic ledger      # shows the high watermark
+./start.sh 2 3                                                  # bring the followers back
+```
+```text
+Topic: ledger	Partition: 0	Leader: 1	Replicas: 1,2,3	Isr: 1,2,3	Elr: 	LastKnownElr: 
+acks=all 'deposit 100': written at offset 0
+## stop broker 3
+Topic: ledger	Partition: 0	Leader: 1	Replicas: 1,2,3	Isr: 1,2	Elr: 	LastKnownElr: 
+acks=all 'deposit 50': written at offset 1
+  visible to consumers (high watermark): ledger:0:2
+## stop broker 2
+Topic: ledger	Partition: 0	Leader: 1	Replicas: 1,2,3	Isr: 1	Elr: 2	LastKnownElr: 
+acks=all 'withdraw 30': FAILED _MSG_TIMED_OUT
+acks=1   'withdraw 20': written at offset 2
+  visible to consumers (high watermark): ledger:0:2
+## restart brokers 2 and 3
+Topic: ledger	Partition: 0	Leader: 1	Replicas: 1,2,3	Isr: 1,2,3	Elr: 	LastKnownElr: 
+  visible to consumers (high watermark): ledger:0:3
+```
+With one replica in sync, the `acks=all` write was refused (retried until the 8-second budget ran out). The `acks=1` write was accepted, but stayed invisible (HW 2) until the followers rejoined and the HW moved to 3. Broker 2 also appeared in the ELR (see Q490).
+
+**Real-World Use Case:**
+During a zone outage, a team's dashboards showed producers "succeeding" with `acks=1` while consumers saw nothing new. That is strict min ISR at work: the data was safe on one broker but not yet committed. It became visible as soon as the zone returned. Producers using `acks=all` had failed loudly instead, which the runbook now treats as the expected signal.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Saying followers receive pushed data from the leader. They pull it.
+- Thinking `acks=1` data is readable immediately in every case.
+- Confusing a replica falling out of the ISR with a replica being removed from the assignment.
+- Setting `min.insync.replicas` equal to the replication factor, so any single broker restart blocks `acks=all` writes.
+
+**Follow-up Questions Interviewers Ask:**
+- What makes a follower fall out of the ISR? — Not catching up to the leader's log end within `replica.lag.time.max.ms`, usually from a slow disk, GC pauses or network trouble.
+- What is the log end offset vs the high watermark? — LEO is the next offset the replica will write; HW is the committed boundary that consumers may read up to.
+- Why does Kafka not need a majority of replicas, like Raft does? — The ISR is tracked by the controller, so any ISR member is safe to elect, and `min.insync.replicas` sets how many must confirm.
+
+---
+### Q490. Unclean leader election and Eligible Leader Replicas (ELR)
+**ID:** KFK-22
+**Topic:** Kafka > Replication & Durability
+**Level:** Advanced
+**Frequency:** Common
+**Tags:** `kafka`, `unclean-leader-election`, `elr`, `kip-966`, `data-loss`
+
+**Short Answer (2–3 lines):**
+Unclean leader election lets a replica that is *not* in sync become leader when no in-sync replica is available. That restores availability, but it truncates any acknowledged writes the new leader never had, so it is off by default (`unclean.leader.election.enable=false`). Kafka 4.x adds Eligible Leader Replicas (KIP-966, on by default for new clusters since 4.1). The controller remembers which out-of-ISR replicas are still safe, so a clean election is possible in more failure cases.
+
+**Detailed Explanation:**
+**The dilemma.** All ISR members are down. You can wait for one of them (stay unavailable, lose nothing) or elect whatever replica comes back first (available now, possibly losing acknowledged data). Kafka defaults to waiting.
+
+**How ELR helps.** With strict min ISR (see Q489), the high watermark can't advance while ISR < `min.insync.replicas`. So a replica that dropped out of the ISR *during* that period still has every committed record. The controller stores such replicas as the ELR. Election order is now:
+1. A live ISR member.
+2. An unfenced ELR member.
+3. The last known leader, if it comes back.
+4. Only if unclean election is enabled (or forced), any live replica.
+
+**Turning on unclean election.** Set the topic or broker config, then either wait for the controller's periodic unclean-election check (about 5 minutes) or force it now with `kafka-leader-election.sh --election-type UNCLEAN`. The 4.3 config docs point this out.
+
+**When people enable it**
+- Metrics, logs and other data where availability matters more than a few lost records.
+- As a manual, last-resort step during an outage, after a decision to accept loss. Set it back afterwards.
+
+**Never** leave it on for ledgers, orders, CDC or compacted state topics.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Kafka 4.3.1 lab: 1 KRaft controller + 3 brokers on one host; Python 3.11 + confluent-kafka 2.16
+source ../env.sh; C=localhost:29091,localhost:29092,localhost:29093
+desc(){ kafka-topics.sh --bootstrap-server $C --describe --topic $1 2>/dev/null | grep 'Partition:' | sed 's/^\s*//'; }
+offs(){ echo "  end offset: $(kafka-get-offsets.sh --bootstrap-server $C --topic $1 2>/dev/null)"; }
+down(){ bash ../cluster/stop.sh $1 >/dev/null; }
+up(){ bash ../cluster/start.sh $@ >/dev/null; sleep 6; }
+T=$1; MODE=$2                       # MODE = elr | unclean
+kafka-topics.sh --bootstrap-server $C --create --topic $T --replica-assignment 1:2:3 --config min.insync.replicas=2 >/dev/null
+python send.py all "r0" $T
+down 3; python send.py all "r1 (written while broker 3 was down)" $T
+down 2; down 1; echo "## brokers 3, 2, 1 stopped in that order"; desc $T
+up 3; echo "## broker 3 back (it missed r1)"; desc $T
+if [ "$MODE" = elr ]; then
+  up 2; echo "## broker 2 back (it is in the ELR)"; desc $T; offs $T
+else
+  kafka-configs.sh --bootstrap-server $C --alter --entity-type topics --entity-name $T --add-config unclean.leader.election.enable=true >/dev/null
+  echo "## unclean.leader.election.enable=true, then trigger the election now"
+  kafka-leader-election.sh --bootstrap-server $C --election-type UNCLEAN --topic $T --partition 0 2>&1 | grep -v WARN
+  sleep 3; desc $T; offs $T
+  up 1 2; desc $T; offs $T
+fi
+up 1 2 2>/dev/null
+```
+Run 1, `bash elr_exp.sh acct elr` (wait for the ELR member):
+```text
+acks=all 'r0': written at offset 0
+acks=all 'r1 (written while broker 3 was down)': written at offset 1
+## brokers 3, 2, 1 stopped in that order
+## broker 3 back (it missed r1)
+Topic: acct	Partition: 0	Leader: none	Replicas: 1,2,3	Isr: 	Elr: 1,2	LastKnownElr: 1
+## broker 2 back (it is in the ELR)
+Topic: acct	Partition: 0	Leader: 2	Replicas: 1,2,3	Isr: 2,3	Elr: 	LastKnownElr: 
+  end offset: acct:0:2
+```
+Run 2, `bash elr_exp.sh acct5 unclean` (force an unclean election instead):
+```text
+## broker 3 back (it missed r1)
+Topic: acct5	Partition: 0	Leader: none	Replicas: 1,2,3	Isr: 	Elr: 1,2	LastKnownElr: 1
+## unclean.leader.election.enable=true, then trigger the election now
+Successfully completed leader election (UNCLEAN) for partitions acct5-0
+Topic: acct5	Partition: 0	Leader: 3	Replicas: 1,2,3	Isr: 3	Elr: 	LastKnownElr: 
+Topic: acct5	Partition: 0	Leader: 3	Replicas: 1,2,3	Isr: 1,2,3	Elr: 	LastKnownElr: 
+  end offset: acct5:0:1
+```
+Broker 3 alone wasn't eligible, so the partition stayed offline rather than lose data. Waiting for broker 2 (an ELR member) gave a clean leader with both records. Forcing an unclean election made broker 3 leader at once. When brokers 1 and 2 rejoined they truncated to its log: the acknowledged `r1` was gone for good (end offset 1 instead of 2).
+
+**Real-World Use Case:**
+A logging cluster lost two of three brokers in a rack failure. For the `app-logs` topics, the on-call engineer forced unclean elections to restore ingestion within minutes, accepting a small gap. For `payments` they waited about twenty minutes for an in-sync broker to come back, which kept every acknowledged write.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Enabling unclean election cluster-wide "to improve availability".
+- Expecting a dynamic config change to elect a leader instantly; it waits for the periodic check unless you trigger it.
+- Not knowing that the truncated records are gone even after the old replicas return.
+- Confusing the ELR with the ISR. ELR members are safe to elect but are not receiving writes as in-sync followers.
+
+**Follow-up Questions Interviewers Ask:**
+- How does `min.insync.replicas` relate to ELR? — ELR relies on strict min ISR: because the HW freezes below min ISR, replicas that left the ISR in that window still hold all committed data.
+- Where do you see ELR state? — `kafka-topics.sh --describe` shows `Elr` and `LastKnownElr`; the DescribeTopicPartitions API returns it.
+- What changes for broker-level `min.insync.replicas` once ELR is on? — It moves to the cluster level; the broker-level value is removed and can't be altered.
+
+---
+### Q491. What happens when a broker fails, and how does leadership recover?
+**ID:** KFK-23
+**Topic:** Kafka > Replication & Durability
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `kafka`, `failover`, `leader-election`, `under-replicated-partitions`
+
+**Short Answer (2–3 lines):**
+The controller notices the broker has stopped heartbeating and fences it. For every partition it led, a new leader is picked from the remaining ISR, and clients find the new leaders through metadata refresh and retry. The partitions run under-replicated until the broker returns and catches up. Leadership then moves back to the "preferred" replica, automatically or with `kafka-leader-election.sh`.
+
+**Detailed Explanation:**
+**Timeline of a hard crash**
+1. Brokers heartbeat to the active controller. After `broker.session.timeout.ms` (9 s by default) with no heartbeat, the controller fences the broker.
+2. For each partition the broker led, the controller elects a new leader from the ISR (or the ELR, see Q490) and writes the change to the metadata log.
+3. Brokers apply the change. Producers and consumers get `NOT_LEADER_OR_FOLLOWER`, refresh metadata and retry, which is invisible to the application with default retries.
+4. The failed broker is also removed from the ISR of partitions it followed. Those partitions are now **under-replicated**.
+5. When it restarts, the broker truncates any divergent tail (using leader epochs), catches up and rejoins the ISR.
+6. **Preferred leader** = first replica in the assignment list. With `auto.leader.rebalance.enable=true` (the default) the controller moves leadership back to preferred replicas on a timer, every `leader.imbalance.check.interval.seconds` (300 s). The old `leader.imbalance.per.broker.percentage` threshold isn't in the 4.3 broker config list. You can force it at once with `kafka-leader-election.sh --election-type PREFERRED`.
+
+**Controlled shutdown** (SIGTERM) is gentler: the broker asks the controller to move its leaderships away first, so clients see almost no errors. Always do rolling restarts this way, one broker at a time, waiting for zero under-replicated partitions between brokers.
+
+**What a client notices**
+- `acks=all` with `min.insync.replicas=2` and RF 3: one broker down, writes keep succeeding.
+- A latency spike for a few seconds while leadership moves.
+- Consumers keep reading from new leaders. Groups don't rebalance unless consumer processes themselves failed.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Kafka 4.3.1 lab: 1 KRaft controller + 3 brokers on one host
+source ../env.sh; C=localhost:29091,localhost:29092,localhost:29093
+leaders(){ kafka-topics.sh --bootstrap-server $C --describe --topic orders4 2>/dev/null | awk '/Partition:/ {printf "p%s:L%s(isr %s) ", $4, $6, $10} END {print ""}'; }
+kafka-topics.sh --bootstrap-server $C --create --topic orders4 --partitions 6 --replication-factor 3 --config min.insync.replicas=2 >/dev/null
+sleep 2; echo "start           : $(leaders)"
+bash ../cluster/stop.sh 1 -9 >/dev/null                       # hard crash, no controlled shutdown
+sleep 12; echo "broker 1 killed : $(leaders)"
+kafka-topics.sh --bootstrap-server $C --describe --under-replicated-partitions 2>/dev/null | grep -c Partition: | sed "s/^/under-replicated partitions (all topics): /"
+bash ../cluster/start.sh 1 >/dev/null; sleep 10   # restart broker 1
+# preferred.json: {"partitions":[{"topic":"orders4","partition":2},{"topic":"orders4","partition":4}]}
+echo "broker 1 back   : $(leaders)"
+kafka-leader-election.sh --bootstrap-server $C --election-type PREFERRED --path-to-json-file preferred.json
+echo "after preferred : $(leaders)"
+```
+```text
+start           : p0:L2(isr 2,3,1) p1:L3(isr 3,1,2) p2:L1(isr 1,2,3) p3:L2(isr 2,1,3) p4:L1(isr 1,3,2) p5:L3(isr 3,2,1)
+broker 1 killed : p0:L2(isr 2,3) p1:L3(isr 3,2) p2:L2(isr 2,3) p3:L2(isr 2,3) p4:L3(isr 3,2) p5:L3(isr 3,2)
+under-replicated partitions (all topics): 13
+broker 1 back   : p0:L2(isr 1,2,3) p1:L3(isr 1,2,3) p2:L2(isr 1,2,3) p3:L2(isr 1,2,3) p4:L3(isr 1,2,3) p5:L3(isr 1,2,3)
+Successfully completed leader election (PREFERRED) for partitions orders4-4, orders4-2
+after preferred : p0:L2(isr 1,2,3) p1:L3(isr 1,2,3) p2:L1(isr 1,2,3) p3:L2(isr 1,2,3) p4:L1(isr 1,2,3) p5:L3(isr 1,2,3)
+```
+Killing broker 1 moved its two leaderships (p2, p4) to broker 2 and broker 3 within seconds, and every partition dropped to two in-sync replicas. After the restart, broker 1 rejoined every ISR but led nothing. Within the run the automatic rebalance (5-minute timer) hadn't fired yet, so a preferred election moved p2 and p4 back.
+
+**Real-World Use Case:**
+During a rolling OS patch, an engineer restarted two brokers within a minute. Several partitions dropped to one in-sync replica and `acks=all` producers stalled. The runbook now waits for `UnderReplicatedPartitions == 0` (and preferred leaders restored) before touching the next broker.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Thinking a consumer group rebalances when a broker fails.
+- Restarting the next broker while partitions are still under-replicated.
+- Forgetting preferred leader election, which leaves one broker leading most partitions after a restart.
+- Using `kill -9` for routine restarts instead of a controlled shutdown.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you find affected partitions? — `kafka-topics.sh --describe --under-replicated-partitions`, `--under-min-isr-partitions` and `--unavailable-partitions`.
+- What if the failed broker's disk is lost? — Replace it with the same `node.id` and empty disks; it re-replicates everything from leaders (throttle it).
+- How long does failover take? — Detection (session timeout) plus a fast metadata update; with KRaft, usually seconds.
+
+---
+
+### Q492. Rack awareness and fetching from the closest replica
+**ID:** KFK-24
+**Topic:** Kafka > Replication & Durability
+**Level:** Advanced
+**Frequency:** Occasional
+**Tags:** `kafka`, `rack-awareness`, `follower-fetching`, `multi-az`, `cost`
+
+**Short Answer (2–3 lines):**
+Setting `broker.rack` to the availability zone makes Kafka spread each partition's replicas across zones, so losing one zone loses at most one copy. With `replica.selector.class=RackAwareReplicaSelector` on brokers and `client.rack` on consumers (KIP-392), consumers read from a replica in their own zone instead of the leader. That cuts cross-zone traffic, which is often a large part of a cloud Kafka bill.
+
+**Detailed Explanation:**
+**Replica placement.** With `broker.rack` set, topic creation and reassignment tools place replicas in different racks where possible. Three zones with RF 3 put one replica per zone. Combine with `min.insync.replicas=2`, and a whole zone can fail without losing acknowledged writes or `acks=all` availability.
+
+**Where the cross-zone bytes come from (RF 3, three zones, producer in one zone)**
+- Producer → leader: about two-thirds of produce traffic crosses zones on average (the leader is in another zone two times in three).
+- Leader → two followers: always cross-zone, so 2× the produce volume.
+- Leader → consumers: about two-thirds cross-zone per consumer group, unless consumers fetch from a same-zone follower.
+
+Replication is unavoidable for durability. Consumer traffic is the part you can remove, and with many consumer groups it's often the biggest.
+
+**Follower fetching set-up**
+```properties
+# broker
+broker.rack=use1-az1
+replica.selector.class=org.apache.kafka.common.replica.RackAwareReplicaSelector
+# consumer
+client.rack=use1-az1
+```
+The leader still serves the first fetch and redirects the consumer to a preferred read replica in its rack.
+
+**Trade-offs**
+- Slightly higher end-to-end latency: followers only expose data up to the high watermark they've learned, which trails the leader a little.
+- If the follower falls out of the ISR, the consumer is sent back to the leader.
+- Producers can't do this; writes always go to the leader. Some managed services offer zone-aware routing for producers in their own ways.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16; Kafka 4.3.1 lab: brokers 1-3 with broker.rack=az-1..az-3 and
+#   replica.selector.class=org.apache.kafka.common.replica.RackAwareReplicaSelector
+# Topic created first with: kafka-topics.sh --create --topic rack-demo --replica-assignment 1:2:3
+# (one partition, replicas 1,2,3, so broker 1 in az-1 is the leader)
+import logging, re, time
+from confluent_kafka import Consumer, Producer
+
+BOOT = "localhost:29091,localhost:29092,localhost:29093"
+p = Producer({"bootstrap.servers": BOOT})
+for i in range(100):
+    p.produce("rack-demo", value=f"event-{i}")
+p.flush()
+
+def fetched_from(client_rack):
+    lines = []
+    class Grab(logging.Handler):
+        def emit(self, record):
+            lines.append(record.getMessage())
+    log = logging.getLogger(f"rk-{client_rack}"); log.addHandler(Grab()); log.setLevel(logging.DEBUG)
+    c = Consumer({"bootstrap.servers": BOOT, "group.id": f"rack-{client_rack}-{time.time()}",
+                  "auto.offset.reset": "earliest", "client.rack": client_rack, "debug": "fetch"},
+                 logger=log)
+    c.subscribe(["rack-demo"])
+    got, end = 0, time.time() + 20
+    while got < 100 and time.time() < end:
+        m = c.poll(0.5)
+        if m and not m.error():
+            got += 1
+    c.close()
+    # librdkafka logs each fetch as "...localhost:2909N/N: Fetch topic rack-demo [0] at offset ..."
+    brokers = sorted({int(b) for b in re.findall(r"localhost:2909\d/(\d+): Fetch topic rack-demo", "\n".join(lines))})
+    return got, brokers
+
+for rack in ("az-1", "az-3"):
+    got, brokers = fetched_from(rack)
+    print(f"client.rack={rack}: consumed {got} records, fetch requests went to broker(s) {brokers}")
+```
+```text
+client.rack=az-1: consumed 100 records, fetch requests went to broker(s) [1]
+client.rack=az-3: consumed 100 records, fetch requests went to broker(s) [1, 3]
+```
+A consumer in the leader's zone fetched only from broker 1. A consumer in `az-3` made its first fetch from the leader, was told to use the `az-3` replica, and fetched from broker 3 after that.
+
+**Real-World Use Case:**
+A platform with a dozen consumer groups on a 3-zone cluster found that cross-zone transfer cost more than the brokers themselves. Enabling follower fetching and setting `client.rack` from the Kubernetes node's zone label removed most consumer-side cross-zone traffic, with only a small latency increase.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Setting `broker.rack` but not `replica.selector.class`, then expecting consumers to fetch locally.
+- Hard-coding `client.rack` in images instead of reading the zone at start-up.
+- Assuming rack awareness also balances leaders across zones; leadership still follows the preferred replica.
+
+**Follow-up Questions Interviewers Ask:**
+- Does rack awareness help when a partition has RF 2 across three zones? — Partly: each copy is in a different zone, but losing one zone leaves a single copy.
+- Is there a producer-side equivalent? — Not in open-source Kafka; producers always write to the leader.
+- How do you verify follower fetching? — Client debug logs or broker fetch metrics per replica show fetches arriving at followers.
+
+---
+### Q493. Exactly-once from Kafka into an external database
+**ID:** KFK-25
+**Topic:** Kafka > Delivery Semantics & Transactions
+**Level:** Advanced
+**Frequency:** Common
+**Tags:** `kafka`, `exactly-once`, `sink`, `idempotency`, `offsets`
+
+**Short Answer (2–3 lines):**
+Kafka transactions stop at Kafka's edge, so a database sink can't join them. You get an exactly-once *effect* in one of two ways. Make writes idempotent (upsert on a business key or event ID), so replays do no harm. Or store the consumed offsets in the same database transaction as the results, and on start-up seek to the offsets kept in the database.
+
+**Detailed Explanation:**
+What EOS means inside Kafka (idempotent producer, transactions, `read_committed`) is covered in Q70 and on this site's exactly-once page. The real-world problem is the hop *out* of Kafka.
+
+**Why "commit after write" isn't enough.** Write row, then commit offset: a crash between the two replays the row (a duplicate). Commit offset, then write: a crash loses the row. No order of two separate systems is atomic.
+
+**Pattern 1: idempotent sink (most common)**
+- `MERGE`/`UPSERT` keyed by a natural or event ID. Replaying the same event produces the same row.
+- Version or sequence guards: `UPDATE … WHERE incoming_seq > current_seq`. This also protects against out-of-order replays.
+- Deduplication table of processed `event_id`s with a TTL, for append-only facts.
+- Offsets stay in Kafka with ordinary at-least-once commits.
+
+**Pattern 2: transactional offsets in the sink**
+- One database transaction holds the result rows and an `(topic, partition, next_offset)` row.
+- On assignment (`on_assign`) read the stored offsets and `seek`. Kafka's committed offsets are only for monitoring.
+- Works with any transactional store: Postgres, MySQL, or Delta and Iceberg commits, which is how Spark and Flink sinks do it.
+
+**Pattern 3: two-phase commit**
+- Flink's `TwoPhaseCommitSinkFunction` style: pre-commit on checkpoint, commit on checkpoint completion (see Q516). It needs a sink that supports prepared transactions or idempotent finalisation.
+
+**Aggregations** (`amount = amount + x`) are not naturally idempotent. That makes Pattern 2 or a dedup key essential: the demo below counts events, which would double-count under plain at-least-once.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11 (sqlite3 stdlib), confluent-kafka 2.16, Apache Kafka 4.3
+# Exactly-once *effect* into an external database: results and offsets commit in ONE db transaction,
+# and on (re)assignment the consumer seeks to the offsets stored in the database, not Kafka's.
+import sqlite3, sys
+from confluent_kafka import Consumer, TopicPartition
+
+db = sqlite3.connect("ledger.db")
+db.execute("CREATE TABLE IF NOT EXISTS balances (account TEXT PRIMARY KEY, amount INT)")
+db.execute("CREATE TABLE IF NOT EXISTS kafka_offsets (topic TEXT, part INT, next_offset INT, PRIMARY KEY (topic, part))")
+db.commit()
+
+def on_assign(consumer, partitions):
+    for tp in partitions:
+        row = db.execute("SELECT next_offset FROM kafka_offsets WHERE topic=? AND part=?",
+                         (tp.topic, tp.partition)).fetchone()
+        tp.offset = row[0] if row else 0          # resume from the DB, the source of truth
+    consumer.assign(partitions)
+
+crash_after = int(sys.argv[1]) if len(sys.argv) > 1 else 10**9
+c = Consumer({"bootstrap.servers": "localhost:19092", "group.id": "balance-sink",
+              "enable.auto.commit": False, "isolation.level": "read_committed",
+              "session.timeout.ms": 6000})
+c.subscribe(["ledger-events"], on_assign=on_assign)
+n, idle = 0, 0
+while idle < 5:
+    m = c.poll(1.0)
+    if m is None or m.error():
+        idle += 1 if c.assignment() else 0   # only count idle polls once we own partitions
+        continue
+    idle = 0
+    with db:                                      # one atomic transaction
+        db.execute("INSERT INTO balances VALUES ('acc-1', 1) "
+                   "ON CONFLICT(account) DO UPDATE SET amount = amount + 1")
+        db.execute("INSERT OR REPLACE INTO kafka_offsets VALUES (?, ?, ?)",
+                   (m.topic(), m.partition(), m.offset() + 1))
+    n += 1
+    if n == crash_after:
+        print(f"crashing after {n} records"); import os; os._exit(1)
+print("processed", n, "->", db.execute("SELECT amount FROM balances").fetchone()[0],
+      "events counted; stored offset", db.execute("SELECT next_offset FROM kafka_offsets").fetchone()[0])
+c.close()
+```
+Run once with `7` (crash after seven records), then twice with no argument, against the 20-record `ledger-events` topic:
+```text
+crashing after 7 records
+processed 13 -> 20 events counted; stored offset 20
+processed 0 -> 20 events counted; stored offset 20
+```
+The restart resumed at offset 7 from the database, not from Kafka's committed offset (which this consumer never writes). The count is exactly 20 despite the crash and a third run.
+
+**Real-World Use Case:**
+A billing team summed usage events into Postgres with at-least-once commits. After every consumer restart, invoices were slightly inflated. They moved the `kafka_offsets` table into the same transaction as the usage aggregates and seeked on assignment. Restarts and rebalances then stopped changing totals.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Claiming `enable.idempotence` or Kafka transactions make a database sink exactly-once.
+- Storing offsets in the database but still letting the consumer start from Kafka's committed offsets.
+- Using `INSERT` without a unique key and hoping for no duplicates.
+- Forgetting that rebalances can move a partition to a member that hasn't read the DB offsets.
+
+**Follow-up Questions Interviewers Ask:**
+- How does the Kafka Connect JDBC sink handle this? — With `insert.mode=upsert` and primary keys from the record key, which is Pattern 1.
+- What about S3 or a lake? — Use deterministic file names per offset range, or table-format commits that record offsets in their metadata.
+- Is idempotency enough for side effects like sending emails? — Only with a dedup store keyed by event ID, checked before sending.
+
+---

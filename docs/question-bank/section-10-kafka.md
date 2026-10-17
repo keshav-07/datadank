@@ -721,7 +721,7 @@ async:     3875 msg/s, unflushed=0, failures=0
 Even on a local broker with sub-millisecond round trips, waiting per record cost most of the throughput. Over a real network, with milliseconds per round trip, the gap gets much wider.
 
 **Real-World Use Case:**
-A Lambda-style function produced events and returned without flushing. About one invocation in twenty lost its last records, because the runtime froze the process before the background thread sent them. Adding `flush(5)` before returning fixed it.
+A Lambda-style function produced events and returned without flushing. Some invocations lost their last records, because the runtime froze the process before the background thread sent them. Adding `flush(5)` before returning fixed it.
 
 **Common Mistakes / Interviewer Red Flags:**
 - Thinking `produce()` returning means the record is stored.
@@ -732,5 +732,417 @@ A Lambda-style function produced events and returned without flushing. About one
 - How do you guarantee nothing is lost on shutdown? — Handle SIGTERM, stop input, `flush()` with a timeout, and alert if the return value is non-zero.
 - Are callbacks called in order? — Per partition, yes, in send order.
 - Can one producer be shared across threads? — Yes; Java and librdkafka producers are thread-safe, and one per process is usually best.
+
+---
+
+### Q479. The consumer poll loop: what poll() does and why max.poll.interval.ms matters
+**ID:** KFK-11
+**Topic:** Kafka > Consumers
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `kafka`, `consumer`, `poll-loop`, `max-poll-interval`, `heartbeat`
+
+**Short Answer (2–3 lines):**
+A Kafka consumer is a loop. `poll()` fetches records the client has already prefetched from partition leaders, takes part in group membership, and fires rebalance callbacks. Heartbeats go out on a background thread, but if the application doesn't call `poll()` again within `max.poll.interval.ms` (5 minutes by default), the consumer is removed from the group. Its partitions go to other members, and its next commit fails.
+
+**Detailed Explanation:**
+**Two liveness checks**
+| Check | Setting (Java default) | Detects |
+|---|---|---|
+| Heartbeat | `session.timeout.ms` (45 s), `heartbeat.interval.ms` (3 s) | Dead process, network partition |
+| Poll interval | `max.poll.interval.ms` (5 min) | A live process stuck in processing |
+
+**What `poll()` does**
+- Returns up to `max.poll.records` (500) records in Java. librdkafka's `consume(num_messages=…)` and `poll()` read from a local prefetch queue.
+- Sends fetch requests in the background (see Q484 for fetch tuning).
+- Handles group joins and syncs, and calls `on_assign` / `on_revoke` listeners.
+- With auto-commit, commits offsets returned by the *previous* poll.
+
+**A sound loop**
+1. `subscribe()` with rebalance callbacks.
+2. `poll()`, process the batch, then mark or commit offsets (see Q480).
+3. Handle `msg.error()`. Some errors are informational, such as partition EOF.
+4. On shutdown, `close()`. It commits (when auto-commit is on) and leaves the group immediately, so others don't wait for a session timeout.
+
+**If processing is slow**
+- Lower `max.poll.records` so each batch finishes in time.
+- Raise `max.poll.interval.ms` if a single record can legitimately take minutes.
+- Hand work to a worker pool and `pause()` partitions while it catches up (see Q485).
+- Never block on an external call with no timeout.
+
+The Java `KafkaConsumer` is **not** thread-safe. Use one consumer per thread, and call `wakeup()` from another thread to break out of a long poll.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16, Apache Kafka 4.3
+# Shows what happens when processing takes longer than max.poll.interval.ms.
+import time
+from confluent_kafka import Consumer
+
+c = Consumer({
+    "bootstrap.servers": "localhost:19092",
+    "group.id": "slow-worker",
+    "auto.offset.reset": "earliest",
+    "enable.auto.commit": False,
+    "session.timeout.ms": 6000,      # heartbeats keep flowing in the background
+    "max.poll.interval.ms": 6000,    # but poll() must be called at least this often
+})
+c.subscribe(["clicks"])
+first = True
+deadline = time.time() + 20
+while time.time() < deadline:
+    msg = c.poll(1.0)
+    if msg is None:
+        continue
+    if msg.error():
+        print("poll() returned error:", msg.error().name(), "-", msg.error().str())
+        continue
+    if first:
+        print(f"got offset {msg.offset()} from partition {msg.partition()}; simulating 9 s of work")
+        time.sleep(9)                # longer than max.poll.interval.ms
+        first = False
+        try:
+            c.commit(message=msg, asynchronous=False)
+        except Exception as e:
+            print("commit failed:", e)
+c.close()
+```
+```text
+got offset 0 from partition 1; simulating 9 s of work
+commit failed: KafkaError{code=UNKNOWN_MEMBER_ID,val=25,str="Commit failed: Broker: Unknown member"}
+poll() returned error: _MAX_POLL_EXCEEDED - Application maximum poll interval (6000ms) exceeded by 395ms
+```
+The record was processed but its offset couldn't be committed, so another member would process it again.
+
+**Real-World Use Case:**
+A consumer enriched each event with an HTTP call that sometimes hung for minutes. The group rebalanced again and again, and the same batch was reprocessed in a loop. Adding a 2-second client timeout and lowering `max.poll.records` to 50 stopped the churn.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Raising `session.timeout.ms` to fix slow processing. Session timeout covers heartbeats, not processing time.
+- Sharing one Java `KafkaConsumer` across threads.
+- Forgetting `close()`, so every restart costs a full session timeout before partitions move.
+
+**Follow-up Questions Interviewers Ask:**
+- What does `CommitFailedException` mean? — The member was removed (usually by the poll interval) and its partitions now belong to someone else.
+- Does `poll(timeout)` wait the whole timeout? — No; it returns as soon as records are available, or after the timeout with none.
+- Where do rebalance callbacks run? — Inside `poll()` on the consumer's thread.
+
+---
+
+### Q480. Offset commit strategies: auto, sync, async and "store then commit"
+**ID:** KFK-12
+**Topic:** Kafka > Consumers
+**Level:** Intermediate
+**Frequency:** Very Common
+**Tags:** `kafka`, `consumer`, `offsets`, `commit`, `at-least-once`
+
+**Short Answer (2–3 lines):**
+Auto-commit commits, every 5 seconds, whatever `poll()` last returned. That can mark records as done before you've processed them. For at-least-once, commit only after processing. Use sync commits at batch boundaries and in the revoke callback, and async commits in the hot path. In Python, a clean pattern is `enable.auto.offset.store=false` with `store_offsets()` after each record, letting the background auto-commit send only what you stored.
+
+**Detailed Explanation:**
+Q68 introduced the before-vs-after rule. This question is about the mechanics.
+
+| Strategy | How | Latency cost | Risk |
+|---|---|---|---|
+| Auto-commit (Java) | `enable.auto.commit=true`, committed during `poll()` | None | With async hand-off, unprocessed records can be committed, so data is lost |
+| Sync per batch | `commitSync()` after processing a batch | One round trip per batch | Duplicates after a crash, up to one batch |
+| Async + final sync | `commitAsync()` in the loop, `commitSync()` on revoke and close | Low | A failed async commit isn't retried (an older one could overwrite a newer one) |
+| Store then auto-commit (librdkafka) | `enable.auto.offset.store=false`, `store_offsets(msg)` after processing | None | Same duplicate window as async |
+| External store | Offsets saved with the results in the sink's transaction | Depends on the sink | Most work, and gives exactly-once in effect (see Q493) |
+
+**Details that come up**
+- The committed value is the **next** offset to read: last processed + 1. `store_offsets(message=msg)` does the +1 for you.
+- Commit in `on_revoke` (classic eager protocol) or for revoked partitions only (cooperative). Otherwise the new owner reprocesses everything since the last commit.
+- Commits are per partition. A worker pool that finishes records out of order must commit only up to the lowest contiguous finished offset.
+- Committed offsets expire `offsets.retention.minutes` (7 days) after a group becomes empty. After that, `auto.offset.reset` decides where it starts (see Q481).
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16, Apache Kafka 4.3
+# At-least-once: process first, then mark the offset as done, then commit in batches.
+import os
+from confluent_kafka import Consumer, TopicPartition
+
+c = Consumer({
+    "bootstrap.servers": "localhost:19092",
+    "group.id": "ledger-writer",
+    "auto.offset.reset": "earliest",
+    "enable.auto.commit": True,         # background commit every auto.commit.interval.ms...
+    "enable.auto.offset.store": False,  # ...but only of offsets we explicitly stored
+    "auto.commit.interval.ms": 1000,
+})
+c.subscribe(["ledger-events"])          # 1 partition, 20 records txn-0..txn-19
+done = 0
+while done < 8:
+    msg = c.poll(2.0)
+    if msg is None or msg.error():
+        continue
+    # process(msg) -> write to the database here
+    c.store_offsets(message=msg)        # mark as processed (stores msg.offset() + 1)
+    done += 1
+    if done == 5:
+        c.commit(asynchronous=False)    # explicit sync commit of what has been stored
+        print("sync-committed through", msg.offset())
+committed = c.committed([TopicPartition("ledger-events", 0)], timeout=5)[0].offset
+print(f"processed {done}, last processed offset {msg.offset()}, committed offset {committed}")
+os._exit(0)                             # simulated crash: no close(), no final commit
+```
+```text
+sync-committed through 4
+processed 8, last processed offset 7, committed offset 5
+```
+A restarted consumer in the same group printed `resumes at offset 5 value txn-5`. Offsets 5–7 were processed twice, which is at-least-once by design, so the sink must tolerate duplicates.
+
+**Real-World Use Case:**
+A consumer pushed records onto an in-memory queue for worker threads, with Java auto-commit on. A deploy killed the pod while 2,000 records sat in the queue. Their offsets had already been committed, so they were never processed. Switching to "commit lowest completed offset per partition" removed the loss.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Using auto-commit with asynchronous processing.
+- Committing `msg.offset()` instead of `msg.offset() + 1` with low-level APIs.
+- Calling `commitSync()` after every record in a high-throughput consumer.
+- Never committing in the revoke callback.
+
+**Follow-up Questions Interviewers Ask:**
+- Why aren't failed async commits retried? — A retry could land after a newer commit and move the offset backwards; use a sequence check if you retry.
+- Can you commit offsets with metadata? — Yes; each commit can carry a short metadata string, such as a batch ID.
+- What happens to offsets of an idle group? — They're deleted after `offsets.retention.minutes` once the group is empty.
+
+---
+
+### Q481. auto.offset.reset: earliest, latest, none and by_duration
+**ID:** KFK-13
+**Topic:** Kafka > Consumers
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `kafka`, `consumer`, `auto-offset-reset`, `offsets`
+
+**Short Answer (2–3 lines):**
+`auto.offset.reset` applies only when a group has **no valid committed offset** for a partition: a brand-new group, expired offsets, or an offset that retention has already deleted. `latest` (the default) starts at the end, `earliest` at the oldest retained record, and `none` throws an error. Since Kafka 4.0 the Java client also accepts `by_duration:<ISO-8601>`, which starts at records from that long ago.
+
+**Detailed Explanation:**
+| Value | Starts at | Typical use |
+|---|---|---|
+| `latest` | Log end | Live dashboards and alerts, where history is irrelevant |
+| `earliest` | Log start | Pipelines that must see everything, such as loading a lake or rebuilding state |
+| `by_duration:PT1H` | Records with timestamp ≥ now − 1 h | A new consumer that only needs recent context |
+| `none` | Throws `NoOffsetForPartitionException` | Critical consumers where silently skipping or replaying is unacceptable |
+
+**When it fires**
+1. A new `group.id` that has never committed.
+2. The group was empty longer than `offsets.retention.minutes` (7 days by default), so its offsets were deleted.
+3. The committed offset is now below the log start, because retention deleted the data (`OFFSET_OUT_OF_RANGE`).
+4. New partitions were added and the group has no offset for them. With `latest`, records written before the first assignment are skipped.
+
+**It does not fire** when the group already has offsets. That's the most common confusion. Changing the setting from `latest` to `earliest` on an existing group does nothing, as the second run below shows. To move an existing group, reset its offsets (see Q482).
+
+**Client differences.** librdkafka spells the values `smallest`/`earliest`/`beginning` and `largest`/`latest`/`end`, and uses `error` instead of `none`. Its default is also `latest` (`largest`). `by_duration` is a Java-client feature. Product behaviour changes; checked October 2026.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Kafka 4.3.1 CLI. Topic "clicks" holds 30 events, one every 6 minutes over the last 3 hours.
+for r in latest earliest by_duration:PT1H; do
+  n=$(bin/kafka-console-consumer.sh --bootstrap-server localhost:19092 --topic clicks \
+        --group reset-demo-${r//[:]/-} --command-property auto.offset.reset=$r \
+        --timeout-ms 5000 2>/dev/null | wc -l)
+  echo "auto.offset.reset=$r -> $n records"
+done
+# Run the 'earliest' group again: it now has committed offsets, so the reset policy is ignored
+bin/kafka-console-consumer.sh --bootstrap-server localhost:19092 --topic clicks \
+  --group reset-demo-earliest --command-property auto.offset.reset=earliest --timeout-ms 5000 | wc -l
+```
+```text
+auto.offset.reset=latest -> 0 records
+auto.offset.reset=earliest -> 30 records
+auto.offset.reset=by_duration:PT1H -> 10 records
+0
+```
+
+**Real-World Use Case:**
+A new fraud-scoring service went live with the default `latest` on a topic that had seven days of history. It never scored events from before launch, and the backfill had to be run as a separate job. With `earliest`, or a one-off reset to a timestamp, the launch would have covered the history.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Expecting `earliest` to replay history for a group that has already committed.
+- Using `latest` for pipelines that must not miss data, especially when partitions might be added.
+- Not alerting when a consumer falls behind the retention boundary and silently jumps ahead.
+
+**Follow-up Questions Interviewers Ask:**
+- How would you detect an `OFFSET_OUT_OF_RANGE` reset? — Watch consumer logs or metrics for resets, and alert on lag approaching retention.
+- Can a consumer without a group use this? — Yes; with `assign()` and no stored offset it applies the same policy.
+- What's a safe choice for a critical sink? — `none`/`error`, so a human decides where to restart.
+
+---
+
+### Q482. Replaying data: seek, offsets-for-times and kafka-consumer-groups --reset-offsets
+**ID:** KFK-14
+**Topic:** Kafka > Consumers
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `kafka`, `consumer`, `replay`, `reset-offsets`, `seek`
+
+**Short Answer (2–3 lines):**
+To replay, move the group's committed offsets. Stop the consumers, run `kafka-consumer-groups.sh --reset-offsets` with `--dry-run` first, then `--execute`. Targets include `--to-datetime`, `--shift-by`, `--to-earliest` and `--to-offset`. Inside an application you can `seek()` a partition, or map a timestamp to an offset with `offsets_for_times()`.
+
+**Detailed Explanation:**
+**CLI reset options**
+| Option | Moves to |
+|---|---|
+| `--to-earliest` / `--to-latest` | Log start or end |
+| `--to-datetime 2026-10-17T12:00:00.000` | First offset with timestamp ≥ that time (UTC unless an offset is given) |
+| `--by-duration PT30M` | Now minus the duration |
+| `--shift-by -100` | Current offset ± N, per partition |
+| `--to-offset 1234` | That offset |
+| `--from-file plan.csv` | Per-partition values from a file |
+
+Scope it with `--topic t` (all partitions), `--topic t:0,2` (some partitions) or `--all-topics`.
+
+**Rules**
+- The group must be inactive (no members), or the tool refuses. Scale consumers to zero first.
+- `--dry-run` is the default if you pass neither flag. Always show the plan before `--execute`.
+- Timestamp-based targets use record timestamps (see Q496 on `CreateTime` vs `LogAppendTime`). Producers that set odd timestamps make datetime resets unreliable.
+
+**In-application seeking**
+- `consumer.offsets_for_times([TopicPartition(t, p, ts_ms)])` returns offsets, then `seek()` or `assign()` to them.
+- Seek inside `on_assign` to start every new assignment at a computed point.
+- Use a *separate* group ID for a one-off replay, so the production group's position isn't touched.
+
+**Is replay safe?** Only if downstream is idempotent: upserts keyed by business ID, or deduplication by event ID. Otherwise a replay double-counts.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Kafka 4.3.1 CLI; group "reset-demo-earliest" is stopped
+G=reset-demo-earliest
+bin/kafka-consumer-groups.sh --bootstrap-server localhost:19092 --group $G --topic clicks \
+  --reset-offsets --to-datetime "$(date -u -d '-30 min' +%Y-%m-%dT%H:%M:%S.000)" --dry-run
+bin/kafka-consumer-groups.sh --bootstrap-server localhost:19092 --group $G --topic clicks:0 \
+  --reset-offsets --shift-by -2 --execute
+```
+```text
+Warn: Partition 2 from topic clicks is empty. Falling back to latest known offset.
+
+GROUP               TOPIC           PARTITION  NEW-OFFSET
+reset-demo-earliest clicks          2          0
+reset-demo-earliest clicks          1          20
+reset-demo-earliest clicks          0          5
+
+GROUP               TOPIC           PARTITION  NEW-OFFSET
+reset-demo-earliest clicks          0          4
+```
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16 — replay the last 30 minutes in a throwaway group
+import time
+from confluent_kafka import Consumer, TopicPartition
+
+c = Consumer({"bootstrap.servers": "localhost:19092", "group.id": "clicks-replay-oct17",
+              "enable.auto.commit": False})
+since = int((time.time() - 30 * 60) * 1000)
+parts = [TopicPartition("clicks", p, since) for p in range(3)]
+starts = c.offsets_for_times(parts, timeout=10)   # offset -1 means "no record that new"
+c.assign([tp for tp in starts if tp.offset >= 0])
+```
+
+**Real-World Use Case:**
+A bug in an enrichment consumer wrote wrong currency conversions for two hours. The team deployed the fix and scaled the consumer to zero. They reset the group `--to-datetime` the start of the incident with a dry run reviewed in the incident channel, and scaled back up. Upserts keyed on `transaction_id` overwrote the bad rows.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Resetting offsets while consumers are running (the tool refuses).
+- Replaying into a non-idempotent sink.
+- Forgetting that `--to-datetime` is interpreted as UTC unless an offset is given.
+
+**Follow-up Questions Interviewers Ask:**
+- Can you reset offsets for one partition only? — Yes, `--topic name:partition`.
+- How do you delete a group's offsets? — `kafka-consumer-groups.sh --delete-offsets` or `--delete` for the whole group.
+- What if the data is already past retention? — It's gone from Kafka; replay from the lake or archive copy instead.
+
+---
+
+### Q483. How is consumer lag measured, and what does the output mean?
+**ID:** KFK-15
+**Topic:** Kafka > Consumers
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `kafka`, `consumer-lag`, `monitoring`, `cli`
+
+**Short Answer (2–3 lines):**
+Lag per partition is log-end offset minus the group's committed offset: how many records are written but not yet committed as processed. Total lag sums over partitions. Offset lag can mislead, so also track **time lag**, the age of the oldest unconsumed record, which says how stale downstream data is.
+
+**Detailed Explanation:**
+How to *diagnose* growing lag is covered in Q422 and on this site's lag page. This question is about reading the numbers correctly.
+
+**`kafka-consumer-groups.sh --describe` columns**
+| Column | Meaning |
+|---|---|
+| `CURRENT-OFFSET` | Committed offset (next to read), not the consumer's in-memory position |
+| `LOG-END-OFFSET` | Next offset to be written |
+| `LAG` | The difference |
+| `CONSUMER-ID`, `HOST` | The member that owns the partition; `-` means nobody does |
+
+`--state` shows the group state (`Stable`, `PreparingRebalance`, `Empty`) and assignor. `--members --verbose` shows which partitions each member holds.
+
+**Pitfalls**
+- **Commit cadence**: lag is measured at commits, so a healthy consumer committing every 5 s shows a saw-tooth pattern.
+- **Transactions**: control markers take offsets, so read-committed consumers can show a small lag that never reaches zero.
+- **Compacted topics**: offsets have gaps, so offset lag overstates the number of records left.
+- **Different traffic per partition**: 10,000 records of lag is seconds on a busy partition and hours on a quiet one. Time lag normalises this.
+
+**Tools.** The CLI, consumer metrics (`records-lag-max`), Burrow (status by sliding window), Kafka exporters for Prometheus, and the lag metrics managed services provide.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Kafka 4.3.1 CLI
+bin/kafka-consumer-groups.sh --bootstrap-server localhost:19092 --describe --group ledger-writer
+bin/kafka-consumer-groups.sh --bootstrap-server localhost:19092 --describe --group ledger-writer --state
+```
+```text
+Consumer group 'ledger-writer' has no active members.
+
+GROUP           TOPIC           PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG             CONSUMER-ID     HOST            CLIENT-ID
+ledger-writer   ledger-events   0          6               20              14              -               -               -
+
+GROUP           COORDINATOR (ID)          ASSIGNMENT-STRATEGY  STATE                #MEMBERS
+ledger-writer   localhost:19092  (1)      -                    Empty                0
+```
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16, Apache Kafka 4.3
+# Offset lag and time lag for one group, without joining the group.
+import time
+from confluent_kafka import Consumer, TopicPartition
+
+GROUP, TOPIC = "reset-demo-earliest", "clicks"
+probe = Consumer({"bootstrap.servers": "localhost:19092", "group.id": GROUP,
+                  "enable.auto.commit": False})        # never subscribe(), so no rebalance
+parts = [TopicPartition(TOPIC, p) for p in probe.list_topics(TOPIC).topics[TOPIC].partitions]
+now = time.time()
+for tp in probe.committed(parts, timeout=5):
+    low, high = probe.get_watermark_offsets(tp, timeout=5)
+    committed = tp.offset if tp.offset >= 0 else low
+    lag = high - committed
+    age = "-"
+    if lag > 0:                                       # timestamp of the oldest unconsumed record
+        probe.assign([TopicPartition(TOPIC, tp.partition, committed)])
+        m = probe.poll(5)
+        age = f"{now - m.timestamp()[1] / 1000:.0f}s"
+        probe.unassign()
+    print(f"p{tp.partition}: committed={committed} end={high} lag={lag} oldest_unconsumed_age={age}")
+probe.close()
+```
+```text
+p0: committed=5 end=6 lag=1 oldest_unconsumed_age=156s
+p1: committed=20 end=24 lag=4 oldest_unconsumed_age=1596s
+p2: committed=0 end=0 lag=0 oldest_unconsumed_age=-
+```
+Partition 1 has only 4 records of lag, but they are 26 minutes old. That's the number a freshness SLA cares about.
+
+**Real-World Use Case:**
+A team alerted on "lag > 50,000" for every topic. The alert fired constantly on a busy clickstream topic that was only seconds behind, and never on a low-volume billing topic that was hours behind. Switching to a time-lag SLO per consumer group fixed both problems.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Treating `CURRENT-OFFSET` as where the consumer actually is right now.
+- Alerting on a single global offset-lag threshold.
+- Expecting lag to reach exactly zero on transactional or compacted topics.
+
+**Follow-up Questions Interviewers Ask:**
+- Why does an `Empty` group still show lag? — Lag is computed from stored offsets, which remain after members leave until they expire.
+- What is `records-lag-max`? — A client-side metric: the largest lag across the partitions this consumer currently owns.
+- How would you alert on lag? — On time lag or lag growth rate per group, with thresholds tied to the freshness SLA.
 
 ---

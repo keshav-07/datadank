@@ -328,6 +328,12 @@
   .footer-bottom a:hover {
     color: var(--color-orange);
   }
+  .footer-trademarks {
+    margin-top: var(--sp-4);
+    max-width: 72ch;
+    color: #c9c1b6;
+    font-size: var(--fs-xs);
+  }
   @media (min-width: 768px) {
     .footer-grid {
       grid-template-columns: repeat(3, minmax(0, 1fr));

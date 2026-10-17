@@ -9,7 +9,7 @@ whatToLearnFirst: ["articles:dbt/dbt-for-data-engineers"]
 relatedTechnologies: ["sql","etl-elt","data-warehousing","airflow"]
 cheatSheet: "cheat-sheets:dbt"
 monogram: "dbt"
-lessons: ["articles:dbt/dbt-for-data-engineers"]
+lessons: ["articles:dbt/dbt-for-data-engineers", "articles:dbt/models-ref-and-sources"]
 updatedDate: 2026-10-17
 ---
 

@@ -1,0 +1,313 @@
+---
+publishedDate: "2026-10-16"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
+title: "dbt Models, ref() and Sources: Staging, Intermediate and Marts Layers"
+seoTitle: "dbt Models, ref and Sources: Project Layers"
+description: "dbt models, ref() and sources explained: declare raw tables, build staging, intermediate and mart layers, name models well and use seeds for lookups."
+technology: ["dbt", "sql", "data-warehousing"]
+topic: ["models", "project-structure"]
+difficulty: "Beginner"
+learningObjectives:
+  - "Declare sources in YAML and read them with source()"
+  - "Write staging models that rename, cast and clean one source table each"
+  - "Use intermediate models for reusable logic and marts for facts and dimensions"
+  - "Name models and YAML files so a project stays navigable"
+  - "Choose between a seed and a source for reference data"
+prerequisites: ["articles:dbt/dbt-for-data-engineers"]
+related: ["articles:data-warehousing/star-schema", "articles:etl-elt/etl-vs-elt", "cheat-sheets:dbt"]
+previous: "articles:dbt/dbt-for-data-engineers"
+versionContext: "Run on dbt Core 1.12.6 with dbt-duckdb 1.11.0 (DuckDB 1.5.6, Python 3.11) on 16 October 2026. Output is trimmed and timestamps are removed."
+sources:
+  - { label: "dbt documentation: Add sources to your DAG", url: "https://docs.getdbt.com/docs/build/sources" }
+  - { label: "dbt documentation: SQL models", url: "https://docs.getdbt.com/docs/build/sql-models" }
+  - { label: "dbt documentation: Add seeds to your DAG", url: "https://docs.getdbt.com/docs/build/seeds" }
+  - { label: "dbt documentation: How we structure our dbt projects", url: "https://docs.getdbt.com/best-practices/how-we-structure/1-guide-overview" }
+  - { label: "dbt documentation: ref", url: "https://docs.getdbt.com/reference/dbt-jinja-functions/ref" }
+---
+
+A dbt model is a `.sql` file containing one `select` statement. The file name is the model name, and the model name becomes the table or view name. Everything else in this lesson is about putting those `select` statements in the right layers so a project with five hundred models is still easy to change.
+
+## The raw boundary: sources
+
+Raw tables are owned by the loader, not by dbt. In this course a small Python script plays the role of the loader. It writes four tables into a `raw` schema; on day two it updates some rows, deletes a customer and inserts late orders, which later lessons use. The first part looks like this:
+
+{/* noexec */}
+```python
+import sys
+import duckdb
+
+day = int(sys.argv[1])
+con = duckdb.connect("shop.duckdb")
+con.execute("create schema if not exists raw")
+
+if day == 1:
+    con.execute("""
+        create or replace table raw.customers as
+        select * from (values
+          (1, 'Asha',  'Rao',    'ASHA@example.com',  'in', timestamp '2026-10-12 08:00:00'),
+          (2, 'Ben',   'Okafor', 'ben@example.com',   'ng', timestamp '2026-10-12 08:00:00'),
+          (3, 'Chen',  'Li',     'chen@example.com',  'sg', timestamp '2026-10-12 08:00:00'),
+          (4, 'Dana',  'Ruiz',   'dana@example.com',  'mx', timestamp '2026-10-12 08:00:00'),
+          (5, 'Emil',  'Berg',   'emil@example.com',  'se', timestamp '2026-10-12 08:00:00')
+        ) t(id, first_name, last_name, email, country_code, updated_at)
+    """)
+```
+
+dbt learns about these tables from a **source** declaration. Sources are YAML, conventionally in a file named after the source system at the top of the staging folder (`models/staging/_shop__sources.yml`):
+
+```yaml
+sources:
+  - name: shop
+    description: Raw tables landed by the EL tool. dbt reads them but never writes to them.
+    schema: raw
+    tables:
+      - name: customers
+      - name: orders
+        config:
+          loaded_at_field: _loaded_at
+          freshness:
+            warn_after: {count: 12, period: hour}
+            error_after: {count: 24, period: hour}
+      - name: payments
+      - name: events
+        config:
+          event_time: event_at
+```
+
+Declaring sources gives you three things a plain `from raw.orders` does not:
+
+- **Lineage.** Sources appear as the leftmost nodes in the DAG and the docs site, so you can see which models break when a raw table changes.
+- **One place to change.** If the loader moves `raw` to `landing`, you change one `schema:` line.
+- **Freshness checks.** With `loaded_at_field` and `freshness`, `dbt source freshness` measures how long ago the newest row arrived. Since dbt 1.10 these settings sit under `config:`; the run below produced no deprecation warnings in this form.
+
+```text
+$ dbt source freshness
+1 of 1 START freshness of shop.orders .......................................... [RUN]
+1 of 1 PASS freshness of shop.orders ........................................... [PASS in 0.02s]
+Done.
+```
+
+## Staging: one model per source table
+
+A staging model is the only place that reads a source. It does light, mechanical work: rename columns to your conventions, cast types, standardise case and units. It does **not** join or aggregate. One staging model per source table, materialized as a view (the folder config in `dbt_project.yml` sets that).
+
+{/* noexec */}
+```sql
+with source as (
+    select * from {{ source('shop', 'customers') }}
+),
+
+renamed as (
+    select
+        id                  as customer_id,
+        first_name,
+        last_name,
+        lower(email)        as email,
+        upper(country_code) as country_code,
+        updated_at
+    from source
+)
+
+select * from renamed
+```
+
+The payments model converts integer cents into a decimal amount with a small macro (lesson 7 builds it):
+
+{/* noexec */}
+```sql
+with source as (
+    select * from {{ source('shop', 'payments') }}
+),
+
+renamed as (
+    select
+        id                                  as payment_id,
+        order_id,
+        payment_method,
+        {{ cents_to_dollars('amount_cents') }} as amount,
+        created_at
+    from source
+)
+
+select * from renamed
+```
+
+Why bother with a layer that "does nothing"? Because every downstream model now uses `customer_id` instead of `id`, lower-case emails and dollar amounts, and when the source renames a column you fix one file. The `with source as (...), renamed as (...)` pattern is a convention, not a requirement, but it makes every staging file look the same.
+
+Each staging model gets YAML with a description and its key tests (`models/staging/_shop__models.yml`). An excerpt:
+
+```yaml
+models:
+  - name: stg_shop__customers
+    description: One row per customer, renamed and normalised from raw.customers.
+    columns:
+      - name: customer_id
+        data_tests:
+          - unique
+          - not_null
+      - name: email
+        data_tests:
+          - not_null
+```
+
+## Seeds: small static lookups
+
+A **seed** is a CSV in `seeds/` that `dbt seed` loads as a table. The dbt docs recommend seeds for static data that changes infrequently, such as mappings and code lists, and not for raw data exports or anything sensitive. Here a four-row file maps payment methods to groups:
+
+```text
+payment_method,method_group,is_instant
+card,card,true
+apple_pay,card,true
+bank_transfer,bank,false
+gift_card,voucher,true
+```
+
+```text
+$ dbt seed
+1 of 1 START seed file dbt_dev.payment_methods ................................. [RUN]
+1 of 1 OK loaded seed file dbt_dev.payment_methods ............................. [INSERT 4 in 0.06s]
+```
+
+Seeds are referenced with `ref('payment_methods')`, like models. The rule of thumb: if a person edits it in a pull request, it can be a seed; if a system produces it, it is a source.
+
+## Intermediate models: reusable steps
+
+Intermediate models hold logic that is too specific for staging and too much to repeat inside every mart: re-graining, pivoting, de-duplicating, joining two staging models that always travel together. They are named for what they do, `int_<entity>_<verb or description>`. This project rolls payments up to one row per order and splits the amount by method group:
+
+{/* noexec */}
+```sql
+{%- set method_groups = ['card', 'bank', 'voucher'] -%}
+
+with payments as (
+    select * from {{ ref('stg_shop__payments') }}
+),
+
+methods as (
+    select * from {{ ref('payment_methods') }}
+)
+
+select
+    payments.order_id,
+    count(*)            as payment_count,
+    sum(payments.amount) as total_amount,
+    {%- for group in method_groups %}
+    sum(case when methods.method_group = '{{ group }}' then payments.amount else 0 end) as {{ group }}_amount
+    {%- if not loop.last %},{% endif %}
+    {%- endfor %}
+from payments
+left join methods using (payment_method)
+group by payments.order_id
+```
+
+The folder is configured as `ephemeral`, so this model never becomes a table; dbt inlines it as a CTE in whichever model refs it (lesson 3 shows the compiled result).
+
+## Marts: facts and dimensions
+
+Marts are what analysts, dashboards and other teams query. Name them for the business entity and grain: `fct_` for events or transactions (one row per order, per payment, per page view), `dim_` for the things those events are about (one row per customer, per product). Marts join staging and intermediate models and are materialized as tables or incremental tables.
+
+{/* noexec */}
+```sql
+with customers as (
+    select * from {{ ref('stg_shop__customers') }}
+),
+
+orders as (
+    select * from {{ ref('fct_orders') }}
+    where status <> 'cancelled'
+),
+
+customer_orders as (
+    select
+        customer_id,
+        min(order_date) as first_order_date,
+        max(order_date) as most_recent_order_date,
+        count(*)        as order_count,
+        sum(amount)     as lifetime_value
+    from orders
+    group by customer_id
+)
+
+select
+    customers.customer_id,
+    customers.first_name,
+    customers.last_name,
+    customers.email,
+    customers.country_code,
+    customer_orders.first_order_date,
+    customer_orders.most_recent_order_date,
+    coalesce(customer_orders.order_count, 0)    as order_count,
+    coalesce(customer_orders.lifetime_value, 0) as lifetime_value
+from customers
+left join customer_orders using (customer_id)
+```
+
+The left join and `coalesce` matter: a customer with no orders still gets a row with zeros instead of disappearing. Lesson 5 pins that behaviour down with a unit test.
+
+## Worked example: how ref() resolves per target
+
+The same model compiles to different table names depending on the target. In the slim-CI run in lesson 8, `fct_orders` was built in the `dbt_ci` schema while its unchanged parents were read from production. The compiled SQL dbt wrote to `target/compiled/` shows exactly which relation each `ref()` became:
+
+{/* noexec */}
+```sql
+    select * from "shop"."dbt_ci"."stg_shop__payments"
+    select * from "shop"."analytics"."payment_methods"
+    select * from "shop"."analytics"."stg_shop__orders"
+```
+
+In plain dev runs, all three lines point at `"shop"."dbt_dev"`. Nothing in the model file changed; only the target and the state dbt was given. That is why hard-coded schema names are the most common thing reviewers reject in a dbt pull request.
+
+The relations dbt created on day one, by schema and type:
+
+```text
+┌───────────────────┬────────────────────────┬────────────┐
+│   table_schema    │       table_name       │ table_type │
+├───────────────────┼────────────────────────┼────────────┤
+│ dbt_dev           │ agg_daily_events       │ BASE TABLE │
+│ dbt_dev           │ dim_customers_v1       │ BASE TABLE │
+│ dbt_dev           │ dim_customers_v2       │ BASE TABLE │
+│ dbt_dev           │ fct_events             │ BASE TABLE │
+│ dbt_dev           │ fct_orders             │ BASE TABLE │
+│ dbt_dev           │ payment_methods        │ BASE TABLE │
+│ dbt_dev           │ stg_shop__customers    │ VIEW       │
+│ dbt_dev           │ stg_shop__orders       │ VIEW       │
+│ dbt_dev           │ stg_shop__payments     │ VIEW       │
+│ dbt_dev_snapshots │ customers_snapshot     │ BASE TABLE │
+│ dbt_dev_snapshots │ orders_status_snapshot │ BASE TABLE │
+│ raw               │ customers              │ BASE TABLE │
+│ raw               │ events                 │ BASE TABLE │
+│ raw               │ orders                 │ BASE TABLE │
+│ raw               │ payments               │ BASE TABLE │
+└───────────────────┴────────────────────────┴────────────┘
+```
+
+Staging became views, marts became tables, the ephemeral intermediate model does not appear at all, and the `raw` schema was only read.
+
+## Naming conventions that scale
+
+| Item | Convention | Example |
+|---|---|---|
+| Staging model | `stg_<source>__<table>` (double underscore separates source from table) | `stg_shop__orders` |
+| Intermediate model | `int_<entity>_<what it does>` | `int_order_payments` |
+| Fact / dimension | `fct_<event>` / `dim_<entity>` | `fct_orders`, `dim_customers` |
+| Source YAML | `_<source>__sources.yml` | `_shop__sources.yml` |
+| Model YAML | `_<source or folder>__models.yml` | `_shop__models.yml` |
+| Keys | `<entity>_id`, never a bare `id` after staging | `order_id` |
+
+These follow the dbt "How we structure our dbt projects" guide. The exact prefixes matter less than applying one scheme everywhere.
+
+## Common mistakes
+
+- **Reading a source from a mart.** Every source should be read by exactly one staging model; marts read staging and intermediate models.
+- **Joining in staging.** Once staging models join, a change to one source ripples unpredictably. Keep joins in intermediate models and marts.
+- **Using seeds as a data loader.** Seeds are version-controlled CSVs for small lookups, not a way to ingest exports.
+- **Unclear grain.** Every mart's description should say "one row per ...", and a `unique` test on the key should enforce it.
+- **Ephemeral everywhere.** Inlining many layers of CTEs makes compiled SQL hard to debug; use ephemeral only for small, single-use steps.
+
+## In an interview
+
+"How do you structure a dbt project?" Describe the three layers and their contracts: staging is one-to-one with sources and only renames, casts and cleans; intermediate holds reusable logic; marts are facts and dimensions at a stated grain. Mention `source()` for lineage and freshness, `ref()` for environment-aware names and DAG edges, and seeds only for small static lookups. A good follow-up answer explains how a source column rename is fixed in one staging file.
+
+## Key takeaway
+
+Sources mark where dbt's responsibility starts. Staging gives every raw table a clean, consistent shape; intermediate models remove repetition; marts present facts and dimensions at a clear grain. `ref()` connects the layers and makes the same code run correctly in dev, CI and production.

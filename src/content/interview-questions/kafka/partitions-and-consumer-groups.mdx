@@ -40,7 +40,7 @@ A second group `analytics` reads all 6 partitions on its own, unaffected by `bil
 
 If a consumer crashes or stops sending heartbeats, the group **rebalances** and its partitions move to other members, which resume from the last committed offsets. Records processed but not yet committed are processed again, which is why at-least-once consumers need idempotent processing.
 
-With the classic eager protocol every member pauses during a rebalance; cooperative-sticky assignment and the KIP-848 consumer protocol (`group.protocol=consumer`, GA since Kafka 4.0) move only the partitions that change owner. Kafka 4.2 also added **share groups**, where members share partitions and acknowledge records individually like a queue; they are a different tool from ordinary consumer groups and give up ordering.
+With the classic eager protocol every member pauses during a rebalance; cooperative-sticky assignment and the KIP-848 consumer protocol (`group.protocol=consumer`, GA since Kafka 4.0) move only the partitions that change owner. Kafka also has **share groups** (KIP-932, early access in 4.0, production-ready in 4.2), where members share partitions and acknowledge records individually like a queue; they are a different tool from ordinary consumer groups and give up ordering.
 
 ## Trade-offs
 

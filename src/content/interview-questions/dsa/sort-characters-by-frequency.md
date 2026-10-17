@@ -29,7 +29,7 @@ Given a string, return a rearrangement of it in which characters are ordered by 
 ```text
 "etl"       ->  "etl" or any order of the three letters (all occur once)
 "pipeline"  ->  "ppiieeln"   (the pairs pp, ii, ee in any order, then l and n)
-"Aabb"      ->  "bbAa" or "bbaA"
+"Xxyy"      ->  "yyXx" or "yyxX"
 ""          ->  ""
 ```
 
@@ -104,7 +104,7 @@ def is_valid(original, result):
     return sizes == sorted(sizes, reverse=True)
 
 for f in (frequency_sort_simple, frequency_sort_heap, frequency_sort_buckets):
-    for s in ["etl", "pipeline", "Aabb", "", "z", "aaaa", "112233a", "tree"]:
+    for s in ["etl", "pipeline", "Xxyy", "", "z", "aaaa", "112233a", "trees"]:
         assert is_valid(s, f(s)), (f.__name__, s)
     assert f("pipeline")[:2] in ("pp", "ii", "ee")
 

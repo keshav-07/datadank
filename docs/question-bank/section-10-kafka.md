@@ -2915,3 +2915,467 @@ A team loaded CDC into a warehouse with a JDBC sink that couldn't parse the nest
 - Can you capture only some columns? — Yes, `column.include.list` or `column.exclude.list`, and `column.mask.*` options for PII.
 
 ---
+
+### Q504. Schema Registry under the hood: wire format, schema IDs and subject naming strategies
+**ID:** KFK-36
+**Topic:** Kafka > Schema Registry
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `schema-registry`, `avro`, `wire-format`, `subjects`, `serializers`
+
+**Short Answer (2–3 lines):**
+A registry-aware serializer registers (or looks up) the schema under a **subject** and gets a global **schema ID**. It then writes `magic byte 0` + `4-byte schema ID` + the encoded body; Protobuf adds message indexes. Consumers read the ID, fetch and cache the schema, and decode. The subject naming strategy decides what a "subject" is: per topic (default), per record type, or per topic plus record type. That in turn decides where compatibility rules apply.
+
+**Detailed Explanation:**
+Compatibility modes and safe evolution are covered in Q72 and on this site's schema-evolution page. This question is about the mechanics.
+
+**Flow**
+1. The producer's serializer derives the subject, for example `orders-value`.
+2. With `auto.register.schemas=true` it registers the schema if it's new. The registry checks compatibility against earlier versions of that subject and returns the ID.
+3. Each record carries only the 5-byte header plus the body, not the schema.
+4. The consumer's deserializer fetches the schema by ID once, caches it, and decodes. With Avro it can also resolve to a *reader* schema (`specific.avro.reader` or a generated class).
+
+**Subject naming strategies**
+| Strategy | Subject | Use when |
+|---|---|---|
+| `TopicNameStrategy` (default) | `<topic>-key`, `<topic>-value` | One event type per topic |
+| `RecordNameStrategy` | `<fully.qualified.RecordName>` | Same type in many topics, evolving together |
+| `TopicRecordNameStrategy` | `<topic>-<RecordName>` | Several event types in one topic (to keep per-entity ordering) |
+
+**Production settings**
+- Set `auto.register.schemas=false` in production producers and register schemas from CI. Use `use.latest.version=true` or explicit IDs, so a stray build can't register a schema nobody reviewed.
+- Use schema references (Avro, Protobuf, JSON Schema) for shared types such as `Money`, instead of copying them into every schema.
+- Registries can enforce rules at registration time: data contracts with metadata and validation rules in Confluent's registry, and similar features elsewhere.
+
+Some managed services (AWS Glue Schema Registry, Azure Schema Registry) use their own header formats. Clients must use the matching serializer.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, fastavro 1.12 (no registry needed: this builds and parses the wire format by hand)
+# Confluent Schema Registry framing: [magic byte 0][4-byte big-endian schema ID][Avro binary body]
+import io, struct
+from fastavro import parse_schema, schemaless_writer, schemaless_reader
+
+order_v1 = parse_schema({
+    "type": "record", "name": "OrderPlaced", "namespace": "shop.orders",
+    "fields": [{"name": "order_id", "type": "string"},
+               {"name": "amount_cents", "type": "long"}]})
+
+def encode(schema_id, schema, record):
+    buf = io.BytesIO()
+    buf.write(struct.pack(">bI", 0, schema_id))   # what the serializer prepends
+    schemaless_writer(buf, schema, record)
+    return buf.getvalue()
+
+def decode(payload, registry):
+    magic, schema_id = struct.unpack(">bI", payload[:5])
+    assert magic == 0, "not Schema Registry framed"
+    return schema_id, schemaless_reader(io.BytesIO(payload[5:]), registry[schema_id])
+
+msg = encode(42, order_v1, {"order_id": "o-1001", "amount_cents": 2599})
+print("bytes:", msg.hex(" "))
+print("size :", len(msg), "bytes vs JSON", len('{"order_id": "o-1001", "amount_cents": 2599}'))
+print("decoded:", decode(msg, {42: order_v1}))
+
+# A v2 reader schema with a new optional field can still read v1 bytes (backward compatible)
+order_v2 = parse_schema({**order_v1, "fields": order_v1["fields"] + [
+    {"name": "coupon", "type": ["null", "string"], "default": None}]})
+body = io.BytesIO(msg[5:])
+print("read with v2:", schemaless_reader(body, order_v1, order_v2))
+```
+```text
+bytes: 00 00 00 00 2a 0c 6f 2d 31 30 30 31 ce 28
+size : 14 bytes vs JSON 44
+decoded: (42, {'order_id': 'o-1001', 'amount_cents': 2599})
+read with v2: {'order_id': 'o-1001', 'amount_cents': 2599, 'coupon': None}
+```
+Byte 0 is the magic byte and bytes 1–4 are schema ID 42 (`00 00 00 2a`). The rest is Avro: a zig-zag length prefix for the string, then the zig-zag varint for 2599. With the real client, `confluent_kafka.schema_registry.avro.AvroSerializer` writes exactly this framing after talking to the registry. This demo builds it by hand, so it runs without a registry server.
+
+**Real-World Use Case:**
+A team put `OrderPlaced`, `OrderShipped` and `OrderCancelled` into one `orders` topic to keep per-order ordering. With the default `TopicNameStrategy`, the second event type failed registration as "incompatible". Switching producers and consumers to `TopicRecordNameStrategy` gave each type its own subject and compatibility history.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Thinking the schema travels with every message.
+- Leaving `auto.register.schemas=true` in production.
+- Mixing event types in one topic with `TopicNameStrategy`.
+- Consumers using plain JSON or String deserializers on registry-framed data, which shows up as five garbage bytes at the start.
+
+**Follow-up Questions Interviewers Ask:**
+- What if the registry is down? — Clients with cached IDs keep working; new schemas or IDs can't be registered or fetched until it recovers.
+- Are schema IDs per subject? — No; IDs are global in the registry, while versions are per subject.
+- How do Kafka Connect and Debezium use it? — Through `AvroConverter` / `ProtobufConverter` with `schema.registry.url` (see Q499).
+
+---
+
+### Q505. Avro vs Protobuf vs JSON Schema for Kafka events
+**ID:** KFK-37
+**Topic:** Kafka > Schema Registry
+**Level:** Beginner
+**Frequency:** Common
+**Tags:** `avro`, `protobuf`, `json-schema`, `serialization`, `schema-evolution`
+
+**Short Answer (2–3 lines):**
+All three can be enforced with a Schema Registry. **Avro** is compact, needs the writer's schema to decode, and has the most mature evolution rules in data tooling (Connect, Spark, Flink, lakes). **Protobuf** is compact, uses field numbers for evolution, and suits teams that already use gRPC. **JSON Schema** keeps human-readable JSON, at the cost of size and looser typing. Choose by ecosystem and evolution needs rather than raw speed.
+
+**Detailed Explanation:**
+| | Avro | Protobuf | JSON Schema |
+|---|---|---|---|
+| Encoding | Binary, no field tags (schema needed) | Binary with field numbers | Text JSON |
+| Size | Smallest typically | Small | Largest |
+| Evolution rule | Add or remove fields *with defaults*; resolution by field name | Never reuse field numbers; new fields optional by default (proto3) | Depends on `additionalProperties` and open or closed content models |
+| Nullability | Explicit unions `["null", "string"]` | proto3 defaults and `optional`, which can hide "unset vs zero" | `type: ["string", "null"]` |
+| Code generation | Optional (generic records work) | Usually required | Optional |
+| Data platform support | Strongest (Connect, Debezium, Spark `from_avro`, Flink) | Good and growing | Good, but types are weaker (numbers, dates) |
+| Human-readable on the wire | No | No | Yes |
+
+**Guidance**
+- *Data platform / CDC / lake*: Avro is the usual default, with logical types for decimals and timestamps.
+- *Service-to-service events in a gRPC shop*: Protobuf, so teams share one IDL.
+- *Low-volume integrations, or teams new to schemas*: JSON Schema. It's better than schemaless JSON, but enforce `additionalProperties: false` (or the reverse) on purpose, because it changes what counts as compatible.
+
+**Pitfalls to mention**
+- Avro `decimal` and timestamp logical types must be handled the same way by every reader.
+- In proto3 a missing field and a zero value look identical unless the field is marked `optional`.
+- Plain JSON without a schema makes "schema drift" the consumer's problem (see Q407).
+
+**Example / Code:**
+```text
+# Schema definitions, not executable: the same event in each format
+# Avro (orders-value, registered as AVRO)
+{"type": "record", "name": "OrderPlaced", "namespace": "shop.orders",
+ "fields": [{"name": "order_id", "type": "string"},
+            {"name": "amount", "type": {"type": "bytes", "logicalType": "decimal", "precision": 12, "scale": 2}},
+            {"name": "coupon", "type": ["null", "string"], "default": null}]}
+
+# Protobuf (registered as PROTOBUF)
+syntax = "proto3";
+package shop.orders;
+message OrderPlaced {
+  string order_id = 1;
+  int64 amount_cents = 2;
+  optional string coupon = 3;   // never reuse 3 after deleting it; mark it `reserved 3;`
+}
+
+# JSON Schema (registered as JSON)
+{"$schema": "https://json-schema.org/draft/2020-12/schema", "title": "OrderPlaced", "type": "object",
+ "properties": {"order_id": {"type": "string"}, "amount": {"type": "number"},
+                "coupon": {"type": ["string", "null"]}},
+ "required": ["order_id", "amount"], "additionalProperties": false}
+```
+For size: the Q504 demo encoded a two-field order in 14 bytes as framed Avro, against 44 bytes as JSON.
+
+**Real-World Use Case:**
+A company with gRPC microservices wanted Protobuf events, while the data team wanted Avro for lakehouse ingestion. They chose Protobuf with a Schema Registry and used the `ProtobufConverter` in Connect sinks. Both sides kept their tooling, and there was one source of truth for each event.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Choosing on benchmark speed alone.
+- Reusing a deleted Protobuf field number.
+- Adding an Avro field without a default and breaking backward compatibility.
+- Representing money as floating-point in any format.
+
+**Follow-up Questions Interviewers Ask:**
+- Can one topic mix formats? — Technically yes with different subjects, but don't; consumers would need every deserializer.
+- What does Avro schema resolution do? — It maps writer fields to reader fields by name, filling defaults and ignoring unknown fields.
+- Is JSON Schema compatibility the same as Avro's? — No; it depends heavily on open versus closed content models.
+
+---
+
+### Q506. KStream vs KTable vs GlobalKTable in Kafka Streams
+**ID:** KFK-38
+**Topic:** Kafka > Kafka Streams
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `kafka-streams`, `kstream`, `ktable`, `globalktable`, `stream-table-duality`
+
+**Short Answer (2–3 lines):**
+A **KStream** treats every record as an independent event (an insert). A **KTable** treats records as updates to the latest value per key (an upsert, with null meaning delete), backed by a local state store. A **GlobalKTable** is a KTable fully copied to every instance, so it can be joined on any field without co-partitioning. The same topic can be read either way; that's the stream-table duality.
+
+**Detailed Explanation:**
+| | KStream | KTable | GlobalKTable |
+|---|---|---|---|
+| Semantics | Event log | Changelog: latest per key | Changelog, fully replicated |
+| A new record for key K | Another event | Replaces K's value | Replaces K's value |
+| Null value | A record with null value | Deletes K (tombstone) | Deletes K |
+| Partitioned? | Yes | Yes, each instance holds its own partitions | No, every instance holds all of it |
+| Join requirements | Co-partitioned with the other side | Co-partitioned | Any key extractor; no co-partitioning |
+| Typical source | Clicks, payments, sensor readings | Customer profile, account balance (a compacted topic) | Small reference data: currencies, product catalogue |
+
+**Converting**
+- `stream.groupByKey().aggregate(…)` or `.count()` gives a KTable. Aggregating a stream gives a table.
+- `table.toStream()` gives the change stream of the table.
+
+**Why aggregations over a KTable "retract".** When a table row changes, Streams subtracts the old value from the old group and adds the new one, so a count by tier stays correct as users change tiers. The demo shows this.
+
+**Choosing GlobalKTable.** It's small, read-mostly data that every instance needs. The cost is that every instance stores and restores the whole topic, and GlobalKTable joins aren't time-synchronised: lookups use whatever is loaded.
+
+**Example / Code:**
+```java
+// Runtime: Java 21, Apache Kafka Streams 4.3.1 + kafka-streams-test-utils (TopologyTestDriver, no broker)
+// Run: java -cp "kafka_2.13-4.3.1/libs/*" StreamVsTable.java
+import java.util.Properties;
+import org.apache.kafka.common.serialization.*;
+import org.apache.kafka.streams.*;
+import org.apache.kafka.streams.kstream.*;
+
+public class StreamVsTable {
+    public static void main(String[] args) {
+        StreamsBuilder b = new StreamsBuilder();
+        // Same input topic, read two ways
+        KStream<String, String> events = b.stream("tier-changes", Consumed.with(Serdes.String(), Serdes.String()));
+        events.groupByKey().count()                                          // every record is an event
+              .toStream().to("change-counts", Produced.with(Serdes.String(), Serdes.Long()));
+        KTable<String, String> current = b.table("tier-changes-compacted",
+              Consumed.with(Serdes.String(), Serdes.String()), Materialized.as("current-tier"));
+        current.groupBy((user, tier) -> KeyValue.pair(tier, user),         // re-key by tier: updates retract
+                       Grouped.with(Serdes.String(), Serdes.String()))
+               .count().toStream().to("users-per-tier", Produced.with(Serdes.String(), Serdes.Long()));
+
+        Properties p = new Properties();
+        p.put(StreamsConfig.APPLICATION_ID_CONFIG, "stream-vs-table");
+        p.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "dummy:9092");
+        p.put(StreamsConfig.STATESTORE_CACHE_MAX_BYTES_CONFIG, 0);        // show every update
+        p.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, Serdes.StringSerde.class);
+        p.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, Serdes.StringSerde.class);
+        try (TopologyTestDriver d = new TopologyTestDriver(b.build(), p)) {
+            var in1 = d.createInputTopic("tier-changes", new StringSerializer(), new StringSerializer());
+            var in2 = d.createInputTopic("tier-changes-compacted", new StringSerializer(), new StringSerializer());
+            String[][] changes = {{"asha", "silver"}, {"ben", "silver"}, {"asha", "gold"}, {"asha", "platinum"}};
+            for (String[] c : changes) { in1.pipeInput(c[0], c[1]); in2.pipeInput(c[0], c[1]); }
+
+            System.out.println("KStream count per user : " + d.createOutputTopic("change-counts",
+                new StringDeserializer(), new LongDeserializer()).readKeyValuesToMap());
+            System.out.println("KTable current tier    : asha=" + d.<String, String>getKeyValueStore("current-tier").get("asha")
+                + ", ben=" + d.<String, String>getKeyValueStore("current-tier").get("ben"));
+            System.out.println("KTable users per tier  : " + d.createOutputTopic("users-per-tier",
+                new StringDeserializer(), new LongDeserializer()).readKeyValuesToList());
+        }
+    }
+}
+```
+```text
+KStream count per user : {asha=3, ben=1}
+KTable current tier    : asha=platinum, ben=silver
+KTable users per tier  : [KeyValue(silver, 1), KeyValue(silver, 2), KeyValue(silver, 1), KeyValue(gold, 1), KeyValue(gold, 0), KeyValue(platinum, 1)]
+```
+The stream counted three *events* for asha, while the table kept only her latest tier. When asha moved from silver to gold, the per-tier count emitted `silver → 1` (retracting her) and `gold → 1`, and then `gold → 0` when she moved on to platinum. Running a `.java` file directly needs only the Kafka `libs/` directory on the classpath (`java -cp "libs/*" StreamVsTable.java`).
+
+**Real-World Use Case:**
+A fraud service read `card-transactions` as a KStream and `card-status` (a compacted topic) as a KTable. It joined each transaction to the card's current status, and used a GlobalKTable of merchant categories looked up by `merchant_id` from the transaction value, with no repartition needed.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Reading an event topic as a KTable and losing all but the last event per key.
+- Using a GlobalKTable for a huge, fast-changing dataset.
+- Forgetting that KTable source topics should be compacted.
+
+**Follow-up Questions Interviewers Ask:**
+- What is the record cache? — A write buffer in front of state stores (`statestore.cache.max.bytes`) that de-duplicates updates before they go downstream and to the changelog.
+- How is a KTable restored after a crash? — From its changelog or source topic into the local store (see Q509).
+- What does `toStream()` emit for a delete? — A record with a null value for that key.
+
+---
+
+### Q507. Joins in Kafka Streams: stream-table, stream-stream and co-partitioning
+**ID:** KFK-39
+**Topic:** Kafka > Kafka Streams
+**Level:** Advanced
+**Frequency:** Common
+**Tags:** `kafka-streams`, `joins`, `co-partitioning`, `windows`, `foreign-key-join`
+
+**Short Answer (2–3 lines):**
+A **stream-table** join enriches each event with the table's value for its key *at that moment*; it isn't windowed, and later table updates don't re-trigger it. A **stream-stream** join must be windowed (`JoinWindows`), because both sides are unbounded, and it buffers each side in window stores. Both sides of a KStream/KTable join must be **co-partitioned**: same key, same partition count, same partitioner. Otherwise Streams repartitions, or the join fails.
+
+**Detailed Explanation:**
+| Join | Window | Triggered by | Result |
+|---|---|---|---|
+| KStream–KTable | No | Stream records only | Event plus the table value at that time (`leftJoin` keeps unmatched events with null) |
+| KStream–GlobalKTable | No | Stream records | Lookup by any extracted key; no co-partitioning |
+| KStream–KStream | `JoinWindows` (time difference + grace) | Either side | One result per matching pair in the window (can be many) |
+| KTable–KTable | No | Either side | Continuously updated joined table |
+| KTable–KTable foreign-key join | No | Either side | Joins on a field in the left value (since 2.4) |
+
+**Co-partitioning**
+- Same partition count on both topics, and the same partitioner. A Python producer on CRC32 breaks it silently (see Q472).
+- If you change the key with `selectKey` or `map` before a join, Streams inserts a **repartition topic** automatically, at the cost of an extra network hop.
+- Streams checks partition counts at start-up and throws `TopologyException` on a mismatch.
+
+**Time semantics**
+- Stream-stream joins match on record timestamps within the window. Late records are accepted within grace.
+- Stream-table joins use the table's state as of processing. A table update that arrives slightly *after* an event isn't seen. You can make table updates wait by setting a versioned store with a grace period, so the join looks up the version valid at the event's timestamp (KIP-914, versioned stores).
+
+**Example / Code:**
+```java
+// Runtime: Java 21, Apache Kafka Streams 4.3.1 + kafka-streams-test-utils (TopologyTestDriver, no broker)
+import java.time.*;
+import java.util.Properties;
+import org.apache.kafka.common.serialization.*;
+import org.apache.kafka.streams.*;
+import org.apache.kafka.streams.kstream.*;
+
+public class Joins {
+    public static void main(String[] args) {
+        var s = Serdes.String();
+        StreamsBuilder b = new StreamsBuilder();
+        KStream<String, String> orders = b.stream("orders", Consumed.with(s, s));        // key = customer_id
+        KTable<String, String> customers = b.table("customers", Consumed.with(s, s));     // key = customer_id
+        KStream<String, String> payments = b.stream("payments", Consumed.with(s, s));     // key = customer_id
+
+        // 1) stream-table join: enrich each order with the customer's tier AS OF the order's arrival
+        orders.leftJoin(customers, (order, tier) -> order + " tier=" + tier, Joined.with(s, s, s))
+              .to("orders-enriched", Produced.with(s, s));
+
+        // 2) stream-stream join: an order and a payment for the same key within 10 minutes
+        orders.join(payments, (order, pay) -> order + " paid " + pay,
+                    JoinWindows.ofTimeDifferenceAndGrace(Duration.ofMinutes(10), Duration.ofMinutes(1)),
+                    StreamJoined.with(s, s, s))
+              .to("orders-paid", Produced.with(s, s));
+
+        Properties p = new Properties();
+        p.put(StreamsConfig.APPLICATION_ID_CONFIG, "joins-demo");
+        p.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "dummy:9092");
+        try (TopologyTestDriver d = new TopologyTestDriver(b.build(), p)) {
+            var ser = new StringSerializer();
+            var o = d.createInputTopic("orders", ser, ser);
+            var c = d.createInputTopic("customers", ser, ser);
+            var pay = d.createInputTopic("payments", ser, ser);
+            Instant t0 = Instant.parse("2026-10-17T09:00:00Z");
+            c.pipeInput("cust-1", "silver", t0);
+            o.pipeInput("cust-1", "order-A", t0.plusSeconds(60));
+            c.pipeInput("cust-1", "gold", t0.plusSeconds(120));          // tier changes after order-A
+            o.pipeInput("cust-1", "order-B", t0.plusSeconds(180));
+            o.pipeInput("cust-9", "order-C", t0.plusSeconds(200));       // unknown customer
+            pay.pipeInput("cust-1", "pay-1", t0.plusSeconds(300));       // within 10 min of A and B
+            pay.pipeInput("cust-9", "pay-9", t0.plusSeconds(200 + 1200)); // 20 min after order-C: no match
+
+            var de = new StringDeserializer();
+            System.out.println("stream-table : " + d.createOutputTopic("orders-enriched", de, de).readValuesToList());
+            System.out.println("stream-stream: " + d.createOutputTopic("orders-paid", de, de).readValuesToList());
+        }
+    }
+}
+```
+```text
+stream-table : [order-A tier=silver, order-B tier=gold, order-C tier=null]
+stream-stream: [order-A paid pay-1, order-B paid pay-1]
+```
+`order-A` kept the tier it had when it arrived (silver), even though the customer later became gold. The stream-stream join paired `pay-1` with both orders in its 10-minute window, a reminder that windowed joins can fan out. `pay-9` arrived 20 minutes after `order-C`, so it found no match.
+
+**Real-World Use Case:**
+An attribution pipeline joined `ad-clicks` with `purchases` within 30 minutes. The purchases topic had 12 partitions and the clicks topic 24, so the application failed to start. They created a 24-partition re-keyed copy of purchases (with `repartition()`) and kept the window and grace explicit, so late mobile events still matched.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Expecting a stream-table join to update earlier results when the table changes.
+- Joining topics with different partition counts or different partitioners.
+- Huge join windows that make window stores and changelogs enormous.
+- Forgetting that a stream-stream join can emit several results per record.
+
+**Follow-up Questions Interviewers Ask:**
+- When would you pick a foreign-key join? — Joining orders (key `order_id`) to customers (key `customer_id`) as tables, with no manual re-keying.
+- What sets the join's state size? — Window size plus grace times the input rate, on both sides.
+- How do you avoid repartitioning? — Produce with the join key already set, and keep partition counts and partitioners aligned.
+
+---
+
+### Q508. Windowing in Kafka Streams: tumbling, hopping, sliding, session windows and grace
+**ID:** KFK-40
+**Topic:** Kafka > Kafka Streams
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `kafka-streams`, `windows`, `grace-period`, `late-data`, `suppress`
+
+**Short Answer (2–3 lines):**
+Windowed aggregations group records by event time into **tumbling** (fixed, non-overlapping), **hopping** (fixed, overlapping), **sliding** (defined by the time difference between records) or **session** windows (activity separated by an inactivity gap). A **grace period** keeps a window open for late records after its end. Records later than that are dropped. By default Streams emits a running update per record; `suppress(untilWindowCloses)` emits one final result per window.
+
+**Detailed Explanation:**
+| Window | API | Example question |
+|---|---|---|
+| Tumbling | `TimeWindows.ofSizeAndGrace(5 min, 2 min)` | Orders per 5 minutes |
+| Hopping | `TimeWindows…advanceBy(1 min)` | 5-minute moving count updated every minute |
+| Sliding | `SlidingWindows.ofTimeDifferenceAndGrace(…)` | Any 10 minutes containing 3 failed logins |
+| Session | `SessionWindows.ofInactivityGapAndGrace(30 min, …)` | User sessions (see Q132 for the SQL version) |
+
+**Stream time.** Streams tracks the highest timestamp seen per partition. A window closes when stream time passes `window end + grace`, not when wall-clock time does. A quiet partition never advances stream time, so its last windows don't close until new data arrives. That's a classic surprise in tests and at low volume.
+
+**Grace.** Kafka 3.0 deprecated the old implicit 24-hour grace. You now choose with `ofSizeAndGrace` or `ofSizeWithNoGrace`. Larger grace means more late data accepted, but more state and later final results.
+
+**Emission**
+- Default: an update downstream for every input (reduced by the record cache).
+- `suppress(Suppressed.untilWindowCloses(…))`: one result per window, which suits alerts and sinks that can't take updates. The buffer must fit in memory, or set a bound with a policy.
+- Kafka 3.3+ also has `emitStrategy(EmitStrategy.onWindowClose())` on windowed aggregations.
+
+**Late records** past grace are dropped and counted in the `dropped-records-total` metric. Alert on it.
+
+**Example / Code:**
+```java
+// Runtime: Java 21, Apache Kafka Streams 4.3.1 + kafka-streams-test-utils (TopologyTestDriver, no broker)
+import java.time.*;
+import java.util.Properties;
+import org.apache.kafka.common.serialization.*;
+import org.apache.kafka.streams.*;
+import org.apache.kafka.streams.kstream.*;
+
+public class Windows {
+    public static void main(String[] args) {
+        var s = Serdes.String();
+        StreamsBuilder b = new StreamsBuilder();
+        b.stream("clicks", Consumed.with(s, s))                                    // key = page
+         .groupByKey()
+         .windowedBy(TimeWindows.ofSizeAndGrace(Duration.ofMinutes(5), Duration.ofMinutes(2)))
+         .count()
+         .suppress(Suppressed.untilWindowCloses(Suppressed.BufferConfig.unbounded()))  // one final result per window
+         .toStream((w, n) -> w.key() + "@" + w.window().startTime().toString().substring(11, 16))
+         .to("clicks-per-5min", Produced.with(s, Serdes.Long()));
+
+        Properties p = new Properties();
+        p.put(StreamsConfig.APPLICATION_ID_CONFIG, "windows-demo");
+        p.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "dummy:9092");
+        try (TopologyTestDriver d = new TopologyTestDriver(b.build(), p)) {
+            var in = d.createInputTopic("clicks", new StringSerializer(), new StringSerializer());
+            var out = d.createOutputTopic("clicks-per-5min", new StringDeserializer(), new LongDeserializer());
+            Instant t = Instant.parse("2026-10-17T09:00:00Z");
+            String[][] events = {          // {event-time offset in seconds, label}
+                {"30", "on time"}, {"200", "on time"}, {"290", "on time"},
+                {"330", "next window"},
+                {"280", "late but within grace (stream time 09:05:30)"},
+                {"430", "advances stream time to 09:07:10 -> 09:00 window closes"},
+                {"100", "too late: 09:00 window already closed"},
+                {"900", "advances stream time, closes 09:05 window"}};
+            for (String[] e : events) {
+                in.pipeInput("/home", e[1], t.plusSeconds(Long.parseLong(e[0])));
+                System.out.printf("event at %s (%s) -> emitted %s%n",
+                    t.plusSeconds(Long.parseLong(e[0])).toString().substring(11, 19), e[1], out.readKeyValuesToList());
+            }
+            System.out.println("dropped late records: " + d.metrics().entrySet().stream()
+                .filter(m -> m.getKey().name().equals("dropped-records-total"))
+                .mapToDouble(m -> (Double) m.getValue().metricValue()).sum());
+        }
+    }
+}
+```
+```text
+event at 09:00:30 (on time) -> emitted []
+event at 09:03:20 (on time) -> emitted []
+event at 09:04:50 (on time) -> emitted []
+event at 09:05:30 (next window) -> emitted []
+event at 09:04:40 (late but within grace (stream time 09:05:30)) -> emitted []
+event at 09:07:10 (advances stream time to 09:07:10 -> 09:00 window closes) -> emitted [KeyValue(/home@09:00, 4)]
+event at 09:01:40 (too late: 09:00 window already closed) -> emitted []
+event at 09:15:00 (advances stream time, closes 09:05 window) -> emitted [KeyValue(/home@09:05, 2)]
+dropped late records: 1.0
+```
+The 09:00 window counted four records, including the late 09:04:40 one that arrived within grace. It was emitted only once stream time passed 09:07 (end plus 2 minutes of grace). The 09:01:40 record came after that and was dropped.
+
+**Real-World Use Case:**
+A ride-hailing team computed per-zone demand in 1-minute tumbling windows with 30 seconds of grace. Phones with bad connectivity sent events up to several minutes late, which were dropped. They raised grace for that stream to 5 minutes for the "final" table, and kept a separate fast, un-suppressed stream for live dashboards.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Expecting windows to close on wall-clock time.
+- Using `suppress` with an unbounded buffer on high-cardinality keys.
+- Not handling dropped late records, which fails silently.
+- Mixing up hopping windows (fixed grid) and sliding windows (record-driven).
+
+**Follow-up Questions Interviewers Ask:**
+- How do you get event time from the payload? — Implement a `TimestampExtractor` and set it per source or via `default.timestamp.extractor`.
+- What does the window store retain? — Windows for `window size + grace`, or longer with `Materialized.withRetention`.
+- How do Spark and Flink compare? — Both use watermarks for the same idea (see Q290 and Q516).
+
+---

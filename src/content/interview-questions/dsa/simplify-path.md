@@ -30,7 +30,7 @@ You are given an absolute path in Unix style: it starts with `/`, parts are sepa
 "/data/raw/"                  ->  "/data/raw"
 "/data//raw/./2026/"          ->  "/data/raw/2026"
 "/data/raw/../curated"        ->  "/data/curated"
-"/../"                        ->  "/"
+"/../../"                     ->  "/"
 "/a/.../b/../c"               ->  "/a/.../c"     ("..." is a normal name)
 "/"                           ->  "/"
 ```
@@ -104,7 +104,7 @@ cases = {
     "/data/raw/": "/data/raw",
     "/data//raw/./2026/": "/data/raw/2026",
     "/data/raw/../curated": "/data/curated",
-    "/../": "/",
+    "/../../": "/",
     "/a/.../b/../c": "/a/.../c",
     "/": "/",
     "/a/./b/../../c/": "/c",

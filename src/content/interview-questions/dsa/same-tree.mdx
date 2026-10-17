@@ -12,8 +12,8 @@ shortAnswer: "Walk both trees in lockstep. Two empty nodes match; one empty and 
 followUps: ["How would you check if one tree is a mirror of the other?", "Why does comparing in-order traversals alone not prove two trees are the same?", "How would you compare two very large trees stored on different machines?"]
 versionContext: "Python 3 solutions verified with assert-based tests"
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-09"
+reviewedDate: "2026-10-09"
 practice: {"platform": "LeetCode", "number": 100, "title": "Same Tree", "url": "https://leetcode.com/problems/same-tree/"}
 previous: "interview-questions:dsa/balanced-binary-tree"
 next: "interview-questions:dsa/subtree-of-another-tree"
@@ -25,15 +25,15 @@ Given the roots of two binary trees, return `True` if they are the same: they ha
 
 This is widely known as LeetCode 100 (Same Tree). It is short, but the same comparison is reused inside harder problems such as Subtree of Another Tree.
 
-Constraints for this version: each tree has 0 to 100 nodes in the classic version; values are integers.
+Either tree may be empty; values are integers and may repeat.
 
 ## Examples
 
 | `p` (level order) | `q` (level order) | Result | Why |
 |---|---|---|---|
-| `[3, 9, 4]` | `[3, 9, 4]` | `True` | identical |
-| `[3, 9]` | `[3, None, 9]` | `False` | same values, different shape |
-| `[3, 9, 4]` | `[3, 4, 9]` | `False` | children swapped |
+| `[7, 4, 9, 1]` | `[7, 4, 9, 1]` | `True` | identical |
+| `[7, 4, None, 1]` | `[7, None, 4, None, 1]` | `False` | same values, different shape |
+| `[7, 4, 9]` | `[7, 4, 6]` | `False` | one value differs |
 | `[]` | `[]` | `True` | both empty |
 
 ## Approach 1: brute force
@@ -99,7 +99,7 @@ def is_same_tree_iterative(p, q):
     return True
 ```
 
-**Walkthrough** for `p = [3, 9]` and `q = [3, None, 9]`: the roots both hold 3. Next pair: `p.left` is 9 but `q.left` is `None`, so exactly one is empty and the answer is `False`.
+**Walkthrough** for `p = [7, 4, None, 1]` and `q = [7, None, 4, None, 1]`: the roots both hold 7. Next pair: `p.left` is 4 but `q.left` is `None`, so exactly one is empty and the answer is `False`.
 
 **Complexity.** O(n) time in the worst case (when the trees are equal), and the comparison stops early otherwise. The recursive version uses O(h) stack; the iterative one uses O(w) queue memory.
 
@@ -124,9 +124,10 @@ def build_tree(values):
     return root
 
 cases = [
-    ([3, 9, 4], [3, 9, 4], True),
-    ([3, 9], [3, None, 9], False),
-    ([3, 9, 4], [3, 4, 9], False),
+    ([7, 4, 9, 1], [7, 4, 9, 1], True),
+    ([7, 4, None, 1], [7, None, 4, None, 1], False),
+    ([7, 4, 9], [7, 4, 6], False),
+    ([7, 4, 9], [7, 9, 4], False),                 # children swapped
     ([], [], True),
     ([1], [], False),
     ([1], [1], True),
@@ -146,7 +147,7 @@ print("all same tree tests passed")
 ## Edge cases and pitfalls
 
 - **Checking `p.val == q.val` before checking for `None`** raises `AttributeError`. Handle the empty cases first.
-- **Comparing traversals without null markers.** Two different shapes can share an in-order or pre-order sequence; `[3, 9]` and `[3, None, 9]` share the pre-order `3, 9`.
+- **Comparing traversals without null markers.** Two different shapes can share an in-order or pre-order sequence; `[7, 4, None, 1]` and `[7, None, 4, None, 1]` share the pre-order `7, 4, 1`.
 - **Joining values without separators** in a serialisation makes `12` and `1, 2` look alike. Keep values as separate list items or use a delimiter.
 - **Comparing node identity** (`p is q`) instead of values answers a different question.
 

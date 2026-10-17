@@ -26,7 +26,7 @@ You are given a list of non-negative integers and an integer `k`. Cut the list i
 
 This is LeetCode 410, Split Array Largest Sum. It is the general form of several "binary search on the answer" problems, including Capacity To Ship Packages Within D Days, where days play the role of parts.
 
-Assume up to 1,000 values, each up to a million, and `1 <= k <= min(50, len(nums))`.
+Lists can hold a few thousand values in the millions, and `k` never exceeds the number of values, so every part can be non-empty.
 
 ## Examples
 
@@ -108,7 +108,7 @@ answer 17
 
 **Why the result is optimal.** Every value below `lo` was shown infeasible, and `lo` itself is feasible. So `lo` is the smallest achievable cost. It is also a real part sum of some split, because the optimum is; the search does not need to visit only real sums to find it.
 
-**Complexity.** Each check is O(n), and the search makes O(log S) checks for `S = sum(nums)`: O(n log S) time and O(1) extra space. With a million per value and a thousand values, log S is about 30.
+**Complexity.** Each check is O(n), and the search makes O(log S) checks for `S = sum(nums)`: O(n log S) time and O(1) extra space. For values in the millions and lists in the thousands, log S is about 30.
 
 ## Tests
 

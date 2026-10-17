@@ -30,7 +30,7 @@ The target is O(n) time and O(1) extra space. Values can be negative and fit in 
 
 ```text
 nums = [4, 7, 4, 9, 2, 9]     ->  [2, 7]
-nums = [-1, 0]                ->  [-1, 0]
+nums = [-3, 5]                ->  [-3, 5]
 nums = [6, 1, 6, 3]           ->  [1, 3]
 ```
 
@@ -89,7 +89,7 @@ import random
 
 for f in (single_pair, single_pair_count):
     assert f([4, 7, 4, 9, 2, 9]) == [2, 7]
-    assert f([-1, 0]) == [-1, 0]                     # negative and zero
+    assert f([-3, 5]) == [-3, 5]                     # negative value
     assert f([6, 1, 6, 3]) == [1, 3]
     assert f([2, 3]) == [2, 3]                       # only the two singles
     assert f([-8, 5, -8, -3]) == [-3, 5]

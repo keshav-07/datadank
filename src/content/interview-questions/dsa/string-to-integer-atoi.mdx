@@ -9,8 +9,8 @@ questionType: ["coding"]
 estimatedMinutes: 12
 interviewRelevance: "Medium"
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-09"
+reviewedDate: "2026-10-09"
 shortAnswer: "Walk the string once in stages: skip leading spaces, read at most one '+' or '-', then accumulate digits with value = value * 10 + digit until a non-digit appears. Apply the sign and clamp to [-2^31, 2^31 - 1]. In languages with fixed-width integers, check for overflow before each multiply-and-add. It is O(n) time and O(1) space; the difficulty is getting every rule and edge case right."
 followUps: ["How would you detect overflow without a wider integer type?", "Why is int(s) in Python not an acceptable answer here?", "How would you extend the parser to decimals or exponents?"]
 versionContext: "Python 3 solutions verified with assert-based tests"
@@ -34,7 +34,7 @@ This is widely known as LeetCode 8, String to Integer (atoi).
 ## Examples
 
 ```text
-"   -0042kg"      ->  -42
+"  -0081 kg"      ->  -81
 "7 days"          ->  7
 "+-3"             ->  0             (second sign is not a digit)
 "abc 12"          ->  0             (non-digit before any digit)
@@ -63,12 +63,12 @@ def my_atoi_regex(s):
 
 **Key insight:** treat it as a tiny state machine (spaces, sign, digits, done) and check for overflow before it happens, so the code also works in languages where integers wrap.
 
-Walkthrough on `"   -0042kg"`:
+Walkthrough on `"  -0081 kg"`:
 
-1. Skip three spaces; index 3.
-2. `-` sets sign = -1; index 4.
-3. Digits: `0` → 0, `0` → 0, `4` → 4, `2` → 42. `k` stops the loop.
-4. Result: -1 × 42 = -42, inside the range.
+1. Skip two spaces; index 2.
+2. `-` sets sign = -1; index 3.
+3. Digits: `0` → 0, `0` → 0, `8` → 8, `1` → 81. The space stops the loop.
+4. Result: -1 × 81 = -81, inside the range.
 
 ```python
 def my_atoi(s):
@@ -98,7 +98,7 @@ def my_atoi(s):
 import random
 
 for f in (my_atoi, my_atoi_regex):
-    assert f("   -0042kg") == -42
+    assert f("  -0081 kg") == -81
     assert f("7 days") == 7
     assert f("+-3") == 0                         # two signs
     assert f("abc 12") == 0                      # letters first

@@ -29,10 +29,10 @@ The input is unsorted and `n` is at least 2.
 ## Examples
 
 ```text
-nums = [1, 3, 3, 4]        ->  [3, 2]
+nums = [1, 4, 4, 2]        ->  [4, 3]
 nums = [2, 2]              ->  [2, 1]
-nums = [4, 1, 2, 2]        ->  [2, 3]
-nums = [1, 1]              ->  [1, 2]   (missing value at the top of the range)
+nums = [4, 3, 3, 1]        ->  [3, 2]
+nums = [2, 1, 2]           ->  [2, 3]   (missing value at the top of the range)
 ```
 
 ## Approach 1: brute force with counts
@@ -72,7 +72,7 @@ def mismatch_cyclic(nums):
     return []
 ```
 
-On `[4, 1, 2, 2]` the loop finishes with `[1, 2, 2, 4]`. Index 2 holds 2 instead of 3, so the answer is `[2, 3]`.
+On `[4, 3, 3, 1]` the loop finishes with `[1, 3, 3, 4]`. Index 1 holds 3 instead of 2, so the answer is `[3, 2]`.
 
 **Why it is correct:** every swap puts one value in its home for good, so the loop ends after at most `n` swaps with each present value at home. Only `n - 1` distinct values exist, so exactly one slot is left over. It must be the home of the missing number, and the only value that can sit there is the surplus copy.
 
@@ -100,10 +100,10 @@ def mismatch_math(nums):
 import random
 
 for f in (mismatch_cyclic, mismatch_math, mismatch_count):
-    assert f([1, 3, 3, 4]) == [3, 2]
+    assert f([1, 4, 4, 2]) == [4, 3]
     assert f([2, 2]) == [2, 1]
-    assert f([1, 1]) == [1, 2]            # missing value is n
-    assert f([4, 1, 2, 2]) == [2, 3]
+    assert f([2, 1, 2]) == [2, 3]         # missing value is n
+    assert f([4, 3, 3, 1]) == [3, 2]
     assert f([3, 2, 3, 4, 6, 5]) == [3, 1]  # missing value is 1
 
 random.seed(5)

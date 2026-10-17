@@ -22,14 +22,14 @@ next: "interview-questions:dsa/reverse-nodes-in-k-group"
 
 ## Problem
 
-Given the head of a singly linked list and a non-negative integer `k`, rotate the list to the right by `k` places: the last `k` nodes move, in order, to the front. Return the new head. `k` may be far larger than the list length (up to around two billion), and the list may be empty. This is LeetCode 61, Rotate List.
+Given the head of a singly linked list and a non-negative integer `k`, rotate the list to the right by `k` places: the last `k` nodes move, in order, to the front. Return the new head. `k` may be far larger than the list length (billions, for a list of a few hundred nodes), and the list may be empty. This is LeetCode 61, Rotate List.
 
 ## Examples
 
 ```text
-10 -> 20 -> 30 -> 40 -> 50,  k = 2    ->  40 -> 50 -> 10 -> 20 -> 30
-10 -> 20 -> 30,              k = 4    ->  30 -> 10 -> 20     (4 mod 3 = 1)
-10 -> 20 -> 30,              k = 3    ->  10 -> 20 -> 30     (a full turn)
+4 -> 8 -> 15 -> 16 -> 23 -> 42,  k = 4    ->  15 -> 16 -> 23 -> 42 -> 4 -> 8
+7 -> 1 -> 9,                     k = 5    ->  1 -> 9 -> 7     (5 mod 3 = 2)
+7 -> 1 -> 9,                     k = 3    ->  7 -> 1 -> 9     (a full turn)
 (empty),                     k = 5    ->  (empty)
 ```
 
@@ -67,12 +67,12 @@ def rotate_right_steps(head, k):
 
 **Idea in plain English.** A rotation does not reorder anything around the ring; it only changes where the list starts. So join the tail to the head to make a ring, then cut it in the right place. After rotating right by `k`, the new head is the node `k` from the end, which is position `n - k` from the start (counting from 0), and the new tail is just before it, at position `n - k - 1`.
 
-Walkthrough on `10 -> 20 -> 30 -> 40 -> 50`, `k = 2`:
+Walkthrough on `4 -> 8 -> 15 -> 16 -> 23 -> 42`, `k = 4`:
 
-1. Length 5, tail is 50, `k mod 5 = 2`.
-2. Link 50 back to 10, forming a ring.
-3. Walk `5 - 2 - 1 = 2` steps from 10: 10 → 20 → 30. Node 30 is the new tail.
-4. New head is 40; set `30.next = None`. Result: `40 -> 50 -> 10 -> 20 -> 30`.
+1. Length 6, tail is 42, `k mod 6 = 4`.
+2. Link 42 back to 4, forming a ring.
+3. Walk `6 - 4 - 1 = 1` step from 4: 4 → 8. Node 8 is the new tail.
+4. New head is 15; set `8.next = None`. Result: `15 -> 16 -> 23 -> 42 -> 4 -> 8`.
 
 ```python
 def rotate_right(head, k):
@@ -123,9 +123,9 @@ def expected(values, k):
     return values[-k:] + values[:-k] if k else list(values)
 
 for f in (rotate_right, rotate_right_steps):
-    assert to_list(f(build([10, 20, 30, 40, 50]), 2)) == [40, 50, 10, 20, 30]
-    assert to_list(f(build([10, 20, 30]), 4)) == [30, 10, 20]
-    assert to_list(f(build([10, 20, 30]), 3)) == [10, 20, 30]
+    assert to_list(f(build([4, 8, 15, 16, 23, 42]), 4)) == [15, 16, 23, 42, 4, 8]
+    assert to_list(f(build([7, 1, 9]), 5)) == [1, 9, 7]
+    assert to_list(f(build([7, 1, 9]), 3)) == [7, 1, 9]
     assert f(None, 5) is None
     assert to_list(f(build([7]), 1000)) == [7]
     assert to_list(f(build([1, 2]), 2_000_000_001)) == [2, 1]     # huge k, odd
@@ -145,7 +145,7 @@ assert to_list(rotate_right(build(big), 2 * 10**9 + 7)) == expected(big, 2 * 10*
 
 ## Edge cases and pitfalls
 
-- **Large k.** Always reduce `k` modulo the length; a loop of `k` single rotations will not finish for `k` near two billion.
+- **Large k.** Always reduce `k` modulo the length; a loop of `k` single rotations will not finish for `k` in the billions.
 - **k a multiple of n.** After the modulo, `k = 0`; return the head unchanged and do not close the ring, or you return a cyclic list.
 - **Empty list or one node.** Return early; the modulo by zero would otherwise raise `ZeroDivisionError`.
 - **Off-by-one on the cut.** The new tail is `n - k - 1` steps from the head, so the new head is `n - k` steps away. Draw a five-node example to check.

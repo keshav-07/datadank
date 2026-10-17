@@ -3281,7 +3281,7 @@ A deployment with about 1,500 DAGs had runs starting up to 10 minutes late. Metr
 - Scaling schedulers to fix slow parsing, which is the DAG processor's job in Airflow 3.
 
 **Follow-up Questions Interviewers Ask:**
-- What does `--only-idle` do (3.2+)? — Starts a scheduler that only does idle-time housekeeping, so the main scheduler loops spend less time on it.
+- What does `--only-idle` do (3.2+)? — Used with `--num-runs`, it counts only the loops where the scheduler was idle. A short-lived scheduler, for example in CI, then processes every triggered DAG and queued task before it exits.
 - How do you see the scheduler loop time? — The `scheduler.scheduler_loop_duration` metric, plus the `dag_processing.*` metrics for parsing.
 
 ---

@@ -29,7 +29,7 @@ The challenge is the constraint: O(n) time and O(1) extra space. The list has up
 ## Examples
 
 ```text
-nums = [3, 4, -1, 1]          ->  2
+nums = [3, 5, -1, 1]          ->  2
 nums = [8, 9, 10]             ->  1    (1 is missing)
 nums = [2, 1, 3]              ->  4    (1..n all present, so n + 1)
 nums = [1, 1, 0, -5, 2]       ->  3    (duplicates and non-positives are ignored)
@@ -56,15 +56,14 @@ def first_missing_set(nums):
 
 At each index, keep swapping while the current value is in range and its home does not already hold it. Values out of range and duplicates are left in place; they simply occupy slots whose own values are missing.
 
-Walkthrough on `[3, 4, -1, 1]` (n = 4):
+Walkthrough on `[3, 5, -1, 1]` (n = 4):
 
 | step | array | note |
 |---|---|---|
-| i = 0 | `[-1, 4, 3, 1]` | 3 goes to index 2; -1 arrives and is out of range |
-| i = 1 | `[-1, 1, 3, 4]` | 4 goes to index 3; 1 arrives |
-| i = 1 | `[1, -1, 3, 4]` | 1 goes to index 0; -1 arrives, stop |
-| i = 2, 3 | `[1, -1, 3, 4]` | 3 and 4 are already home |
-| scan | `[1, -1, 3, 4]` | index 1 does not hold 2: answer 2 |
+| i = 0 | `[-1, 5, 3, 1]` | 3 goes to index 2; -1 arrives and is out of range, stop |
+| i = 1, 2 | `[-1, 5, 3, 1]` | 5 is out of range; 3 is already home |
+| i = 3 | `[1, 5, 3, -1]` | 1 goes to index 0; -1 arrives, stop |
+| scan | `[1, 5, 3, -1]` | index 1 does not hold 2: answer 2 |
 
 ```python
 def first_missing_positive(nums):
@@ -113,7 +112,7 @@ This is also O(n) time and O(1) extra space. The first pass matters: without it,
 import random
 
 for f in (first_missing_positive, first_missing_mark, first_missing_set):
-    assert f([3, 4, -1, 1]) == 2
+    assert f([3, 5, -1, 1]) == 2
     assert f([8, 9, 10]) == 1              # 1 missing
     assert f([2, 1, 3]) == 4               # n + 1
     assert f([1, 1, 0, -5, 2]) == 3        # duplicates, zero, negatives

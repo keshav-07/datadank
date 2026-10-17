@@ -24,7 +24,7 @@ There are several piles of bananas, given as a list of positive integers, and a 
 
 This is widely known as LeetCode 875 (Koko Eating Bananas). It is the standard introduction to **binary search on the answer**: you are not searching an array, you are searching the range of possible speeds.
 
-Constraints for this version: `1 <= len(piles) <= h <= 1,000,000,000`, and each pile holds between 1 and 1,000,000,000 bananas. Because `h` is at least the number of piles, an answer always exists.
+Piles can be huge (around a billion bananas), so trying every speed is hopeless. The deadline `h` is never smaller than the number of piles, so an answer always exists.
 
 ## Examples
 

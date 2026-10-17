@@ -31,8 +31,8 @@ Assume up to about 100,000 values, so the target is O(log n).
 ## Examples
 
 ```text
-[15, 18, 2, 3, 6, 12]  ->  2    (two right rotations of [2, 3, 6, 12, 15, 18])
-[7, 9, 11, 12, 5]      ->  4
+[14, 19, 3, 5, 8, 11]  ->  2    (two right rotations of [3, 5, 8, 11, 14, 19])
+[6, 8, 10, 13, 4]      ->  4
 [1, 2, 3, 4]           ->  0    (not rotated, or rotated a multiple of n times)
 [9]                    ->  0
 ```
@@ -61,11 +61,11 @@ Compare the middle value with the value at the right end of the current range:
 - If `arr[mid] > arr[hi]`, then `mid` is in the first (larger) run and the drop lies somewhere to its right, so `lo = mid + 1`.
 - Otherwise `arr[mid]` is in the second run, so the minimum is at `mid` or to its left, so `hi = mid`.
 
-Walkthrough for `[15, 18, 2, 3, 6, 12]`:
+Walkthrough for `[14, 19, 3, 5, 8, 11]`:
 
 ```text
-lo=0 hi=5 mid=2  arr[2]=2  <= arr[5]=12 -> hi=2
-lo=0 hi=2 mid=1  arr[1]=18 >  arr[2]=2  -> lo=2
+lo=0 hi=5 mid=2  arr[2]=3  <= arr[5]=11 -> hi=2
+lo=0 hi=2 mid=1  arr[1]=19 >  arr[2]=3  -> lo=2
 lo=hi=2          answer 2
 ```
 
@@ -91,8 +91,8 @@ def rotation_count(arr):
 import random
 
 def check(fn):
-    assert fn([15, 18, 2, 3, 6, 12]) == 2
-    assert fn([7, 9, 11, 12, 5]) == 4
+    assert fn([14, 19, 3, 5, 8, 11]) == 2
+    assert fn([6, 8, 10, 13, 4]) == 4
     assert fn([1, 2, 3, 4]) == 0
     assert fn([9]) == 0
     assert fn([2, 1]) == 1

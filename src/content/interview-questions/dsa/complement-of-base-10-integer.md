@@ -24,7 +24,7 @@ next: "interview-questions:dsa/sum-of-two-integers"
 
 Given a non-negative integer `n`, write it in binary without leading zeros, flip every bit (0 becomes 1 and 1 becomes 0), and return the resulting number in base 10. This is LeetCode 1009, Complement of Base 10 Integer.
 
-`n` is below 10^9, so it fits in 30 bits. The binary form of 0 is the single digit 0.
+`n` fits comfortably in a 32-bit integer, so its binary form has at most about 30 digits. The binary form of 0 is the single digit 0.
 
 ## Examples
 

@@ -27,8 +27,8 @@ You start with capital `w` and may complete at most `k` distinct projects, one a
 ## Examples
 
 ```text
-k = 2, w = 0, profits = [1, 2, 3], capital = [0, 1, 1]   ->  4   (take 1, then 3)
-k = 3, w = 0, profits = [1, 2, 3], capital = [0, 1, 2]   ->  6
+k = 2, w = 1, profits = [4, 2, 6], capital = [1, 3, 5]   ->  11  (take 4, which unlocks 6)
+k = 3, w = 0, profits = [2, 5, 1, 3], capital = [0, 2, 0, 7]   ->  10  (2, then 5, then 3)
 k = 1, w = 0, profits = [5],       capital = [1]         ->  0   (cannot afford anything)
 k = 5, w = 2, profits = [1, 1],    capital = [0, 0]      ->  4   (only two projects exist)
 ```
@@ -100,8 +100,8 @@ def ipo_brute(k, w, profits, capital):
     return best
 
 for f in (ipo, ipo_scan, ipo_brute):
-    assert f(2, 0, [1, 2, 3], [0, 1, 1]) == 4
-    assert f(3, 0, [1, 2, 3], [0, 1, 2]) == 6
+    assert f(2, 1, [4, 2, 6], [1, 3, 5]) == 11
+    assert f(3, 0, [2, 5, 1, 3], [0, 2, 0, 7]) == 10
     assert f(1, 0, [5], [1]) == 0
     assert f(5, 2, [1, 1], [0, 0]) == 4
     assert f(0, 7, [3], [0]) == 7              # no rounds

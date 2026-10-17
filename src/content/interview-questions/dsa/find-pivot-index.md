@@ -23,7 +23,7 @@ next: "interview-questions:dsa/product-of-array-except-self"
 
 You are given a list of integers `nums`. A pivot index is a position `i` where the sum of all elements strictly to the left of `i` equals the sum of all elements strictly to the right of `i`. The element at `i` itself belongs to neither side, and an empty side sums to 0. Return the leftmost pivot index, or -1 if there is none. This is LeetCode 724, Find Pivot Index.
 
-The list has between 1 and about 10^4 elements, and values can be negative.
+The list is non-empty and values can be negative, so the prefix sums are not monotonic.
 
 ## Examples
 

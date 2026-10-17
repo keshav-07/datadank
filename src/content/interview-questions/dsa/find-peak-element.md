@@ -26,7 +26,7 @@ You are given a list of integers in which no two adjacent values are equal. A pe
 
 This is LeetCode 162, Find Peak Element. Unlike a mountain array there can be many peaks, and any one of them is an acceptable answer.
 
-Assume between 1 and 1,000 values.
+The list is non-empty; a single element is a peak by itself.
 
 ## Examples
 

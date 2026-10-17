@@ -27,7 +27,7 @@ You have a collection of stones with positive integer weights. In each round, ta
 
 This is widely known as LeetCode 1046 (Last Stone Weight). It is a pure simulation whose only challenge is getting the two largest values quickly every round.
 
-Constraints for this version: 1 to 10,000 stones, each weighing 1 to 1,000.
+There is at least one stone, and weights are small positive integers.
 
 ## Examples
 
@@ -87,7 +87,7 @@ def last_stone_weight(stones):
 
 ### Bounded weights
 
-When weights are small integers (here at most 1,000), a counting array indexed by weight also works: walk from the heaviest bucket down, pairing stones. It runs in O(n + W) for maximum weight `W`. Mention it as an alternative if asked; the heap is the expected answer.
+When weights are small integers (say, at most a thousand), a counting array indexed by weight also works: walk from the heaviest bucket down, pairing stones. It runs in O(n + W) for maximum weight `W`. Mention it as an alternative if asked; the heap is the expected answer.
 
 ## Tests
 

@@ -27,7 +27,7 @@ exactly one island. Water surrounds the grid on all sides, and the island has no
 enclosed by land). Return the length of the island's
 coastline, where each cell side is one unit.
 
-This is LeetCode 463, Island Perimeter. Assume grids of up to 100 by 100.
+This is LeetCode 463, Island Perimeter. Grids are small, so any linear scan is fast enough.
 
 ## Examples
 

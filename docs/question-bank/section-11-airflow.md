@@ -2264,3 +2264,428 @@ A platform submitted about 800 Databricks and EMR jobs a night, each lasting 20 
 - What if a triggerer dies? — Its triggers are reassigned to a live triggerer, so `run()` should be safe to restart.
 
 ---
+
+### Q544. Which sensor settings matter, and how do you write a sensor with `@task.sensor`?
+**ID:** AF-26
+**Topic:** Airflow > Sensors
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `airflow`, `sensors`, `poke-return-value`, `timeouts`
+
+**Short Answer (2–3 lines):**
+A sensor checks a condition repeatedly. The settings that matter are `poke_interval`, `timeout`, `mode` (`poke` or `reschedule`), `soft_fail` and `exponential_backoff`, plus `deferrable=True` where the sensor supports it. `@task.sensor` turns a function into a sensor. Returning `PokeReturnValue(is_done=..., xcom_value=...)` both ends the wait and hands a value to the next task.
+
+**Detailed Explanation:**
+This question is about *configuring* sensors. For poke versus reschedule versus deferrable, see Q44 and the site's guide on how sensors should wait.
+
+| Setting | Meaning | Guidance |
+|---|---|---|
+| `poke_interval` | Seconds between checks | Minutes, not seconds, for slow sources; respect API rate limits |
+| `timeout` | Total seconds before the sensor gives up | **Always set it.** The default is 7 days |
+| `mode="poke"` | Holds a worker slot the whole time | Only for waits of a few minutes |
+| `mode="reschedule"` | Frees the slot between checks; state `up_for_reschedule` | For waits of minutes to hours, when no deferrable version exists |
+| `deferrable=True` | Hands the wait to the triggerer | Best for long or numerous waits (see Q543) |
+| `soft_fail=True` | Timeout gives `skipped` instead of `failed` | When "nothing arrived" is an acceptable result |
+| `exponential_backoff=True` | Interval grows between checks | Flaky or expensive sources |
+| `max_wait` | Caps the backoff interval | Use with backoff |
+| `silent_fail=True` | Errors other than a timeout count as "not yet" | Rarely a good idea |
+
+Things to know:
+- `timeout` counts total time since the first check, and retries don't reset it. In reschedule mode, `execution_timeout` doesn't limit the overall wait either; `timeout` does.
+- A sensor that returns a value saves a second lookup. Pass the discovered path forward with `PokeReturnValue`.
+- Sensors fill pools like any other task. Hundreds of `poke` sensors can deadlock a pool.
+- If the producer is inside Airflow, an asset is usually better than any sensor (see Q538).
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.sdk import PokeReturnValue, dag, task
+
+ATTEMPTS = {"n": 0}            # stand-in for "is the partner manifest there yet?"
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False)
+def sensor_demo():
+    @task.sensor(
+        poke_interval=1,            # seconds between checks (use minutes in production)
+        timeout=30,                 # total seconds before giving up
+        mode="poke",                # "reschedule" frees the worker slot between pokes
+        exponential_backoff=False,
+        soft_fail=False,            # True = mark skipped instead of failed on timeout
+    )
+    def wait_for_manifest() -> PokeReturnValue:
+        ATTEMPTS["n"] += 1
+        found = ATTEMPTS["n"] >= 3
+        print(f"poke {ATTEMPTS['n']}: found={found}")
+        # is_done ends the wait; xcom_value is passed downstream like a return value
+        return PokeReturnValue(is_done=found, xcom_value="s3://partner/2026-05-20/manifest.json" if found else None)
+
+    @task
+    def load(manifest: str):
+        print("loading from", manifest)
+
+    load(wait_for_manifest())
+
+
+dag_obj = sensor_demo()
+
+if __name__ == "__main__":
+    print(dag_obj.test().state)
+```
+```text
+poke 1: found=False
+poke 2: found=False
+poke 3: found=True
+loading from s3://partner/2026-05-20/manifest.json
+success
+```
+The module-level counter only works because `dag.test()` runs every poke in one process. A real sensor must check outside state, because in reschedule mode each poke is a new process.
+
+**Real-World Use Case:**
+A bank's partner sent a manifest file some time between 01:00 and 05:00. The team used an S3 key sensor in deferrable mode with `timeout=5*3600` and `soft_fail=False`. When the partner didn't deliver, the sensor failed at 06:00 and paged the on-call engineer, instead of waiting quietly for the default seven days.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Leaving `timeout` at its default, so a missing file holds a slot or a deferral for a week.
+- A `poke_interval` of a few seconds against a rate-limited API.
+- Keeping state in Python globals inside a reschedule-mode sensor.
+
+**Follow-up Questions Interviewers Ask:**
+- What does `up_for_reschedule` mean? — A reschedule-mode sensor between checks. It holds no slot.
+- How do you make sensors deferrable by default? — Set `[operators] default_deferrable = True` for operators and sensors that support it.
+
+---
+
+### Q545. How do custom and object-storage XCom backends work?
+**ID:** AF-27
+**Topic:** Airflow > XCom
+**Level:** Advanced
+**Frequency:** Occasional
+**Tags:** `airflow`, `xcom`, `object-storage`, `custom-backend`
+
+**Short Answer (2–3 lines):**
+An XCom backend controls how XCom values are serialised and where they are stored. The `common.io` provider ships `XComObjectStorageBackend`. Values over a size threshold go to S3, GCS, Azure or a file path, and the database keeps only a reference. Reads resolve the reference without the DAG code changing. A custom backend subclasses `BaseXCom` and overrides `serialize_value`, `deserialize_value` and `purge`.
+
+**Detailed Explanation:**
+Q43 explains why the default backend should only hold small values. A backend changes that without touching DAG code.
+
+Configuration for the built-in object-storage backend:
+| Setting | Example |
+|---|---|
+| `[core] xcom_backend` | `airflow.providers.common.io.xcom.backend.XComObjectStorageBackend` |
+| `[common.io] xcom_objectstorage_path` | `s3://aws_default@my-bucket/xcom` |
+| `[common.io] xcom_objectstorage_threshold` | Bytes. `-1` = always DB (the default), `0` = always object storage |
+| `[common.io] xcom_objectstorage_compression` | `gzip`, `bz2`, `zip`, `lzma`, `snappy` |
+
+The environment-variable form replaces the section's dot with an underscore: `AIRFLOW__COMMON_IO__XCOM_OBJECTSTORAGE_PATH`.
+
+Things to design for:
+- **Where it runs.** In Airflow 3 serialisation happens in the worker's Task SDK. Workers need credentials for the bucket, and so does the API server if the UI is to show values.
+- **Lifecycle.** Objects outlive their DB rows unless `purge` runs, for example when task instances are cleared. Add a bucket lifecycle rule as a safety net.
+- **Security.** Bucket permissions now control who can read task outputs.
+- **What it doesn't fix.** Moving 2 GB between tasks is still slow. For real data, pass paths to tables or files you write yourself (see the site's guide on XCom vs external storage).
+- **A custom backend** fits special encodings, such as storing DataFrames as Parquet, or an internal blob store. Keep `serialize_value` deterministic and its errors clear, because every task depends on it.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3, apache-airflow-providers-common-io
+# Config (env vars here; airflow.cfg or Helm values in production):
+#   AIRFLOW__CORE__XCOM_BACKEND=airflow.providers.common.io.xcom.backend.XComObjectStorageBackend
+#   AIRFLOW__COMMON_IO__XCOM_OBJECTSTORAGE_PATH=file:///srv/xcom   (s3://aws_conn@bucket/xcom in prod)
+#   AIRFLOW__COMMON_IO__XCOM_OBJECTSTORAGE_THRESHOLD=1024           (bytes; smaller values stay in the DB)
+#   AIRFLOW__COMMON_IO__XCOM_OBJECTSTORAGE_COMPRESSION=gzip
+from datetime import datetime
+from airflow.sdk import dag, task
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False)
+def xcom_backend_demo():
+    @task
+    def small() -> int:
+        return 42                                        # under threshold -> metadata DB
+
+    @task
+    def big() -> list[dict]:
+        return [{"id": i, "sku": f"SKU-{i:05d}"} for i in range(2000)]   # over threshold -> object storage
+
+    @task
+    def use(n: int, rows: list[dict]):
+        print("small:", n, "| big rows:", len(rows), rows[-1])   # transparently read back
+
+    use(small(), big())
+
+
+dag_obj = xcom_backend_demo()
+
+if __name__ == "__main__":
+    print(dag_obj.test().state)
+```
+```text
+small: 42 | big rows: 2000 {'id': 1999, 'sku': 'SKU-01999'}
+success
+# object written:   <store>/xcom_backend_demo/manual__2026-10-17T18:43:24.878067+00:00/big/1828eda6-....gz
+# metadata DB rows: small -> 42
+#                   big   -> file:///<store>/xcom_backend_demo/manual__.../big/1828eda6-....gz
+```
+
+**Real-World Use Case:**
+A team's tasks returned API pages of a few hundred KB, and the `xcom` table grew to tens of GB, which slowed DB backups and upgrades. They switched to the object-storage backend with a 64 KB threshold, gzip compression and a 30-day lifecycle rule on the bucket. The table shrank to a few MB, and no DAG code changed.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Treating an object-storage backend as permission to pass big datasets through XCom.
+- Forgetting worker credentials for the bucket. The tasks then fail when they push, not at parse time.
+- Writing `AIRFLOW__COMMON.IO__...` as an environment variable. Shells won't export the dot, and Airflow reads `COMMON_IO`.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you implement a custom backend? — Subclass `airflow.sdk.BaseXCom`, override `serialize_value` and `deserialize_value` (and `purge`), and point `[core] xcom_backend` to it.
+- Why did pandas 3 come up in the 3.3.1 notes? — It changed how DataFrame XComs are stored and read back. Check serialisation whenever you upgrade libraries.
+
+---
+
+### Q546. How do TaskFlow tasks pass values: return values, `multiple_outputs` and named XComs?
+**ID:** AF-28
+**Topic:** Airflow > XCom
+**Level:** Beginner
+**Frequency:** Common
+**Tags:** `airflow`, `xcom`, `taskflow`, `multiple-outputs`
+
+**Short Answer (2–3 lines):**
+A TaskFlow return value becomes the `return_value` XCom, and passing it to another task wires the dependency. With `multiple_outputs=True`, or a `dict`/`TypedDict` return annotation, each key is also pushed as its own XCom, and `result["key"]` passes one key on. `ti.xcom_push` and `ti.xcom_pull` remain for named values and classic operators.
+
+**Detailed Explanation:**
+| Need | How |
+|---|---|
+| Pass the whole result | `b(a())` |
+| Pass one field of a dict result | `meta = a(); b(meta["path"])`, with `multiple_outputs` on |
+| A value under a custom key | `ti.xcom_push(key="published_path", value=...)` |
+| Read from a classic operator | `op.output`, or `op.output["key"]` |
+| Read in Jinja | `{{ ti.xcom_pull(task_ids='a', key='rows') }}` |
+| Read one mapped instance | `ti.xcom_pull(task_ids="a", map_indexes=2)` |
+
+Things to remember:
+- `multiple_outputs` is inferred from a `dict` or `TypedDict` return annotation. Pass `multiple_outputs=False` to stop it.
+- Values must be serialisable. Primitives, lists, dicts, dataclasses and a few library types work through Airflow's serde. Pickling is not the default.
+- XComs belong to one DAG run and one try. Clearing a task deletes its XComs, so downstream tasks must not expect old values.
+- Return **pointers** (paths, table names, counts, ids), not data (see Q43, Q545).
+- `do_xcom_push=False` on classic operators stops them from pushing anything, for example a huge stdout from a Bash command.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.sdk import dag, task
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False)
+def passing_data():
+    @task(multiple_outputs=True)       # also inferred from a dict / TypedDict return annotation
+    def extract() -> dict:
+        # Return a pointer to the data, not the data itself
+        return {"path": "s3://lake/raw/orders/2026-05-20.parquet", "rows": 1834}
+
+    @task
+    def validate(path: str, rows: int) -> str:
+        if rows == 0:
+            raise ValueError("empty extract")
+        return path
+
+    @task
+    def publish(path: str, ti=None):
+        ti.xcom_push(key="published_path", value=path)     # an extra, named XCom
+        print("published", path)
+
+    @task
+    def audit(ti=None):
+        # Pull by task id and key; TaskFlow wiring would be nicer, this shows the raw API
+        print("audit saw:", ti.xcom_pull(task_ids="publish", key="published_path"),
+              "| rows key:", ti.xcom_pull(task_ids="extract", key="rows"))
+
+    meta = extract()
+    publish(validate(meta["path"], meta["rows"])) >> audit()   # meta["path"] -> XComArg for one key
+
+
+dag_obj = passing_data()
+
+if __name__ == "__main__":
+    print(dag_obj.test().state)
+```
+```text
+published s3://lake/raw/orders/2026-05-20.parquet
+audit saw: s3://lake/raw/orders/2026-05-20.parquet | rows key: 1834
+success
+```
+
+**Real-World Use Case:**
+An ingestion task returned `{"path": ..., "rows": ..., "max_ts": ...}`. A quality task used `rows`, the load task used `path`, and the watermark task used `max_ts`. Each took only the key it needed, so the graph showed exactly which value each step depended on.
+
+**Common Mistakes / Interviewer Red Flags:**
+- `xcom_pull` with no `task_ids`, or a misspelt key, which returns `None` without an error.
+- Expecting XComs to survive a clear, or to be shared between DAG runs.
+- Returning a DataFrame "because it worked in dev".
+
+**Follow-up Questions Interviewers Ask:**
+- Why not just use globals? — Every task runs in its own process, possibly on another machine. Only XCom, storage or the state store crosses that boundary.
+- What is the 3.3 task state store for? — Key/value state that persists across retries and runs, such as a watermark. XComs, by contrast, belong to one run.
+
+---
+
+### Q547. What are pools, and how do you use them to protect a shared system?
+**ID:** AF-29
+**Topic:** Airflow > Pools
+**Level:** Beginner
+**Frequency:** Common
+**Tags:** `airflow`, `pools`, `concurrency`, `resource-management`
+
+**Short Answer (2–3 lines):**
+A pool is a named number of slots shared by every DAG. A task that names the pool takes `pool_slots` slots, 1 by default, while it runs. When the pool is full, further tasks wait in `scheduled`. Pools cap load on a shared system, such as at most 4 concurrent warehouse rebuilds, whichever DAG starts them.
+
+**Detailed Explanation:**
+- **Default.** Tasks without a pool use `default_pool`, which has 128 slots (`[core] default_pool_task_slot_count`).
+- **Create pools** with `airflow pools set NAME SLOTS "description"`, the REST API, the UI, or your infrastructure code. Pools are deployment state, not DAG code, so manage them like config.
+- **Weighting.** `pool_slots=3` lets one heavy query count as three light ones.
+- **Deferred tasks** don't use pool slots unless the pool has `include_deferred=True`.
+- **Order in a full pool.** Higher `priority_weight` goes first (see Q548).
+- **Mapping.** Every mapped instance takes slots, so a pool is the natural limit for a large fan-out against one system (see Q530).
+
+Pools compared with other limits:
+| Limit | Scope |
+|---|---|
+| Pool | Across all DAGs, per resource |
+| `max_active_tis_per_dag` / `max_active_tis_per_dagrun` | One task (all of its copies) |
+| `max_active_tasks` | One DAG across its runs |
+| `parallelism` | The whole scheduler |
+
+See Q549 for how they combine.
+
+A task that names a pool which doesn't exist won't be scheduled. Create pools before deploying the DAGs that use them, and test that every referenced pool exists in CI (see Q562).
+
+**Example / Code:**
+```bash
+# Runtime: Apache Airflow 3.3 CLI
+airflow pools set warehouse_heavy 4 "Big warehouse queries" --include-deferred
+airflow pools list
+```
+```text
+Pool warehouse_heavy created
+pool            | slots | description           | include_deferred | team_name
+================+=======+=======================+==================+==========
+default_pool    | 128   | Default pool          | False            | None
+warehouse_heavy | 4     | Big warehouse queries | True             | None
+```
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.sdk import dag, task
+
+
+@dag(schedule="0 4 * * *", start_date=datetime(2026, 1, 1), catchup=False)
+def nightly_marts():
+    # Every mapped copy competes for the same 4 slots, across ALL DAGs using this pool.
+    @task(pool="warehouse_heavy", pool_slots=1)
+    def build_mart(name: str):
+        print("building", name)
+
+    # A very heavy statement can take several slots of the same pool.
+    @task(pool="warehouse_heavy", pool_slots=3)
+    def rebuild_fact_sales():
+        print("rebuilding fact_sales")
+
+    build_mart.expand(name=["finance", "marketing", "ops"]) >> rebuild_fact_sales()
+
+
+dag_obj = nightly_marts()
+
+if __name__ == "__main__":
+    run = dag_obj.test()
+    print({(ti.task_id, ti.map_index): (ti.pool, ti.pool_slots) for ti in run.get_task_instances()})
+    print(run.state)
+```
+```text
+{('build_mart', 0): ('warehouse_heavy', 1), ('build_mart', 1): ('warehouse_heavy', 1), ('build_mart', 2): ('warehouse_heavy', 1), ('rebuild_fact_sales', -1): ('warehouse_heavy', 3)}
+success
+```
+
+**Real-World Use Case:**
+Twenty teams' DAGs all ran heavy SQL against one shared warehouse around 04:00, and queued queries regularly hit the warehouse's concurrency limit. A `warehouse_heavy` pool with 6 slots made Airflow queue the excess itself. Teams could see their tasks waiting for a slot in the UI, instead of getting cryptic warehouse timeouts.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Using pools as a per-DAG throttle when `max_active_tasks` or `max_active_runs` is meant for that.
+- Long poke-mode sensors in a small pool, which starve the real work.
+- Referencing a pool in code that was never created in production.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you see pool pressure? — The Pools page shows running, queued and scheduled slots. The `pool.open_slots.<pool>` and `pool.starving_tasks.<pool>` metrics expose it too.
+- Can pools be team-scoped? — In 3.2+ multi-team deployments, pools can be assigned to a team.
+
+---
+
+### Q548. How do priority weights and `weight_rule` decide what runs first?
+**ID:** AF-30
+**Topic:** Airflow > Priority Weights
+**Level:** Intermediate
+**Frequency:** Occasional
+**Tags:** `airflow`, `priority-weight`, `scheduling`, `pools`
+
+**Short Answer (2–3 lines):**
+When slots are scarce, the scheduler queues task instances with the highest *effective* priority weight first. `weight_rule` decides how the effective weight is computed. `downstream`, the default, adds the weights of every task downstream. `upstream` adds the weights of every task upstream. `absolute` uses the task's own `priority_weight` only.
+
+**Detailed Explanation:**
+For a three-task chain `extract >> clean >> load` where `load` has `priority_weight=10` and the others 1 (output below):
+
+| `weight_rule` | extract | clean | load | Effect |
+|---|---|---|---|---|
+| `downstream` (default) | 12 | 11 | 10 | Starts many new pipelines (breadth first) |
+| `upstream` | 1 | 2 | 12 | Finishes pipelines that are already running (depth first) |
+| `absolute` | 1 | 1 | 10 | Only explicit weights count; cheapest to compute |
+
+Points to make:
+- Weights only matter when something is **full**: a pool, `parallelism` or executor slots. With spare capacity, everything ready runs.
+- Weights are compared across DAGs. Use weights to put the CFO dashboard's DAG ahead of an exploratory backfill.
+- `upstream` is good for long DAGs, so half-finished runs don't wait behind brand-new ones. That helps especially during catchup or backfills.
+- `absolute` is cheap and predictable on very large DAGs.
+- A custom `PriorityWeightStrategy`, registered through a plugin, can compute weights from task attributes.
+- Weight doesn't pre-empt anything. A running low-priority task keeps its slot.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.sdk import DAG, WeightRule
+from airflow.providers.standard.operators.empty import EmptyOperator
+
+dags = {}
+for rule in (WeightRule.DOWNSTREAM, WeightRule.UPSTREAM, WeightRule.ABSOLUTE):
+    with DAG(f"weights_{rule.value}", schedule=None, start_date=datetime(2026, 1, 1),
+             default_args={"weight_rule": rule}) as d:
+        extract = EmptyOperator(task_id="extract")
+        clean = EmptyOperator(task_id="clean")
+        load = EmptyOperator(task_id="load", priority_weight=10)   # own weight 10, others 1
+        extract >> clean >> load
+    dags[rule.value] = d
+
+if __name__ == "__main__":
+    for name, d in dags.items():
+        run = d.test()
+        # the effective weight the scheduler stored on each task instance
+        print(f"{name:10}", {ti.task_id: ti.priority_weight for ti in
+                             sorted(run.get_task_instances(), key=lambda t: ["extract", "clean", "load"].index(t.task_id))})
+```
+```text
+downstream {'extract': 12, 'clean': 11, 'load': 10}
+upstream   {'extract': 1, 'clean': 2, 'load': 12}
+absolute   {'extract': 1, 'clean': 1, 'load': 10}
+```
+
+**Real-World Use Case:**
+During a 90-day backfill, the backfill's runs crowded out the daily production loads in a shared pool. The team gave production DAGs `priority_weight=100` with `weight_rule="absolute"` and left the backfill at 1. Production tasks got the next free slot every time, and the backfill used whatever capacity was left.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Expecting priority to speed things up when there is spare capacity.
+- Raising weights everywhere ("everything is priority 100"), which changes nothing.
+- Not knowing the default rule adds up downstream weights, so long DAGs win over short ones.
+
+**Follow-up Questions Interviewers Ask:**
+- Where is weight applied — the scheduler or the executor? — The scheduler orders what it queues. Celery queues and Kubernetes scheduling add their own ordering after that.
+- How do you give a whole DAG priority? — `default_args={"priority_weight": ..., "weight_rule": "absolute"}`.
+
+---

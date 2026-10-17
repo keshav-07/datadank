@@ -1,6 +1,6 @@
 ---
 publishedDate: "2026-10-16"
-updatedDate: "2026-10-16"
+updatedDate: "2026-10-17"
 reviewedDate: "2026-10-16"
 title: "Docker for Data Engineers: Images, Dockerfiles, Volumes and Docker Compose"
 seoTitle: "Docker for Data Engineers: Dockerfile to Compose"
@@ -18,7 +18,7 @@ prerequisites: ["articles:dev-tools/python-environments-packaging", "articles:de
 related: ["articles:spark/deployment-monitoring", "articles:airflow/executors-scaling", "articles:dev-tools/makefiles-pre-commit-data-repos"]
 previous: "articles:dev-tools/python-environments-packaging"
 next: "articles:dev-tools/makefiles-pre-commit-data-repos"
-versionContext: "The pipeline code was run (outside Docker, with a local Unix-socket PGHOST) against PostgreSQL 16 on Python 3.11 and 3.13 (the 3.13 run installed the locked, hashed requirements exactly as the Dockerfile does). The compose file was validated with docker compose config (Docker Compose 5.3) and the Dockerfile linted with hadolint 2.15. No Docker daemon was available in the review environment, so the docker build and run commands are shown without output; their syntax follows the Docker documentation (October 2026)."
+versionContext: "Every command was run with Docker Engine 29.6 and Docker Compose 5.3 on Linux (October 2026): the image built from this Dockerfile (python:3.13-slim-trixie, Python 3.13.16) runs as the non-root app user, and docker compose run loaded the sample CSV into postgres:18 twice with the same 3 rows. The pipeline code was also run outside Docker against PostgreSQL 16 on Python 3.11 and 3.13, and the Dockerfile linted with hadolint 2.15. The review sandbox needed its proxy certificate added to the build, which is not part of the files shown."
 sources:
   - { label: "Docker documentation: What is an image?", url: "https://docs.docker.com/get-started/docker-concepts/the-basics/what-is-an-image/" }
   - { label: "Docker documentation: Multi-stage builds", url: "https://docs.docker.com/build/building/multi-stage/" }
@@ -42,12 +42,19 @@ A container is not a virtual machine: it shares the host's kernel and is an isol
 
 {/* noexec */}
 ```bash
-# noexec: needs a Docker daemon
 docker pull python:3.13-slim-trixie
 docker run --rm python:3.13-slim-trixie python -c "import sys; print(sys.version)"
-docker image ls
+docker image ls python
 docker ps -a            # containers, including stopped ones
 ```
+
+```text
+3.13.16 (main, Oct  6 2026, 02:02:59) [GCC 14.2.0]
+IMAGE                     ID             DISK USAGE   CONTENT SIZE
+python:3.13-slim-trixie   70729b46c69b        178MB         45.3MB
+```
+
+The tag gave Python 3.13.16 when this was run; a later pull of the same tag can give a newer patch release, which is why production images pin a digest.
 
 ## The pipeline we will containerise
 
@@ -191,8 +198,8 @@ Build and run:
 
 {/* noexec */}
 ```bash
-# noexec: needs a Docker daemon
 docker build -t orders-pipeline:0.1.0 .
+docker run --rm --entrypoint id orders-pipeline:0.1.0   # check it does not run as root
 docker run --rm \
   -e RUN_DATE=2026-10-15 \
   -e PGHOST=host.docker.internal -e PGUSER=etl -e PGDATABASE=analytics -e PGPASSWORD \
@@ -200,7 +207,11 @@ docker run --rm \
   orders-pipeline:0.1.0
 ```
 
-`-e PGPASSWORD` with no value passes the variable through from your shell, so the password never appears in the command line or the shell history. `host.docker.internal` reaches the host from a container on Docker Desktop; on Linux add `--add-host=host.docker.internal:host-gateway`. Compose, below, avoids the problem by putting both containers on one network.
+```text
+uid=10001(app) gid=10001(app) groups=10001(app)
+```
+
+The finished image was 222 MB, of which 178 MB is the slim Python base. `-e PGPASSWORD` with no value passes the variable through from your shell, so the password never appears in the command line or the shell history. `host.docker.internal` reaches the host from a container on Docker Desktop; on Linux add `--add-host=host.docker.internal:host-gateway`. Compose, below, avoids the problem by putting both containers on one network.
 
 ## Volumes: where data lives
 
@@ -286,15 +297,28 @@ The everyday commands:
 
 {/* noexec */}
 ```bash
-# noexec: needs a Docker daemon
 docker compose up -d --wait db                     # start Postgres, return once it is healthy
 docker compose run --rm pipeline                   # build if needed, run the load once, remove the container
 docker compose run --rm -e RUN_DATE=2026-10-16 pipeline
-docker compose exec db psql -U etl -d analytics -c "select count(*) from orders"
+docker compose exec db psql -U etl -d analytics -c "select count(*), sum(amount) from orders"
 docker compose logs -f db
 docker compose down                                # stop and remove containers, keep the volume
 docker compose down -v                             # also delete the pgdata volume
 ```
+
+Running the first two commands twice, then the query, gave (Compose progress lines trimmed):
+
+```text
+ Container orders-pipeline-db-1 Healthy
+2026-10-17 13:27:10,583 INFO load_orders loaded 3 rows for 2026-10-15 from /data/orders_2026-10-15.csv
+2026-10-17 13:27:12,395 INFO load_orders loaded 3 rows for 2026-10-15 from /data/orders_2026-10-15.csv
+ count |  sum
+-------+--------
+     3 | 245.49
+(1 row)
+```
+
+The second run replaced the day's rows instead of adding three more, which is the idempotency the loader was written for. Compose finds port 5432 busy if Postgres already runs on your machine; stop it, or publish `127.0.0.1:5433:5432` instead.
 
 This is the local stack most data teams use for development and integration tests: the real database engine, with real SQL, started in seconds and thrown away afterwards.
 

@@ -883,3 +883,472 @@ A team spun up a short-lived Spark cluster for each nightly run. Before setup/te
 - Can one teardown serve several setups? — Yes. Pass a list to `as_teardown(setups=[...])`.
 
 ---
+
+### Q529. How do `partial()` and `expand()` work in dynamic task mapping, and what is a map index?
+**ID:** AF-11
+**Topic:** Airflow > Dynamic Task Mapping
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `airflow`, `dynamic-task-mapping`, `expand`, `map-index`
+
+**Short Answer (2–3 lines):**
+`expand()` creates one task instance per element of a list or dict, and the list can come from an upstream task at run time. `partial()` sets the arguments that stay the same for every copy. Each copy gets a `map_index` (0, 1, 2…), and a downstream task that takes the mapped output receives every result as a lazy sequence.
+
+**Detailed Explanation:**
+Mapping happens at **run time**. The DAG file says "one copy of `export` per region", and the scheduler creates the copies after `list_regions` has pushed its list. The DAG's shape stays fixed, so parsing stays fast (compare Q531).
+
+The building blocks:
+| API | Effect |
+|---|---|
+| `.partial(fmt="parquet")` | Constant arguments, plus task settings such as `retries` or `pool` |
+| `.expand(region=[...])` | One instance per element. Several expand arguments give a **cross product** |
+| `.expand_kwargs([{...}, {...}])` | One instance per dict: explicit pairs, no cross product |
+| `xcom_arg.zip(other)` | Pair two lists by position before expanding |
+| `map_index_template="{{ ... }}"` | Human-readable label in the UI instead of 0/1/2 |
+
+Behaviour to remember:
+- An **empty list** creates no instances, and the mapped task is marked `skipped`.
+- The downstream "reduce" task gets a `LazySelectSequence`. Iterate it or call `list()` on it once; don't index into it over and over.
+- `[core] max_map_length` (1024 by default) caps the number of instances. Cap concurrency with `max_active_tis_per_dag` or `max_active_tis_per_dagrun`.
+- Each instance retries, fails and can be cleared on its own. You can rerun index 2 without touching 0 and 1.
+- Only arguments that are mapped can vary per instance. Task settings such as `retries`, `pool` and `queue` go in `partial()` and apply to all instances.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.sdk import dag, task
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False)
+def mapping_basics():
+    @task
+    def list_regions() -> list[str]:
+        return ["eu", "us", "apac"]          # decided at run time, not parse time
+
+    # partial(): constant for every copy. expand(): one copy per element.
+    @task(map_index_template="{{ task.op_kwargs['region'] }}")   # nicer UI label than 0/1/2
+    def export(region: str, fmt: str) -> int:
+        rows = {"eu": 120, "us": 300, "apac": 80}[region]
+        print(f"export {region} as {fmt}: {rows} rows")
+        return rows
+
+    @task
+    def total(counts) -> None:                # receives a lazy sequence of all results
+        print("total rows:", sum(counts))
+
+    counts = export.partial(fmt="parquet").expand(region=list_regions())
+    total(counts)
+
+    # expand over two lists = cross product; expand_kwargs = explicit pairs
+    @task
+    def copy(src: str, dst: str):
+        print(f"copy {src} -> {dst}")
+
+    copy.expand_kwargs([{"src": "a.csv", "dst": "bronze/a"}, {"src": "b.csv", "dst": "bronze/b"}])
+
+
+dag_obj = mapping_basics()
+
+if __name__ == "__main__":
+    run = dag_obj.test()
+    print(sorted((ti.task_id, ti.map_index, ti.rendered_map_index) for ti in run.get_task_instances()
+                 if ti.map_index >= 0))
+    print(run.state)
+```
+```text
+copy a.csv -> bronze/a
+copy b.csv -> bronze/b
+export us as parquet: 300 rows
+export apac as parquet: 80 rows
+export eu as parquet: 120 rows
+total rows: 500
+[('copy', 0, '0'), ('copy', 1, '1'), ('export', 0, 'eu'), ('export', 1, 'us'), ('export', 2, 'apac')]
+success
+```
+
+**Real-World Use Case:**
+A logistics company got between 3 and 40 carrier files a day. One mapped `load_file` task replaced a nightly job that had looped over the files inside a single task. A bad file now failed only its own map index. The on-call engineer fixed the file and cleared that one instance, and the other loads kept their results. (For choosing between mapping and other designs for this case, see the site's guide on processing a variable number of files.)
+
+**Common Mistakes / Interviewer Red Flags:**
+- Passing two lists to `expand()` and expecting them to be zipped. You get a cross product.
+- Listing files at parse time to build tasks, which runs on every parse.
+- Mapping over 50,000 tiny items. Batch them into chunks first, because every instance carries scheduling overhead.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you pull one instance's XCom? — `ti.xcom_pull(task_ids="export", map_indexes=1)`.
+- Can classic operators be mapped? — Yes, for example `BashOperator.partial(task_id="x").expand(bash_command=[...])`.
+
+---
+
+### Q530. How do you map a whole task group, filter inputs and limit fan-out?
+**ID:** AF-12
+**Topic:** Airflow > Dynamic Task Mapping
+**Level:** Advanced
+**Frequency:** Common
+**Tags:** `airflow`, `dynamic-task-mapping`, `task-groups`, `concurrency`
+
+**Short Answer (2–3 lines):**
+Call `.expand()` on a `@task_group` function, and Airflow creates a copy of the whole sub-pipeline for each input. Copies run depth-first, so each item's second step can start as soon as that item's first step finishes. Shape inputs with an upstream filter task, `XComArg.map()` or `.zip()`. Use `max_active_tis_per_dagrun` and pools so a thousand-way fan-out doesn't take every worker slot.
+
+**Detailed Explanation:**
+**Mapped task groups.** `process.expand(file=files)` maps every task in the group with the same index. `process.validate[2]` therefore belongs to `process.parse[2]`. A downstream task that depends on the group's return value receives every copy's result.
+
+**Shaping the input.**
+| Tool | Runs as | Use for |
+|---|---|---|
+| Filter task returning a shorter list | A real task | Dropping items based on data |
+| A mapped task returning `None` for an element | A real task | That element is left out of the next expansion |
+| `xcom_arg.map(fn)` | Pre-processing inside the downstream task, not a separate task | Reshaping each element, such as building kwargs. `fn` must be a plain function; raise `AirflowSkipException` in it to skip one element, because returning `None` does not work |
+| `a.zip(b)` / `a.concat(b)` | Pre-processing | Pairing or joining lists |
+
+**Limits and back-pressure.**
+- `[core] max_map_length` (1024 by default) is a hard ceiling. If a run would create more instances, the mapped task fails, so chunk the input upstream.
+- `max_active_tis_per_dagrun` limits running copies within one run. `max_active_tis_per_dag` limits them across all runs.
+- A pool (see Q547) protects a shared external system across DAGs.
+- Each instance is a full task: it is scheduled, logged and has its own XCom. Ten thousand instances can slow the scheduler and the UI. Batching 100 items per instance is often better.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.sdk import dag, task, task_group
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False)
+def mapped_groups():
+    @task
+    def list_files() -> list[str]:
+        return ["orders_1.csv", "orders_2.csv", "README.txt", "orders_3.csv"]
+
+    # .map() transforms each element lazily without an extra task; returning None is not
+    # allowed, so filtering is done in a real task instead.
+    @task
+    def only_csv(files: list[str]) -> list[str]:
+        return [f for f in files if f.endswith(".csv")]
+
+    @task_group
+    def process(file: str):
+        @task(max_active_tis_per_dagrun=2)        # at most 2 copies of this task at once
+        def parse(file: str) -> dict:
+            return {"file": file, "rows": len(file) * 10}
+
+        @task
+        def validate(stats: dict) -> dict:
+            if stats["rows"] <= 0:
+                raise ValueError(f"empty file {stats['file']}")
+            return stats
+
+        return validate(parse(file))
+
+    @task
+    def summarise(results) -> None:
+        results = list(results)                   # materialise the lazy sequence once
+        print(f"{len(results)} files, {sum(r['rows'] for r in results)} rows")
+
+    csv_files = only_csv(list_files())
+    upper = csv_files.map(lambda f: f.upper())    # map() on an XComArg: no new task
+    summarise(process.expand(file=upper))
+
+
+dag_obj = mapped_groups()
+
+if __name__ == "__main__":
+    run = dag_obj.test()
+    mapped = sorted({(ti.task_id, ti.map_index) for ti in run.get_task_instances() if ti.map_index >= 0})
+    print(mapped)
+    print(run.state)
+```
+```text
+3 files, 360 rows
+[('process.parse', 0), ('process.parse', 1), ('process.parse', 2), ('process.validate', 0), ('process.validate', 1), ('process.validate', 2)]
+success
+```
+
+**Real-World Use Case:**
+A media company processed each partner's daily delivery with download, virus-scan and load steps. They mapped a task group over the partner list and set `max_active_tis_per_dagrun=5` on the download step, because the partners' SFTP servers throttled them. A slow partner no longer held up the others, since each copy moved to its next step on its own.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Passing an Airflow task to `.map()`. It must be a plain function.
+- Not knowing that going over `max_map_length` fails the task, and assuming it truncates the list.
+- Calling `list()` on the lazy sequence many times inside a loop, which pulls every XCom each time.
+
+**Follow-up Questions Interviewers Ask:**
+- Can you branch inside a mapped task group? — Yes. The branch result applies per map index, so the chosen task_ids must be inside the group.
+- How do you rerun only failed items? — Clear the failed map indexes. Successful copies keep their state and XComs.
+
+---
+
+### Q531. Generating many DAGs from config vs dynamic task mapping: when do you use each?
+**ID:** AF-13
+**Topic:** Airflow > Dynamic DAGs
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `airflow`, `dynamic-dags`, `dag-factory`, `parsing`
+
+**Short Answer (2–3 lines):**
+Generate separate DAGs when units need their own schedule, owner, permissions or history, for example one DAG per tenant. Use dynamic task mapping when the number of items changes from run to run inside one pipeline. When you generate DAGs, the config must be static and cheap to read at parse time, and `get_parsing_context()` lets workers skip building DAGs they don't need.
+
+**Detailed Explanation:**
+| Question | Many generated DAGs | One DAG with mapping |
+|---|---|---|
+| Different schedules or SLAs per unit? | Yes | No |
+| Separate pause, permissions or tags? | Yes | No |
+| Count changes run to run? | Awkward: the DAG list changes | Natural |
+| Parse cost | Grows with the number of DAGs | Constant |
+| Where the item list comes from | Parse time: a YAML/JSON file in the bundle | Run time: an upstream task |
+
+Rules for DAG factories:
+- **The config travels with the code.** Use a YAML file in the bundle, not a database query or an API call. Parse-time I/O runs every 30 seconds or so, and if it fails, DAGs disappear.
+- **Use a plain builder function** that takes Python values and returns a `DAG`. Arguments of an `@dag`-decorated function become DAG **params**, not Python values. Passing a list that way and then calling `.expand()` on it fails at parse time with `expand() got an unexpected type 'DagParam'`.
+- **Keep dag_ids stable.** Renaming a generated id orphans its history.
+- **`get_parsing_context().dag_id`** is set when a worker parses the file to run one task. Skipping the other DAGs then speeds up task start. The DAG processor leaves it as `None` and builds all of them.
+- Libraries such as DAG Factory build DAGs from YAML. They are useful for platform teams, but they still parse as Python.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+# One file -> one DAG per tenant. The config is a static file shipped with the code,
+# so parsing stays fast and deterministic (no API or DB calls at top level).
+from datetime import datetime
+from airflow.sdk import DAG, get_parsing_context, task
+
+TENANTS = {                       # in practice: yaml.safe_load(open(".../tenants.yaml"))
+    "acme":   {"schedule": "0 2 * * *", "tables": ["orders", "invoices"]},
+    "globex": {"schedule": "30 3 * * *", "tables": ["orders"]},
+}
+
+
+def build_dag(tenant: str, cfg: dict) -> DAG:
+    # A plain builder function: arguments of an @dag-decorated function would
+    # become DAG params instead of Python values.
+    with DAG(dag_id=f"export_{tenant}", schedule=cfg["schedule"], start_date=datetime(2026, 1, 1),
+             catchup=False, tags=["export", tenant]) as d:
+        @task
+        def export_table(table: str):
+            print(f"exporting {tenant}.{table}")
+
+        export_table.expand(table=cfg["tables"])
+    return d
+
+
+# A worker running one task sets the parsing context, so it can skip the other DAGs.
+# The DAG processor leaves it unset and builds all of them.
+current = get_parsing_context().dag_id
+for tenant, cfg in TENANTS.items():
+    if current is None or current == f"export_{tenant}":
+        build_dag(tenant, cfg)       # a DAG created at module level is registered
+```
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 — check script outside the DAG folder
+from airflow.dag_processing.dagbag import DagBag
+bag = DagBag(dag_folder="dags")
+for dag_id in sorted(bag.dag_ids):
+    d = bag.get_dag(dag_id)
+    print(dag_id, type(d.timetable).__name__, repr(d.timetable.expression), sorted(d.tags))
+print("errors:", bag.import_errors)
+```
+```text
+export_acme CronTriggerTimetable '0 2 * * *' ['acme', 'export']
+export_globex CronTriggerTimetable '30 3 * * *' ['export', 'globex']
+errors: {}
+```
+
+**Real-World Use Case:**
+A B2B SaaS company ran one export DAG per customer, generated from a `tenants.yaml` file kept in the DAG repo. Each customer had its own schedule in its own time zone, and support staff could pause a single customer's DAG. Inside each DAG, the tables were mapped, because the table list changed whenever a customer enabled a module.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Building the DAG list from a database query at parse time.
+- Generating thousands of near-identical DAGs where one mapped DAG would do.
+- Changing dag_ids on every deploy, for example by including a version or date in them.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you test a factory? — Load the DagBag in CI, assert the expected dag_ids, and check that there are no import errors (see Q560).
+- What happens when a tenant is removed from the YAML? — Its DAG stops being parsed and is marked stale. Its history stays in the DB until someone deletes it.
+
+---
+
+### Q532. How does Jinja templating work in Airflow, and which macros should you know?
+**ID:** AF-14
+**Topic:** Airflow > Templating and Macros
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `airflow`, `jinja`, `macros`, `templating`
+
+**Short Answer (2–3 lines):**
+Attributes listed in an operator's `template_fields` are rendered with Jinja on the worker, just before `execute()`. The run's context is available: `ds`, `data_interval_start`, `logical_date`, `run_id`, `params`, `var`, `conn`, `macros` and more. Templates are how one DAG file processes a different date in every run without changing any code.
+
+**Detailed Explanation:**
+- **What is templated:** only the fields named in `template_fields`, such as `bash_command` or `sql`. A string ending in a `template_ext` extension like `.sql` is loaded as a template file, searched under the DAG folder and `template_searchpath`.
+- **When:** at task run time on the worker. The DAG file only holds the template string, so `{{ ds }}` costs nothing at parse time.
+- **TaskFlow:** name context keys as function arguments (`ds=None`, `data_interval_start=None`), or call `get_current_context()`. You don't need Jinja inside Python.
+
+Context and macros used most:
+| Expression | Value |
+|---|---|
+| `{{ ds }}` / `{{ ds_nodash }}` | Logical date as `YYYY-MM-DD` / `YYYYMMDD` |
+| `{{ data_interval_start }}`, `{{ data_interval_end }}` | Pendulum datetimes for the run's interval |
+| `{{ data_interval_end \| ds }}` | Filters format datetimes (`ds`, `ds_nodash`, `ts`) |
+| `{{ macros.ds_add(ds, -7) }}` | Date arithmetic on `ds` strings |
+| `{{ macros.ds_format(ds, "%Y-%m-%d", "%d/%m/%Y") }}` | Reformat a date string |
+| `{{ params.region }}` | Run parameters (see Q533) |
+| `{{ var.value.k }}`, `{{ conn.id.host }}` | Variables and connections (see Q522) |
+
+Airflow 3 removed the old keys `execution_date`, `next_ds`, `prev_ds`, `yesterday_ds` and `tomorrow_ds`. Use `logical_date` and the `data_interval_*` keys, plus `macros.ds_add` when you need date arithmetic. Templates render to strings by default. Set `render_template_as_native_obj=True` on the DAG, or on a single operator since 3.2, to get Python lists and dicts back.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime, timezone
+from airflow.sdk import dag, task
+from airflow.providers.standard.operators.bash import BashOperator
+
+
+def fiscal_quarter(d) -> str:              # a custom macro: plain Python
+    return f"FY{d.year}Q{(d.month - 1) // 3 + 1}"
+
+
+@dag(
+    schedule="0 6 * * *",
+    start_date=datetime(2026, 1, 1),
+    catchup=False,
+    user_defined_macros={"fiscal_quarter": fiscal_quarter},
+)
+def templating_demo():
+    BashOperator(
+        task_id="export",
+        # Rendered on the worker just before execute(); the DAG file only holds the string.
+        bash_command=(
+            "echo ds={{ ds }} "
+            "start={{ data_interval_start | ds }} "
+            "week_ago={{ macros.ds_add(ds, -7) }} "
+            "compact={{ ds_nodash }} "
+            "fq={{ fiscal_quarter(data_interval_start) }} "
+            "run={{ run_id }}"
+        ),
+    )
+
+    @task
+    def show_context(ds=None, data_interval_start=None, data_interval_end=None):
+        # TaskFlow: name the context keys you need as arguments
+        print("ds:", ds, "| interval:", data_interval_start, "->", data_interval_end)
+
+    @task
+    def removed_keys(**context):
+        print("has yesterday_ds:", "yesterday_ds" in context, "| has execution_date:", "execution_date" in context)
+
+    show_context() >> removed_keys()
+
+
+dag_obj = templating_demo()
+
+if __name__ == "__main__":
+    print(dag_obj.test(logical_date=datetime(2026, 5, 20, 6, tzinfo=timezone.utc)).state)
+```
+```text
+ds: 2026-05-20 | interval: 2026-05-20 06:00:00+00:00 -> 2026-05-20 06:00:00+00:00
+... ds=2026-05-20 start=2026-05-20 week_ago=2026-05-13 compact=20260520 fq=FY2026Q2 run=manual__2026-10-17T13:42:04.945864+00:00
+has yesterday_ds: False | has execution_date: False
+success
+```
+The interval has zero length because a cron string in Airflow 3 uses `CronTriggerTimetable` by default (see Q535).
+
+**Real-World Use Case:**
+A warehouse load used `sql="sql/load_orders.sql"`, and the SQL file filtered on `'{{ data_interval_start }}' <= order_ts AND order_ts < '{{ data_interval_end }}'`. Clearing any past run reloaded exactly that window. The team reviewed the rendered SQL in the UI's "Rendered Template" tab before running backfills.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Using `{{ ds }}` in a field that isn't in `template_fields`, which leaves the literal braces in the output.
+- Building dates with `datetime.now()` in Python instead of using the run's interval.
+- Using removed 2.x keys such as `execution_date` or `yesterday_ds` in Airflow 3.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you template a field on a custom operator? — Add its attribute name to `template_fields` (see Q521).
+- Where do you see the rendered values? — The task instance's Rendered Template view, or `airflow tasks render`.
+
+---
+
+### Q533. How do Params work, and how do you trigger a DAG with validated inputs?
+**ID:** AF-15
+**Topic:** Airflow > Params
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `airflow`, `params`, `manual-runs`, `validation`
+
+**Short Answer (2–3 lines):**
+`params` declares typed, JSON-Schema-validated inputs with defaults on a DAG or task. A manual trigger, the API or `dag_run.conf` can override them, and invalid values are rejected before the run is created. Tasks read them as `params` in the context or as `{{ params.x }}` in templates. The trigger form in the UI is generated from them.
+
+**Detailed Explanation:**
+- **Declare:** `Param(default, type=..., enum=..., minimum=..., maximum=..., description=...)`. Types follow JSON Schema: `string`, `integer`, `number`, `boolean`, `array`, `object` and `null`, plus formats such as `date`.
+- **Override:** the trigger form, `airflow dags trigger --conf '{...}'`, the REST API or `TriggerDagRunOperator(conf=...)`. With `[core] dag_run_conf_overrides_params = True` (the default), conf values replace the defaults.
+- **Validate:** values are checked against the schema when the run is created. A scheduled run uses the defaults, so every default must be valid.
+- **Read:** `params["region"]` in TaskFlow, or `{{ params.region }}` in templates. Task-level params merge over DAG-level ones.
+
+Params versus other inputs:
+| Input | Use for |
+|---|---|
+| Params | Run-scoped options: reprocess a region, run dry |
+| Variables | Environment settings that are the same for every run |
+| Connections | Credentials |
+| XCom | Values produced during the run |
+
+Good practice: give every param a safe default, so scheduled runs need no conf. Use `enum` for choices. Document params with `description`, which appears in the trigger form. Treat conf as untrusted user input: never paste it straight into SQL; bind it as a query parameter or check it against an allow-list.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.sdk import Param, dag, task
+
+
+@dag(
+    schedule=None,
+    start_date=datetime(2026, 1, 1),
+    catchup=False,
+    params={
+        "region": Param("eu", type="string", enum=["eu", "us", "apac"]),
+        "lookback_days": Param(1, type="integer", minimum=1, maximum=31),
+        "dry_run": Param(False, type="boolean", description="Log the SQL only"),
+        "tables": Param(["orders"], type="array", items={"type": "string"}),
+    },
+)
+def reprocess_region():
+    @task
+    def plan(params=None):
+        print(f"region={params['region']} lookback={params['lookback_days']} "
+              f"dry_run={params['dry_run']} tables={params['tables']}")
+
+    plan()
+
+
+dag_obj = reprocess_region()
+
+if __name__ == "__main__":
+    print(dag_obj.test().state)                                    # defaults
+    print(dag_obj.test(run_conf={"region": "us", "lookback_days": 7,
+                                 "tables": ["orders", "refunds"]}).state)
+    try:
+        dag_obj.test(run_conf={"lookback_days": 90})
+    except Exception as e:
+        print(type(e).__name__, "->", str(e).splitlines()[0])
+```
+```text
+region=eu lookback=1 dry_run=False tables=['orders']
+success
+region=us lookback=7 dry_run=False tables=['orders', 'refunds']
+success
+ParamValidationError -> Invalid input for param lookback_days: 90 is greater than the maximum of 31
+```
+
+**Real-World Use Case:**
+A data team gave its support analysts a "reprocess region" DAG with no schedule. The analysts triggered it from the UI form and picked a region from a drop-down plus a lookback of up to 31 days. The schema blocked a 365-day request that would have overloaded the warehouse, and the engineers no longer had to run CLI commands for these requests.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Reading `dag_run.conf["x"]` directly with no default or validation.
+- Formatting conf values straight into SQL strings.
+- Using Variables as run inputs. A Variable is shared by every run.
+
+**Follow-up Questions Interviewers Ask:**
+- Can a scheduled run receive params? — Only the defaults. Params are meant for manual or API-triggered runs.
+- How do you pass params to a downstream DAG? — `TriggerDagRunOperator(conf={...})`, which the target validates against its own params (see Q542).
+
+---

@@ -27,7 +27,7 @@ Design a class that is created with an integer `k` and an initial list of number
 
 This is widely known as LeetCode 703 (Kth Largest Element in a Stream). It is the simplest "keep the top k" heap problem.
 
-Constraints for this version: `1 <= k <= 10,000`, the initial list has 0 to 10,000 values, and there are up to 10,000 calls to `add`.
+The initial list may be shorter than `k` (even empty), and `add` can be called many thousands of times, so each call should cost far less than O(n).
 
 ## Examples
 

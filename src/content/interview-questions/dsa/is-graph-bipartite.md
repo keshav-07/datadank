@@ -26,8 +26,8 @@ You get an undirected graph as an adjacency list: `graph[u]` lists the neighbour
 self-loops or repeated edges, and the graph may be disconnected. Decide whether the vertices can be split into two
 groups so that every edge has one end in each group.
 
-This is LeetCode 785, Is Graph Bipartite?. Assume up to 100 vertices; the methods below are linear, so the limit is
-generous.
+This is LeetCode 785, Is Graph Bipartite?. Interview graphs are small, and the methods below are linear, so size is
+not a concern.
 
 ## Examples
 

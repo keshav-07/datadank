@@ -25,8 +25,8 @@ next: "interview-questions:dsa/combination-sum"
 You get a string of English letters and digits. You may switch any letter to lower or upper case independently.
 Return every distinct string you can make this way, in any order. Digits never change.
 
-This is LeetCode 784, Letter Case Permutation. Assume the string has at most 12 characters, so there are at most
-4,096 results. It is a close cousin of [Subsets](/interview/dsa/subsets/): each letter is an independent binary
+This is LeetCode 784, Letter Case Permutation. Strings are short (around a dozen characters), so there are at most
+a few thousand results. It is a close cousin of [Subsets](/interview/dsa/subsets/): each letter is an independent binary
 choice.
 
 ## Examples

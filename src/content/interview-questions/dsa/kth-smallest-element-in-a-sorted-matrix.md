@@ -26,7 +26,7 @@ You are given an `n x n` grid of integers in which each row and each column is s
 
 This is LeetCode 378, Kth Smallest Element in a Sorted Matrix. It is a showcase for binary search on the answer where the answer is a value, not an index.
 
-Assume `n` up to 300 and values within the 32-bit signed range.
+Grids can have tens of thousands of cells and values may be negative, so the value range for a binary search spans at most about 2^32.
 
 ## Examples
 

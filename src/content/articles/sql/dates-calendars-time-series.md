@@ -22,7 +22,7 @@ sources:
   - { label: "PostgreSQL documentation: Set returning functions (generate_series)", url: "https://www.postgresql.org/docs/16/functions-srf.html" }
   - { label: "SQL Server documentation: GENERATE_SERIES", url: "https://learn.microsoft.com/en-us/sql/t-sql/functions/generate-series-transact-sql" }
   - { label: "SQL Server documentation: DATETRUNC", url: "https://learn.microsoft.com/en-us/sql/t-sql/functions/datetrunc-transact-sql" }
-  - { label: "BigQuery documentation: Date functions", url: "https://cloud.google.com/bigquery/docs/reference/standard-sql/date_functions" }
+  - { label: "BigQuery documentation: Date functions", url: "https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/date_functions" }
 versionContext: "Examples run on PostgreSQL 16 against a generated, deterministic dataset; the range() example runs on DuckDB 1.5; the Spark SQL interval frame was checked on PySpark 4.2. Snowflake, BigQuery, SQL Server and MySQL variants were not executed."
 ---
 

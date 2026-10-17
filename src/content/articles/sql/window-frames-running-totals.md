@@ -22,7 +22,7 @@ sources:
   - { label: "PostgreSQL documentation: Window function calls and frame clauses", url: "https://www.postgresql.org/docs/16/sql-expressions.html" }
   - { label: "PostgreSQL documentation: Window functions (CUME_DIST, PERCENT_RANK)", url: "https://www.postgresql.org/docs/16/functions-window.html" }
   - { label: "PostgreSQL documentation: Ordered-set aggregate functions (PERCENTILE_CONT)", url: "https://www.postgresql.org/docs/16/functions-aggregate.html" }
-  - { label: "BigQuery documentation: Navigation functions (PERCENTILE_CONT)", url: "https://cloud.google.com/bigquery/docs/reference/standard-sql/navigation_functions" }
+  - { label: "BigQuery documentation: Navigation functions (PERCENTILE_CONT)", url: "https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/navigation_functions" }
   - { label: "Snowflake documentation: Window function syntax and usage", url: "https://docs.snowflake.com/en/sql-reference/functions-window-syntax" }
 versionContext: "Examples run on PostgreSQL 16; the MEDIAN and QUALIFY-free percentile example runs on DuckDB 1.5. the Spark SQL interval-frame note was checked on PySpark 4.2. SQL Server, Snowflake and BigQuery syntax is shown for comparison and was not executed."
 ---

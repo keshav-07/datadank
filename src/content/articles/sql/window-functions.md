@@ -25,7 +25,7 @@ sources:
   - { label: "PostgreSQL documentation: Window functions reference", url: "https://www.postgresql.org/docs/16/functions-window.html" }
   - { label: "PostgreSQL documentation: Window function calls (syntax and frames)", url: "https://www.postgresql.org/docs/16/sql-expressions.html" }
   - { label: "Snowflake documentation: Window function syntax and usage", url: "https://docs.snowflake.com/en/sql-reference/functions-window-syntax" }
-  - { label: "BigQuery documentation: Window function calls", url: "https://cloud.google.com/bigquery/docs/reference/standard-sql/window-function-calls" }
+  - { label: "BigQuery documentation: Window function calls", url: "https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/window-function-calls" }
 versionContext: "Examples run on PostgreSQL 16; QUALIFY and IGNORE NULLS examples run on DuckDB 1.5. Notes on Snowflake, BigQuery and SQL Server were not executed."
 ---
 

@@ -28,7 +28,7 @@ sources:
   - { label: "Python Packaging User Guide: pylock.toml specification", url: "https://packaging.python.org/en/latest/specifications/pylock-toml/" }
   - { label: "Python Packaging User Guide: Externally managed environments", url: "https://packaging.python.org/en/latest/specifications/externally-managed-environments/" }
   - { label: "uv documentation: Locking and syncing", url: "https://docs.astral.sh/uv/concepts/projects/sync/" }
-  - { label: "pip-tools documentation", url: "https://pip-tools.readthedocs.io/en/stable/" }
+  - { label: "pip-tools documentation", url: "https://pip-tools.pypa.io/en/stable/" }
 ---
 
 A pipeline that ran yesterday fails today with an `ImportError` nobody can reproduce locally. The code did not change; a dependency did. Most "works on my machine" problems in Python come from three places: a different Python version, a different set of installed packages, or packages installed in the wrong place. Virtual environments fix the third, lock files fix the second, and pinning the interpreter (or the container image, in the next lesson) fixes the first.
@@ -262,7 +262,7 @@ For tools that only read requirements files, `uv export --format requirements-tx
 
 ## Locking with pip-tools
 
-[pip-tools](https://pip-tools.readthedocs.io/) does the same job with plain pip: you edit `requirements.in` (abstract), `pip-compile` writes `requirements.txt` (locked), and `pip-sync` makes an environment match it exactly.
+[pip-tools](https://pip-tools.pypa.io/) does the same job with plain pip: you edit `requirements.in` (abstract), `pip-compile` writes `requirements.txt` (locked), and `pip-sync` makes an environment match it exactly.
 
 ```bash
 echo "requests>=2.31,<3" > requirements.in

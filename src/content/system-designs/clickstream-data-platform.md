@@ -77,7 +77,7 @@ sources:
   - { label: "PostgreSQL documentation: window functions", url: "https://www.postgresql.org/docs/current/tutorial-window.html" }
   - { label: "Apache Spark: Structured Streaming programming guide", url: "https://spark.apache.org/docs/latest/streaming/index.html" }
   - { label: "Confluent Schema Registry: schema evolution and compatibility", url: "https://docs.confluent.io/platform/current/schema-registry/fundamentals/schema-evolution.html" }
-  - { label: "Delta Lake documentation: optimizations", url: "https://docs.delta.io/latest/optimizations-oss.html" }
+  - { label: "Delta Lake documentation: optimizations", url: "https://docs.delta.io/optimizations-oss/" }
 ---
 
 ## Approach

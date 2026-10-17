@@ -16,7 +16,7 @@ followUps: ["Why does code that uses sparkContext fail on serverless compute?", 
 related: ["articles:databricks/workspace-jobs-lakehouse", "articles:databricks/databricks-for-data-engineers", "articles:spark/apache-spark-architecture"]
 sources:
   - {"label": "Databricks documentation: Compute", "url": "https://docs.databricks.com/aws/en/compute/"}
-  - {"label": "Databricks documentation: Access modes", "url": "https://docs.databricks.com/aws/en/compute/access-mode-limitations"}
+  - {"label": "Databricks documentation: Access modes", "url": "https://docs.databricks.com/aws/en/compute/standard-limitations"}
   - {"label": "Databricks documentation: SQL warehouse types", "url": "https://docs.databricks.com/aws/en/compute/sql-warehouse/warehouse-types"}
 versionContext: "Describes Databricks compute as documented in October 2026 (standard and dedicated access modes were previously called shared and single user). Not executed: needs a Databricks workspace."
 ---

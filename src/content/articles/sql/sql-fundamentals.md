@@ -25,7 +25,7 @@ sources:
   - { label: "SQL Server documentation: TOP (Transact-SQL)", url: "https://learn.microsoft.com/en-us/sql/t-sql/queries/top-transact-sql" }
   - { label: "SQL Server documentation: ORDER BY clause with OFFSET and FETCH", url: "https://learn.microsoft.com/en-us/sql/t-sql/queries/select-order-by-clause-transact-sql" }
   - { label: "Snowflake documentation: ORDER BY", url: "https://docs.snowflake.com/en/sql-reference/constructs/order-by" }
-  - { label: "BigQuery documentation: Query syntax", url: "https://cloud.google.com/bigquery/docs/reference/standard-sql/query-syntax" }
+  - { label: "BigQuery documentation: Query syntax", url: "https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/query-syntax" }
 versionContext: "Examples run on PostgreSQL 16. SQL Server, MySQL, Snowflake and BigQuery variants are shown for comparison and were not executed."
 ---
 

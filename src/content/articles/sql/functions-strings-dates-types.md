@@ -24,7 +24,7 @@ sources:
   - { label: "PostgreSQL documentation: Mathematical functions and operators", url: "https://www.postgresql.org/docs/16/functions-math.html" }
   - { label: "PostgreSQL documentation: System information functions (pg_input_is_valid)", url: "https://www.postgresql.org/docs/16/functions-info.html" }
   - { label: "SQL Server documentation: Date and time data types and functions", url: "https://learn.microsoft.com/en-us/sql/t-sql/functions/date-and-time-data-types-and-functions-transact-sql" }
-  - { label: "BigQuery documentation: Date functions", url: "https://cloud.google.com/bigquery/docs/reference/standard-sql/date_functions" }
+  - { label: "BigQuery documentation: Date functions", url: "https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/date_functions" }
 versionContext: "Examples run on PostgreSQL 16; the TRY_CAST example runs on DuckDB 1.5. Function names for MySQL, SQL Server, Snowflake and BigQuery are listed for comparison and were not executed."
 ---
 

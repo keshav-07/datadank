@@ -20,7 +20,7 @@ next: "articles:sql/joins"
 sources:
   - { label: "PostgreSQL documentation: Combining queries (UNION, INTERSECT, EXCEPT)", url: "https://www.postgresql.org/docs/16/queries-union.html" }
   - { label: "MySQL documentation: Set operations with UNION, INTERSECT and EXCEPT", url: "https://dev.mysql.com/doc/refman/8.4/en/set-operations.html" }
-  - { label: "BigQuery documentation: Query syntax (set operators)", url: "https://cloud.google.com/bigquery/docs/reference/standard-sql/query-syntax" }
+  - { label: "BigQuery documentation: Query syntax (set operators)", url: "https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/query-syntax" }
 versionContext: "Examples run on PostgreSQL 16. Dialect notes for MySQL, SQL Server, Snowflake, BigQuery and Oracle were not executed."
 ---
 

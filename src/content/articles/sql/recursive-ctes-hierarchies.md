@@ -21,7 +21,7 @@ versionContext: "SQL examples run on PostgreSQL 16.14 (SEARCH and CYCLE clauses 
 sources:
   - { label: "PostgreSQL documentation: WITH queries (common table expressions)", url: "https://www.postgresql.org/docs/current/queries-with.html" }
   - { label: "Snowflake documentation: Querying hierarchical data", url: "https://docs.snowflake.com/en/user-guide/queries-hierarchical" }
-  - { label: "BigQuery documentation: Work with recursive CTEs", url: "https://cloud.google.com/bigquery/docs/recursive-ctes" }
+  - { label: "BigQuery documentation: Work with recursive CTEs", url: "https://docs.cloud.google.com/bigquery/docs/recursive-ctes" }
   - { label: "Databricks documentation: Common table expression (CTE)", url: "https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-qry-select-cte" }
 previous: "articles:sql/top-n-deduplication-scd-queries"
 ---

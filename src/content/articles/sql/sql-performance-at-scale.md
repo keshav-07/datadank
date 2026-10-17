@@ -23,8 +23,8 @@ sources:
   - { label: "PostgreSQL 16 documentation: Window functions", url: "https://www.postgresql.org/docs/16/functions-window.html" }
   - { label: "Snowflake documentation: Estimating the number of distinct values", url: "https://docs.snowflake.com/en/user-guide/querying-approximate-cardinality" }
   - { label: "Snowflake documentation: APPROX_COUNT_DISTINCT", url: "https://docs.snowflake.com/en/sql-reference/functions/approx_count_distinct" }
-  - { label: "BigQuery documentation: HyperLogLog++ functions", url: "https://cloud.google.com/bigquery/docs/reference/standard-sql/hll_functions" }
-  - { label: "BigQuery documentation: Approximate aggregate functions", url: "https://cloud.google.com/bigquery/docs/reference/standard-sql/approximate_aggregate_functions" }
+  - { label: "BigQuery documentation: HyperLogLog++ functions", url: "https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/hll_functions" }
+  - { label: "BigQuery documentation: Approximate aggregate functions", url: "https://docs.cloud.google.com/bigquery/docs/reference/standard-sql/approximate_aggregate_functions" }
   - { label: "Apache Spark documentation: Performance tuning", url: "https://spark.apache.org/docs/latest/sql-performance-tuning.html" }
 ---
 

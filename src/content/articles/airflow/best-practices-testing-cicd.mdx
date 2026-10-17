@@ -6,8 +6,8 @@ technology: ["airflow", "python"]
 topic: ["best-practices", "testing", "ci-cd", "idempotency"]
 difficulty: "Intermediate"
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
 learningObjectives:
   - "Design idempotent tasks with partition overwrites, merges and atomic swaps, and prove it by running them twice"
   - "Recognise expensive top-level code and move it into tasks, templates or static config"
@@ -16,10 +16,11 @@ learningObjectives:
 prerequisites: ["articles:airflow/dag-fundamentals-taskflow", "articles:airflow/operations-backfills-monitoring"]
 related: ["articles:etl-elt/idempotency-in-data-pipelines", "articles:python/idempotent-csv-loader", "interview-questions:data-engineering/idempotent-batch-pipeline"]
 previous: "articles:airflow/operations-backfills-monitoring"
-versionContext: "Examples run on Apache Airflow 3.3.2 with Python 3.11, SQLite 3 (standard library) and a SQLite metadata database. The test functions are written for pytest and were executed by calling them directly, because pytest is not installed in the test environment. The GitHub Actions workflow and DAG bundle configuration were not executed."
+versionContext: "Examples run on Apache Airflow 3.3.2 with Python 3.11, SQLite 3 (standard library) and a SQLite metadata database. The test functions are written for pytest and were executed by calling them directly, because pytest is not installed in the test environment. The DAG versioning demo ran against the local dags-folder bundle; the GitHub Actions workflow and Git DAG bundle configuration were not executed."
 sources:
   - { label: "Apache Airflow documentation: Best practices", url: "https://airflow.apache.org/docs/apache-airflow/stable/best-practices.html" }
   - { label: "Apache Airflow documentation: Dag bundles", url: "https://airflow.apache.org/docs/apache-airflow/stable/administration-and-deployment/dag-bundles.html" }
+  - { label: "Apache Airflow documentation: Dag bundles, default rerun version behavior", url: "https://airflow.apache.org/docs/apache-airflow/stable/administration-and-deployment/dag-bundles.html#configuring-default-rerun-version-behavior" }
   - { label: "Apache Airflow documentation: Dags", url: "https://airflow.apache.org/docs/apache-airflow/stable/core-concepts/dags.html" }
   - { label: "Apache Airflow documentation: Upgrading to Airflow 3", url: "https://airflow.apache.org/docs/apache-airflow/stable/installation/upgrading_to_airflow3.html" }
 ---
@@ -392,12 +393,86 @@ dag_bundle_config_list = [
 - Deploying DAG code and the libraries it needs separately, so for a while the DAG imports a package the workers do not have. Ship them together (one image), or make the DAG tolerate the old version.
 - Different versions in CI and production, so tests pass and parsing fails.
 - Deleting or renaming a `dag_id` in a refactor; history is orphaned and dependants (assets, sensors) break. Treat `dag_id`s as an API.
-- Changing a DAG's structure while runs are in flight. In Airflow 3 runs keep the DAG version they started with when bundles support versioning; with a plain local folder they do not.
+- Changing a DAG's structure while runs are in flight. In Airflow 3 every run keeps the DAG version (structure) it was created with, but only a versioned bundle such as Git also pins the code its tasks execute; see [DAG versioning](#dag-versioning) below.
 - No check after deploy: an import error can sit unnoticed until the morning's runs are missing.
 
 ### In interviews
 
 "How do you deploy DAGs safely?" Describe the pipeline: lint (including Airflow 3 migration rules), pinned installs, DagBag and unit tests, optional integration tests, deployment through an image or a Git DAG bundle, and a post-deploy import-error check. Mention DAG versioning in Airflow 3 and keeping `dag_id`s stable.
+
+## DAG versioning
+
+### What it is
+
+**DAG versioning** (new in Airflow 3.0) means Airflow keeps a history of each DAG's structure instead of only the latest parse. Every DAG run records the **DAG version** it was created with, and the UI shows the graph, code and task list of that version. In Airflow 2 the UI always showed today's DAG, so after a refactor an old run could display tasks that never ran or hide tasks that did.
+
+There are two layers, and interviewers like candidates who separate them:
+
+- **Structure history** (the serialised DAG: tasks, dependencies, arguments) is stored for every bundle type, including a plain local folder.
+- **Code history** (which files a task actually executes) needs a **versioned bundle**. `GitDagBundle` records the commit a run was created with, so its tasks run the code from that commit even if `main` moved on. `LocalDagBundle`, `S3DagBundle` and `GCSDagBundle` do not support versioning: tasks always run the latest files on disk or in the bucket.
+
+### How it works
+
+When the DAG processor parses a file, it compares the new serialised DAG with the latest stored version. If nothing changed, nothing is written. If the structure changed and no run has used the latest version yet, that version is updated in place. If a run already used it, a new version is created and the old run keeps pointing at the old one. The demo shows all three cases (the minimum interval between serialisations is set to zero so the changes are written immediately):
+
+```python
+import uuid
+from airflow.configuration import conf
+from airflow.models.dag_version import DagVersion
+from airflow.models.dagrun import DagRun
+from airflow.providers.standard.operators.empty import EmptyOperator
+from airflow.sdk import DAG
+
+conf.set("core", "min_serialized_dag_update_interval", "0")
+DAG_ID = "versioned_orders_" + uuid.uuid4().hex[:6]
+
+def build(*task_ids):
+    with DAG(DAG_ID, schedule="@daily", start_date=datetime(2026, 1, 1), catchup=False) as d:
+        for task_id in task_ids:
+            EmptyOperator(task_id=task_id)
+    return d
+
+def register(dag):
+    with contextlib.redirect_stdout(io.StringIO()):
+        DagBundlesManager().sync_bundles_to_db()
+        bag = DagBag(dag_folder=tempfile.mkdtemp())
+        bag.dags[dag.dag_id] = dag
+        sync_bag_to_db(bag, "dags-folder", None)
+
+register(build("extract", "load"))
+register(build("extract", "validate"))          # changed before any run: version 1 is updated in place
+first = build("extract", "load")
+register(first)
+print(run_dag(first))                           # a run now uses version 1
+register(build("extract", "load"))              # unchanged: nothing written
+register(build("extract", "validate", "load"))  # changed after a run: version 2 is created
+
+with create_session() as session:
+    for v in session.query(DagVersion).filter_by(dag_id=DAG_ID).order_by(DagVersion.version_number):
+        print("version", v.version_number, "bundle", v.bundle_name, "tasks", sorted(v.serialized_dag.dag.task_dict))
+    for r in session.query(DagRun).filter_by(dag_id=DAG_ID):
+        print("run created with version", r.created_dag_version.version_number)
+```
+
+```text
+('success', {'extract': 'success', 'load': 'success'})
+version 1 bundle dags-folder tasks ['extract', 'load']
+version 2 bundle dags-folder tasks ['extract', 'load', 'validate']
+run created with version 1
+```
+
+**Reruns and backfills.** With a versioned bundle, clearing a run asks whether to rerun with the original or the latest bundle version. The default comes from, in order: the request itself, the DAG's `rerun_with_latest_version` argument, `[core] rerun_with_latest_version`, and finally a fallback of "original version" for clears and "latest version" for backfills (`airflow backfill create --run-on-latest-version / --no-run-on-latest-version`, marked experimental in 3.3). With a local folder there is nothing to choose: the latest code always runs.
+
+### Pitfalls
+
+- Assuming a local or S3 bundle protects in-flight runs from a deploy. Only the recorded structure is versioned; a task that starts after the deploy runs the new code.
+- Rerunning a failed run "to reproduce the bug" with the latest code, or rerunning "to apply the fix" with the original code. Pick the version on purpose; set `rerun_with_latest_version` for DAGs where one answer is always right.
+- Backfilling old dates with today's code (the backfill default) when the schema or logic changed; check that the current code can process those dates, or pass `--no-run-on-latest-version` with a versioned bundle.
+- Expecting versions to keep growing forever: `airflow db clean` can remove old versions, and runs without a version (for example carried over from Airflow 2) always rerun on the latest one.
+
+### In interviews
+
+"What happens to a running DAG when you deploy a change?" A strong answer: the run keeps the DAG version it was created with, so the UI and scheduling follow its original structure; whether its remaining tasks execute old or new *code* depends on the bundle (Git bundles pin the commit, local folders do not). Then mention the rerun choice and the backfill default.
 
 ## Practice questions
 
@@ -459,4 +534,5 @@ A DAG bundle is a source of DAG files that Airflow reads: a local folder, or a G
 - Keep DAG files declarative: no API calls, queries or heavy imports at the top level, because files are parsed constantly.
 - Test in three layers: DagBag integrity and rule tests, unit tests of task logic, and `dag.test()` integration tests.
 - In CI, lint with Airflow-aware rules, install pinned production versions, run the tests, deploy through an image or a Git DAG bundle, and check for import errors afterwards.
+- Airflow 3 records a DAG version for every run; a Git bundle also pins the code, a local folder does not, and reruns and backfills choose between the original and the latest version.
 - Treat `dag_id`s and asset names as interfaces; changing them breaks history and dependants.

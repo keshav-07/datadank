@@ -5,8 +5,8 @@ technology: ["aws", "data-warehousing", "sql"]
 topic: ["redshift", "data-warehouse", "mpp"]
 difficulty: "Intermediate"
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
 learningObjectives:
   - "Describe Redshift's leader node, compute nodes and slices, and how RA3 separates storage from compute"
   - "Choose distribution styles and sort keys for fact and dimension tables"
@@ -14,7 +14,7 @@ learningObjectives:
   - "Keep tables healthy with VACUUM and ANALYZE, and manage concurrency with WLM and concurrency scaling"
   - "Use Spectrum, materialized views and Redshift Serverless where they fit"
 prerequisites: ["articles:aws/athena", "articles:data-warehousing/star-schema"]
-related: ["articles:snowflake/architecture-virtual-warehouses", "articles:data-warehousing/data-warehousing-fundamentals", "system-designs:cloud-data-warehouse-platform"]
+related: ["articles:snowflake/architecture-virtual-warehouses", "articles:data-warehousing/data-warehousing-fundamentals", "system-designs:cloud-data-warehouse-platform", "interview-questions:aws/redshift-distribution-sort-keys"]
 previous: "articles:aws/athena"
 next: "articles:aws/emr"
 versionContext: "Redshift facts checked against the Amazon Redshift documentation in October 2026. Redshift SQL and CLI need a cluster or Serverless workgroup, so they were written from the Redshift documentation and not executed. Redshift is derived from an old PostgreSQL version but differs a lot; the runnable SQL is a PostgreSQL 16 analogue (a BRIN index standing in for zone maps, and a materialized view), labelled as such, and the distribution model is a Python simulation (Python 3.11)."
@@ -22,6 +22,8 @@ sources:
   - { label: "Amazon Redshift: Provisioned clusters", url: "https://docs.aws.amazon.com/redshift/latest/mgmt/working-with-clusters.html" }
   - { label: "Amazon Redshift: Compute capacity for Redshift Serverless", url: "https://docs.aws.amazon.com/redshift/latest/mgmt/serverless-capacity.html" }
   - { label: "Amazon Redshift: Billing for Redshift Serverless", url: "https://docs.aws.amazon.com/redshift/latest/mgmt/serverless-billing.html" }
+  - { label: "Amazon Redshift: Working with data distribution styles", url: "https://docs.aws.amazon.com/redshift/latest/dg/c_choosing_dist_sort.html" }
+  - { label: "Amazon Redshift: Working with sort keys", url: "https://docs.aws.amazon.com/redshift/latest/dg/t_Sorting_data.html" }
   - { label: "Amazon Redshift Concurrency Scaling", url: "https://aws.amazon.com/redshift/features/concurrency-scaling/" }
   - { label: "AWS Big Data Blog: Use Redshift RA3 with managed storage", url: "https://aws.amazon.com/blogs/big-data/use-amazon-redshift-ra3-with-managed-storage-in-your-modern-data-architecture/" }
 ---
@@ -66,6 +68,7 @@ Storage is **columnar**: each column is stored in 1 MB blocks, compressed with a
 
 - Treating Redshift like an OLTP database: single-row `INSERT`s in a loop, frequent `UPDATE`s of individual rows, or relying on unenforced unique keys for de-duplication.
 - Functions that only run on the leader node (some system catalogue functions) fail when mixed with table data.
+- Building on Python UDFs: AWS announced that Redshift no longer supports Python UDFs after 30 June 2026, with enforcement in phases. Use SQL UDFs or Lambda UDFs instead, and migrate existing ones.
 
 **In interviews.** Draw the leader node, compute nodes and slices, and explain that query speed depends on how much data each slice scans and how much moves across the network. That sets up distribution and sort keys.
 
@@ -73,7 +76,7 @@ Storage is **columnar**: each column is stored in 1 MB blocks, compressed with a
 
 **What it is.** RA3 nodes separate compute from storage. Data lives in **Redshift managed storage (RMS)**, backed by S3, while each node keeps hot data in a large local SSD cache. You size the cluster for compute and pay for storage separately.
 
-**How it works.** RA3 node types are `ra3.large`, `ra3.xlplus`, `ra3.4xlarge` and `ra3.16xlarge`. For example, `ra3.xlplus` has 4 vCPUs, 32 GiB of memory and a managed storage quota of 32 TB per node; `ra3.4xlarge` has 12 vCPUs and 96 GiB; `ra3.16xlarge` has 48 vCPUs and 384 GiB, both with 128 TB managed storage quota per node. Older DC2 nodes keep all data on local SSDs, so storage and compute scale together.
+**How it works.** RA3 node types are `ra3.large`, `ra3.xlplus`, `ra3.4xlarge` and `ra3.16xlarge`. For example, `ra3.xlplus` has 4 vCPUs, 32 GiB of memory and a managed storage quota of 32 TB per node; `ra3.4xlarge` has 12 vCPUs and 96 GiB; `ra3.16xlarge` has 48 vCPUs and 384 GiB, both with 128 TB managed storage quota per node. Newer **RG** node types (`rg.large`, `rg.xlarge`, `rg.4xlarge`, `rg.12xlarge`) are Graviton-based, use the same managed storage, and include a data lake query engine that runs on the cluster's own nodes instead of the separate Spectrum fleet; compare them with RA3 for new clusters. Older DC2 nodes keep all data on local SSDs, so storage and compute scale together; AWS still suggests them only for small (under about 1 TB compressed) warehouses that will not grow.
 
 Separating storage enables several features that matter to data engineers:
 
@@ -322,7 +325,7 @@ WHERE s.dt BETWEEN '2026-09-01' AND '2026-09-30'
 GROUP BY c.segment;
 ```
 
-Spectrum is billed by data scanned in S3 (on provisioned clusters), so the same layout rules as Athena apply: Parquet, partitions, filter on partition columns. On Serverless, queries on S3 data are part of RPU usage.
+Spectrum is billed by data scanned in S3 (on provisioned RA3 and DC2 clusters), so the same layout rules as Athena apply: Parquet, partitions, filter on partition columns. On Serverless, queries on S3 data are part of RPU usage, and RG clusters run lake queries on their own compute.
 
 **Pitfalls.**
 

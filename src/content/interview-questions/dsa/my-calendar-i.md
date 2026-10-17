@@ -22,16 +22,16 @@ next: "interview-questions:dsa/generate-parentheses"
 
 ## Problem
 
-Design a calendar object with one method, `book(start, end)`, describing the half-open interval `[start, end)` (it includes `start` but not `end`). If the interval overlaps any booking accepted earlier, reject it and return `False`; otherwise store it and return `True`. Bookings that only touch, such as `[10, 20)` followed by `[20, 30)`, do not overlap. This is LeetCode 729, My Calendar I.
+Design a calendar object with one method, `book(start, end)`, describing the half-open interval `[start, end)` (it includes `start` but not `end`). If the interval overlaps any booking accepted earlier, reject it and return `False`; otherwise store it and return `True`. Bookings that only touch, such as `[40, 55)` followed by `[55, 70)`, do not overlap. This is LeetCode 729, My Calendar I.
 
 ## Examples
 
 ```text
-book(10, 20)  ->  True
-book(15, 25)  ->  False   (15 is inside [10, 20))
-book(20, 30)  ->  True    (touches, does not overlap)
-book(5, 10)   ->  True
-book(5, 15)   ->  False   (rejected bookings are not stored)
+book(40, 55)  ->  True
+book(50, 60)  ->  False   (50 is inside [40, 55))
+book(55, 70)  ->  True    (touches, does not overlap)
+book(30, 40)  ->  True
+book(30, 45)  ->  False   (rejected bookings are not stored)
 ```
 
 ## Approach 1: brute force (check every booking)
@@ -87,14 +87,14 @@ import random
 
 for cls in (CalendarList, CalendarSorted):
     cal = cls()
-    assert cal.book(10, 20) is True
-    assert cal.book(15, 25) is False
-    assert cal.book(20, 30) is True        # touching is fine
-    assert cal.book(5, 10) is True
-    assert cal.book(5, 15) is False
+    assert cal.book(40, 55) is True
+    assert cal.book(50, 60) is False
+    assert cal.book(55, 70) is True        # touching is fine
+    assert cal.book(30, 40) is True
+    assert cal.book(30, 45) is False
     assert cal.book(0, 100) is False       # covers existing bookings
-    assert cal.book(12, 13) is False       # inside an existing booking
-    assert cal.book(30, 31) is True
+    assert cal.book(42, 43) is False       # inside an existing booking
+    assert cal.book(70, 71) is True
 
 random.seed(17)
 for _ in range(300):
@@ -110,7 +110,7 @@ print("ok")
 
 - The intervals are half-open, so the overlap test uses strict `<` on both sides. Using `<=` would reject back-to-back bookings.
 - Do not store rejected bookings; later checks must only see accepted ones.
-- A new booking can swallow an existing one entirely (`[0, 100)` around `[10, 20)`). Checking only whether `start` or `end` falls inside a stored booking misses this case; the two-condition test does not.
+- A new booking can swallow an existing one entirely (`[0, 100)` around `[40, 55)`). Checking only whether `start` or `end` falls inside a stored booking misses this case; the two-condition test does not.
 - In the sorted version, use the neighbour at `i - 1` for the "ends after my start" check and the one at `i` for the "starts before my end" check; mixing them up passes simple tests and fails on adjacent bookings.
 
 ## Where this shows up in data engineering

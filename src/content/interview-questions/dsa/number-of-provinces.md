@@ -28,7 +28,7 @@ cities linked directly or through other cities, with no link to any city outside
 provinces.
 
 This is LeetCode 547, Number of Provinces. It is the matrix form of
-[Number of Connected Components](/interview/dsa/number-of-connected-components/). Assume `n` is at most 200.
+[Number of Connected Components](/interview/dsa/number-of-connected-components/). The matrix is small (a few hundred cities at most), so reading all of it is affordable.
 
 ## Examples
 
@@ -163,7 +163,7 @@ for _ in range(300):
 - The diagonal is always `1`. It does no harm in the DFS (the city is already visited) but skip it in union-find
   loops to save work.
 - Decrement the union-find count only when the roots differ; otherwise a cycle of links would undercount.
-- Recursive DFS is safe for n = 200, but the iterative form avoids recursion limits if the problem grows.
+- Recursive DFS is safe for a few hundred cities, but the iterative form avoids recursion limits if the problem grows.
 - Do not count provinces by counting rows with a `1` off the diagonal: isolated cities are provinces too.
 
 ## Where this shows up in data engineering

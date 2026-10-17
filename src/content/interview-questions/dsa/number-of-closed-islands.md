@@ -27,7 +27,7 @@ A grid holds `0` for land and `1` for water. Note the encoding: it is the revers
 left or right. A closed island is one completely surrounded by water on all four sides, which in practice means none
 of its cells sit on the outer edge of the grid. Return the number of closed islands.
 
-This is LeetCode 1254, Number of Closed Islands. Assume grids of up to 100 by 100.
+This is LeetCode 1254, Number of Closed Islands. Grids are small enough to copy, but a single region can snake across most of the grid.
 
 ## Examples
 

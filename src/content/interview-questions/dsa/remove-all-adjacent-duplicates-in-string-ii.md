@@ -24,7 +24,7 @@ next: "interview-questions:dsa/simplify-path"
 
 You get a string `s` of lowercase letters and an integer `k ≥ 2`. Whenever `k` equal letters stand next to each other, remove that whole block, which joins its left and right neighbours. Keep removing until no block of `k` equal adjacent letters remains, and return the result. This is LeetCode 1209, Remove All Adjacent Duplicates in String II.
 
-As in the k = 2 version, the order of removals does not change the final string. The string can be up to around 100,000 characters and `k` up to around 10,000, so both O(n²) and O(n·k) approaches are too slow.
+As in the k = 2 version, the order of removals does not change the final string. Strings can be long and `k` can be large as well, so both O(n²) and O(n·k) approaches are too slow.
 
 ## Examples
 
@@ -32,7 +32,7 @@ As in the k = 2 version, the order of removals does not change the final string.
 s = "pqqqpp",       k = 3   ->  ""        (remove "qqq" -> "ppp", then remove "ppp")
 s = "abbbaac",      k = 3   ->  "c"       (remove "bbb" -> "aaac", then "aaa")
 s = "aabbaa",       k = 2   ->  ""
-s = "abcd",         k = 2   ->  "abcd"
+s = "abcab",        k = 2   ->  "abcab"   (no equal neighbours)
 s = "aaaa",         k = 3   ->  "a"
 ```
 
@@ -102,7 +102,7 @@ for f in (remove_duplicates_k, remove_k_brute):
     assert f("pqqqpp", 3) == ""
     assert f("abbbaac", 3) == "c"
     assert f("aabbaa", 2) == ""
-    assert f("abcd", 2) == "abcd"
+    assert f("abcab", 2) == "abcab"
     assert f("aaaa", 3) == "a"
     assert f("", 3) == ""
     assert f("aa", 5) == "aa"            # k longer than any run

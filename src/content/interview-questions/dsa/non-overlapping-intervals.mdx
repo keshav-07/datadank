@@ -9,8 +9,8 @@ questionType: ["coding"]
 estimatedMinutes: 12
 interviewRelevance: "High"
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-09"
+reviewedDate: "2026-10-09"
 shortAnswer: "This is interval scheduling in disguise: keep as many non-overlapping intervals as possible, and the answer is n minus that number. Sort by end time and greedily keep each interval that starts at or after the end of the last kept one. Picking the earliest end always leaves the most room for the rest. This is O(n log n) time and O(1) extra space after sorting."
 followUps: ["Why does sorting by start time with the same greedy rule give wrong answers?", "How would you return which intervals to remove?", "How does this relate to the minimum number of meeting rooms problem?"]
 versionContext: "Python 3 solutions verified with assert-based tests"
@@ -27,7 +27,7 @@ Given a list of intervals `[start, end]` with `start < end`, return the minimum 
 
 ```text
 [[1, 4], [2, 3], [3, 6], [5, 7]]   ->  2    (keep [2, 3] and [5, 7])
-[[0, 2], [0, 2], [0, 2]]           ->  2    (keep one copy)
+[[4, 9], [4, 9], [4, 9]]           ->  2    (keep one copy)
 [[1, 3], [3, 5]]                   ->  0    (touching is fine)
 ```
 
@@ -83,7 +83,7 @@ import random
 
 for f in (erase_overlap_intervals, erase_overlap_brute):
     assert f([[1, 4], [2, 3], [3, 6], [5, 7]]) == 2
-    assert f([[0, 2], [0, 2], [0, 2]]) == 2           # duplicates
+    assert f([[4, 9], [4, 9], [4, 9]]) == 2           # duplicates
     assert f([[1, 3], [3, 5]]) == 0                   # touching
     assert f([]) == 0                                 # empty
     assert f([[5, 9]]) == 0                           # single

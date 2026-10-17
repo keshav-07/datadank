@@ -121,7 +121,7 @@ for f in (min_subarray_len, min_subarray_len_brute, min_subarray_len_bisect):
     assert f(3, [1, 1, 1]) == 3              # whole list
     assert f(1, [5]) == 1
     assert f(5, []) == 0                     # empty
-    assert f(7, [2, 3, 1, 2, 4, 3]) == 2     # [4, 3]
+    assert f(8, [1, 3, 2, 6, 1, 4]) == 2     # [2, 6]
 
 random.seed(209)
 for _ in range(500):

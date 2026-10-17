@@ -9,8 +9,8 @@ questionType: ["coding"]
 estimatedMinutes: 20
 interviewRelevance: "High"
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-09"
+reviewedDate: "2026-10-09"
 shortAnswer: "Count the characters t needs. Expand the right edge of a window over s, and track how many distinct required characters currently meet their count. Once all are met, shrink from the left as far as possible while the window stays valid, recording the shortest valid window, then continue expanding. Each index enters and leaves the window at most once, so it runs in O(m + n) time with O(k) space for k distinct characters."
 followUps: ["Why does a single 'formed' counter make the validity check O(1)?", "How would you speed it up when t's characters are rare in s?", "How would you find the shortest window containing all distinct characters of s itself?"]
 versionContext: "Python 3 solutions verified with assert-based tests"
@@ -28,7 +28,7 @@ Characters are case-sensitive. Lengths go up to about 10^5.
 ## Examples
 
 ```text
-s = "XDOYEZODEYXNZ",  t = "XYZ"   ->  "YXNZ"
+s = "MDQAERTMQDRF",  t = "MQR"   ->  "RTMQ"
 s = "aa",             t = "aa"    ->  "aa"
 s = "ab",             t = "bb"    ->  ""      (only one b available)
 ```
@@ -58,11 +58,12 @@ def min_window_brute(s, t):
 
 **Key insight:** for each right edge, the best left edge only moves forward. Expand right until the window is valid, then shrink from the left until it would become invalid. A counter `formed` (how many distinct characters of `t` are satisfied) tells you validity in O(1).
 
-Walkthrough on `s = "XDOYEZODEYXNZ"`, `t = "XYZ"` (need one each of X, Y, Z):
+Walkthrough on `s = "MDQAERTMQDRF"`, `t = "MQR"` (need one each of M, Q, R):
 
-1. Expand to index 5 (`Z`): window `"XDOYEZ"` now holds X, Y, Z. formed = 3. Record length 6. Shrinking past `X` breaks it, so stop and expand again.
-2. Expand to index 10 (`X`): window `"DOYEZODEYX"` is valid again. Shrink: drop D, O (still valid), drop Y? There is another Y at 9, so yes; then E; then Z breaks it. Best window so far still length 6.
-3. Expand to index 12 (`Z`): window from index 6, `"ODEYXNZ"`, is valid. Shrink off O, D, E: `"YXNZ"`, length 4. Dropping Y breaks it. Record 4.
+1. Expand to index 5 (`R`): window `"MDQAER"` now holds M, Q, R. formed = 3. Record length 6. Shrinking past `M` breaks it, so stop and expand again.
+2. Expand to index 7 (`M`): window `"DQAERTM"` is valid again. Shrink: drop D (still valid), then dropping Q breaks it. Best window so far is still length 6.
+3. Expand to index 8 (`Q`): window from index 3, `"AERTMQ"`, is valid. Shrink off A and E: `"RTMQ"`, length 4. Dropping R breaks it. Record 4.
+4. Expand to index 10 (`R`): the shrunk window `"MQDR"` is also length 4, but it is not shorter, so the leftmost answer `"RTMQ"` stays.
 
 ```python
 def min_window(s, t):
@@ -101,7 +102,7 @@ def min_window(s, t):
 import random
 
 for f in (min_window, min_window_brute):
-    assert f("XDOYEZODEYXNZ", "XYZ") == "YXNZ"
+    assert f("MDQAERTMQDRF", "MQR") == "RTMQ"
     assert f("aa", "aa") == "aa"                  # repeated requirement
     assert f("ab", "bb") == ""                    # not enough copies
     assert f("a", "a") == "a"                     # single character

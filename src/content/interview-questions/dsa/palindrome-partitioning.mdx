@@ -1,7 +1,7 @@
 ---
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-09"
+reviewedDate: "2026-10-09"
 title: "Palindrome Partitioning: Split a String into Palindromes by Backtracking"
 seoTitle: "Palindrome Partitioning: Backtracking + DP"
 description: "List every way to cut a string into palindromic pieces using backtracking over cut positions, with a precomputed palindrome table, tests and pitfalls."
@@ -26,14 +26,14 @@ backwards. Every character must belong to exactly one piece, and the pieces keep
 
 This is widely known as LeetCode 131, "Palindrome Partitioning".
 
-Assume a string of up to 16 lowercase letters.
+Strings are short (a dozen or so lowercase letters), because the number of partitions can grow exponentially.
 
 ## Examples
 
 ```text
 "noon"  -> ["n","o","o","n"], ["n","oo","n"], ["noon"]
 "abc"   -> ["a","b","c"]
-"eel"   -> ["e","e","l"], ["ee","l"]
+"eye"   -> ["e","y","e"], ["eye"]
 "z"     -> ["z"]
 ```
 
@@ -73,11 +73,11 @@ Let `pal[i][j]` be true when `s[i..j]` (inclusive) is a palindrome.
 - Recurrence: `pal[i][j] = s[i] == s[j] and pal[i + 1][j - 1]` for longer substrings.
 - Fill order: `i` from the end of the string backwards, so `pal[i + 1][...]` is ready.
 
-For `"eel"` (T marks a palindrome):
+For `"eye"` (T marks a palindrome):
 
-| i \ j | 0 (e) | 1 (e) | 2 (l) |
+| i \ j | 0 (e) | 1 (y) | 2 (e) |
 |---|---|---|---|
-| 0 | T | T | F |
+| 0 | T | F | T |
 | 1 | | T | F |
 | 2 | | | T |
 
@@ -134,7 +134,7 @@ def norm(result):
 for fn in (partition, partition_brute):
     assert norm(fn("noon")) == norm([["n", "o", "o", "n"], ["n", "oo", "n"], ["noon"]])
     assert norm(fn("abc")) == [("a", "b", "c")]
-    assert norm(fn("eel")) == norm([["e", "e", "l"], ["ee", "l"]])
+    assert norm(fn("eye")) == norm([["e", "y", "e"], ["eye"]])
     assert fn("z") == [["z"]]                       # single character
     assert fn("") == [[]]                           # empty string: one empty partition
 

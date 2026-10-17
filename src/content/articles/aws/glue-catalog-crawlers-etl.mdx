@@ -6,8 +6,8 @@ technology: ["aws", "pyspark", "spark"]
 topic: ["glue", "etl", "data-catalog"]
 difficulty: "Intermediate"
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
 learningObjectives:
   - "Explain what the Glue Data Catalog stores and which services read it"
   - "Configure crawlers and manage partitions without full re-crawls"
@@ -15,7 +15,7 @@ learningObjectives:
   - "Chain jobs and crawlers with triggers and workflows"
   - "Choose Glue versions, worker types and execution classes to control cost"
 prerequisites: ["articles:aws/s3-for-data-engineers", "articles:pyspark/dataframes-and-schemas"]
-related: ["articles:spark/partitions-shuffles-skew", "articles:etl-elt/idempotency-in-data-pipelines", "articles:data-warehousing/partitioning-clustering-data-layout"]
+related: ["articles:spark/partitions-shuffles-skew", "articles:etl-elt/idempotency-in-data-pipelines", "articles:data-warehousing/partitioning-clustering-data-layout", "interview-questions:aws/glue-vs-emr-vs-emr-serverless"]
 previous: "articles:aws/lambda-for-data-pipelines"
 next: "articles:aws/athena"
 versionContext: "Glue versions and worker types checked against the AWS Glue documentation in October 2026 (Glue 6.0 is the newest version). The PySpark partition-pruning analogue and the bookmark model run locally on PySpark 4.2 (Python 3.11). Glue scripts using awsglue, and AWS CLI commands, need the Glue runtime and an AWS account, so they were written from the Glue documentation and not executed; they were checked to compile."
@@ -156,7 +156,7 @@ In Glue, `push_down_predicate` filters partitions after listing them from the ca
 
 ## Glue ETL jobs (Spark)
 
-**What it is.** A Glue job runs your Spark (or Ray, or Python shell) code on serverless workers. You choose the Glue version, worker type and number of workers; Glue provisions and tears down the cluster per run.
+**What it is.** A Glue job runs your Spark (or Python shell) code on serverless workers. Glue also had Ray jobs, but AWS put them in maintenance (closed to new customers) on 31 March 2026, so do not start new work on them. You choose the Glue version, worker type and number of workers; Glue provisions and tears down the cluster per run.
 
 **How it works.**
 
@@ -164,8 +164,8 @@ In Glue, `push_down_predicate` filters partitions after listing them from the ca
 |---|---|---|---|
 | 4.0 | 3.3 | 3.10 | Older; check the version support policy for end-of-support dates |
 | 5.0 | 3.5.4 | 3.11 | |
-| 5.1 | 3.5.6 | 3.11 | Iceberg 1.10, Iceberg format v3 support |
-| 6.0 | 4.1.1 | 3.13 | Scala 2.13, Java 17; new Iceberg v3 types work with DataFrames only, not DynamicFrames |
+| 5.1 | 3.5.6 | 3.11 | The default for new jobs that do not set a version; Iceberg 1.10, Iceberg format v3 support |
+| 6.0 | 4.1.1 | 3.13 | Scala 2.13, Java 17, Iceberg 1.11, Delta Lake 4.2; EMRFS removed (S3A is the only S3 connector); new Iceberg v3 types work with DataFrames only, not DynamicFrames |
 
 A **DPU** (data processing unit) is 4 vCPUs and 16 GB of memory. Worker types:
 
@@ -175,8 +175,8 @@ A **DPU** (data processing unit) is 4 vCPUs and 16 GB of memory. Worker types:
 | G.1X | 1 DPU (4 vCPU, 16 GB) | Most batch jobs |
 | G.2X | 2 DPU (8 vCPU, 32 GB) | Memory-heavy transforms, ML transforms |
 | G.4X, G.8X | 4 and 8 DPU | Large joins and aggregations |
-| G.12X, G.16X | 12 and 16 DPU | Very large jobs (Glue 4.0 and later, selected Regions) |
-| R.1X to R.8X | Memory-optimised | Jobs that spill or run out of memory (Glue 4.0 and later, selected Regions) |
+| G.12X, G.16X | 12 and 16 DPU | Very large jobs; higher start-up latency, no Flex |
+| R.1X to R.8X | Memory-optimised | Jobs that spill or run out of memory; higher start-up latency, no Flex |
 
 {/* noexec */}
 ```bash
@@ -193,7 +193,7 @@ aws glue start-job-run --job-name raw-to-curated-orders
 
 - Leaving the job timeout at its default, so a stuck job burns DPU-hours for many hours. Set a timeout from observed runtimes.
 - Too many concurrent runs of the same job writing the same output. Set maximum concurrency to 1 for jobs that are not safe to overlap.
-- Upgrading Glue versions without testing: Spark 4 (Glue 6.0) changes defaults such as ANSI SQL mode.
+- Upgrading Glue versions without testing: Spark 4 (Glue 6.0) changes defaults such as ANSI SQL mode, and Glue 6.0 drops EMRFS and the AWS SDK for Java v1, so jobs or libraries that relied on them need changes.
 
 **In interviews.** Know the DPU definition, the main worker types, and that Glue is serverless Spark billed per DPU-hour. Comparing it with EMR (more control, more operations) is a common follow-up.
 
@@ -389,11 +389,11 @@ Workflows can pass run properties between steps. For anything beyond a chain of 
 
 1. **Right-size workers.** Start with G.1X and a modest number of workers; read the job metrics (executor utilisation, memory, spill) before scaling up.
 2. **Auto Scaling** (`--enable-auto-scaling`) adds and removes workers during a run up to your maximum, so idle stages stop paying for a full cluster.
-3. **Flex execution class** runs non-urgent jobs on spare capacity at a lower rate, with possibly longer start and run times. Good for nightly backfills, not for tight SLAs.
+3. **Flex execution class** runs non-urgent jobs on spare capacity at a lower rate, with possibly longer start and run times, billing each worker only for the time it ran. It needs Glue 3.0 or later and G.1X or G.2X workers. Good for nightly backfills, not for tight SLAs.
 4. **Read less.** Push-down predicates, bookmarks, Parquet instead of JSON, column pruning.
 5. **Fix small files.** Many tiny inputs slow every stage; group them with the `groupFiles` and `groupSize` reader options, and write fewer, larger output files.
 6. **Use the right job type.** A Python shell job (a fraction of a DPU or one DPU) is enough for small API calls or file moves, rather than a Spark cluster.
-7. **Newer versions.** Newer Glue versions often run faster, and AWS announced lower DPU pricing with Glue 6.0; check the pricing page for the current rates per version.
+7. **Newer versions.** Newer Glue versions often run the same job faster, which cuts DPU-hours; check the pricing page for the current rate of each version and worker type.
 8. **Set timeouts and alarms** so failed or stuck jobs do not run for hours.
 
 **Pitfalls.**

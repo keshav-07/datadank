@@ -5,8 +5,8 @@ technology: ["aws", "data-lakes"]
 topic: ["s3", "object-storage", "data-lake"]
 difficulty: "Beginner"
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
 learningObjectives:
   - "Explain how S3 buckets, keys, prefixes and strong consistency work, and why S3 has no real folders"
   - "Choose a storage class and write a lifecycle configuration that respects minimum storage durations"
@@ -14,10 +14,10 @@ learningObjectives:
   - "Configure event notifications, default encryption with SSE-KMS and access points for a shared bucket"
   - "Size multipart uploads within S3's part limits"
 prerequisites: ["articles:aws/aws-for-data-engineers"]
-related: ["articles:data-warehousing/partitioning-clustering-data-layout", "articles:delta-lake/parquet-vs-avro-vs-orc", "articles:data-warehousing/lake-vs-warehouse-vs-lakehouse"]
+related: ["articles:data-warehousing/partitioning-clustering-data-layout", "articles:delta-lake/parquet-vs-avro-vs-orc", "articles:data-warehousing/lake-vs-warehouse-vs-lakehouse", "interview-questions:aws/s3-data-lake-layout", "interview-questions:aws/s3-event-driven-ingestion", "interview-questions:aws/aws-data-platform-cost-optimization"]
 previous: "articles:aws/aws-for-data-engineers"
 next: "articles:aws/iam-for-data-engineers"
-versionContext: "Facts checked against the Amazon S3 documentation in October 2026. Python simulations run on Python 3.11. AWS CLI commands, boto3 calls and JSON configurations were written from the S3 documentation and not executed (no AWS account here); the JSON documents were checked to parse."
+versionContext: "Facts checked against the Amazon S3 documentation in October 2026 (re-checked 16 October 2026: multipart limits, 48.8 TiB maximum object size, event delivery, S3 Select status). Python simulations run on Python 3.11. AWS CLI commands, boto3 calls and JSON configurations were written from the S3 documentation and not executed (no AWS account here); the JSON documents were checked to parse."
 sources:
   - { label: "Amazon S3 User Guide: Understanding and managing storage classes", url: "https://docs.aws.amazon.com/AmazonS3/latest/userguide/storage-class-intro.html" }
   - { label: "Amazon S3 User Guide: Configuring default encryption", url: "https://docs.aws.amazon.com/AmazonS3/latest/userguide/default-bucket-encryption.html" }
@@ -75,7 +75,7 @@ print(list_objects("raw/sales/", "/"))
 - Objects are immutable. "Editing" an object means writing a new object under the same key. You can read a byte range of an object, but not append to or modify part of it (directory buckets in S3 Express One Zone are the exception that supports appends).
 - Since December 2020, S3 gives **strong read-after-write consistency** for every PUT, overwrite, DELETE and LIST, in all Regions, at no extra cost. A reader that starts after a successful write sees that write, and a listing reflects it. Before that, S3 was eventually consistent for overwrites and listings, which is why older Hadoop setups used tools such as EMRFS consistent view. You no longer need them.
 - Performance scales with prefixes. S3 documents a baseline of at least 3,500 PUT/COPY/POST/DELETE and 5,500 GET/HEAD requests per second per partitioned prefix, and scales further as load grows, so spreading heavy request traffic across prefixes raises the ceiling.
-- Objects can be very large. The maximum object size is now 50 TB (raised from 5 TB in December 2025), uploaded with multipart upload.
+- Objects can be very large. The maximum object size is now 50 TB (48.8 TiB, raised from 5 TB in December 2025), uploaded with multipart upload.
 
 {/* noexec */}
 ```bash
@@ -321,7 +321,7 @@ aws s3api put-bucket-notification-configuration --bucket example-lake-1111222233
 - Each destination needs a resource policy that lets S3 send to it (queue policy, topic policy or Lambda permission).
 - Overlapping prefix and suffix rules for the same event type on one bucket are rejected. Use EventBridge when several consumers need the same events.
 
-**In interviews.** Describe S3 to SQS to Lambda (or to a Glue job) as the standard file-arrival pattern, and volunteer the at-least-once and ordering caveats with idempotency as the fix.
+**In interviews.** Describe S3 to SQS to Lambda (or to a Glue job) as the standard file-arrival pattern, and volunteer the at-least-once and ordering caveats with idempotency as the fix. Each event record carries a `sequencer` value; for the same key, the larger sequencer is the later event, which lets a consumer discard a late, older event. The full pattern, with a runnable manifest and merge, is in [S3 event-driven ingestion](/interview/aws/s3-event-driven-ingestion/).
 
 ## Encryption: SSE-S3 and SSE-KMS
 

@@ -27,11 +27,11 @@ Design a stack-like class with two operations. `push(x)` adds an integer. `pop()
 ## Examples
 
 ```text
-push 5, push 7, push 5, push 7, push 4, push 5
-pop  ->  5    (5 occurs three times)
-pop  ->  7    (5 and 7 both occur twice; 7 was pushed more recently)
-pop  ->  5    (now 5 occurs twice and 7 once)
-pop  ->  4    (5, 7 and 4 all occur once; 4 was pushed last)
+push 3, push 9, push 3, push 6, push 9, push 3
+pop  ->  3    (3 occurs three times)
+pop  ->  9    (3 and 9 both occur twice; 9 reached that count more recently)
+pop  ->  3    (now 3 occurs twice, 9 and 6 once)
+pop  ->  6    (3, 9 and 6 all occur once; 6 was pushed last)
 ```
 
 ## Approach 1: brute force (scan on every pop)
@@ -122,9 +122,9 @@ import random
 
 for cls in (FreqStack, FreqStackHeap, FreqStackScan):
     s = cls()
-    for v in (5, 7, 5, 7, 4, 5):
+    for v in (3, 9, 3, 6, 9, 3):
         s.push(v)
-    assert [s.pop() for _ in range(4)] == [5, 7, 5, 4]
+    assert [s.pop() for _ in range(4)] == [3, 9, 3, 6]
     t = cls()
     t.push(1)
     assert t.pop() == 1

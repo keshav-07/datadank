@@ -1,7 +1,7 @@
 ---
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-09"
+reviewedDate: "2026-10-09"
 title: "Rotting Oranges: Minutes to Spread via Level-by-Level Multi-Source BFS"
 seoTitle: "Rotting Oranges: Multi-Source BFS"
 description: "Compute the minutes until every orange rots by running a multi-source BFS from all rotten oranges at once, one level per minute, with tests and pitfalls."
@@ -27,20 +27,20 @@ left, or -1 if some fresh orange can never rot. If there are no fresh oranges at
 
 This is widely known as LeetCode 994, "Rotting Oranges".
 
-Assume up to 10 by 10 cells.
+Grids are small, so the minute-by-minute simulation is affordable for testing, but BFS is the expected answer.
 
 ## Examples
 
 ```text
-1 1 2          minute 1: (0,1),(1,2) rot
-0 1 1          minute 2: (0,0),(1,1) rot
-1 1 0          minute 3: (2,1) rots;  minute 4: (2,0) rots
--> 4
+0 1 1 2        minute 1: (0,2),(1,3) rot;  minute 2: (0,1) rots
+1 1 0 1        minute 3: (1,1) rots;  minute 4: (1,0) rots
+1 0 0 0        minute 5: (2,0) rots
+-> 5
 
-2 1 0
-0 0 1          (1,2) is fresh but walled off -> -1
+2 0 1
+1 0 1          (0,2) and (1,2) are fresh but walled off -> -1
 
-0 2
+2 0 2
 -> 0           (no fresh oranges)
 ```
 
@@ -135,9 +135,9 @@ fresh neighbours left.
 
 ```python
 for fn in (oranges_rotting, oranges_rotting_simulate):
-    assert fn([[1, 1, 2], [0, 1, 1], [1, 1, 0]]) == 4
-    assert fn([[2, 1, 0], [0, 0, 1]]) == -1          # unreachable fresh orange
-    assert fn([[0, 2]]) == 0                         # nothing fresh
+    assert fn([[0, 1, 1, 2], [1, 1, 0, 1], [1, 0, 0, 0]]) == 5
+    assert fn([[2, 0, 1], [1, 0, 1]]) == -1          # unreachable fresh oranges
+    assert fn([[2, 0, 2]]) == 0                      # nothing fresh
     assert fn([[0]]) == 0                            # empty cell only
     assert fn([[1]]) == -1                           # fresh, no rotten source
     assert fn([[2]]) == 0

@@ -26,7 +26,7 @@ You are given an `m x n` grid of integers in which every row is sorted in ascend
 
 This is LeetCode 240, Search a 2D Matrix II. Unlike Search a 2D Matrix, the first value of a row can be smaller than the last value of the row above, so the grid is not one sorted list.
 
-Assume up to 300 rows and 300 columns.
+Grids can have tens of thousands of cells, so checking every cell is the baseline to beat.
 
 ## Examples
 

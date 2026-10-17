@@ -127,7 +127,7 @@ country_code slices used= 3/16  largest/smallest=   4.36  largest slice holds 65
 status       slices used= 3/16  largest/smallest=  29.62  largest slice holds 90% of rows
 ```
 
-With `country_code` as the distribution key, five values land on only three slices (two countries hash to the same slice), thirteen slices sit idle and one slice does about 65% of the work for every scan and join. `customer_id` spreads evenly, and if the main join is on it, the join is also co-located.
+With `country_code` as the distribution key, five values land on only three slices (some countries hash to the same slice), thirteen slices sit idle and one slice does about 65% of the work for every scan and join. `customer_id` spreads evenly, and if the main join is on it, the join is also co-located.
 
 ## Trade-offs and pitfalls
 

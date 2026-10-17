@@ -1,4 +1,5 @@
 ---
+import { TECH_LOGOS } from "../../data/tech-logos";
 /** A fully clickable card. Keep it to one link: no buttons or nested links inside. */
 interface Props {
   href: string;
@@ -26,6 +27,7 @@ const {
   variant = "stack",
 } = Astro.props;
 const metaItems = meta.filter(Boolean) as string[];
+const logo = mono ? TECH_LOGOS[mono] : undefined;
 ---
 
 {variant === "row" ? (
@@ -37,7 +39,18 @@ const metaItems = meta.filter(Boolean) as string[];
     )}
     {mono && (
       <span class="tile__mono" aria-hidden="true">
-        {mono}
+        {logo ? (
+          <img
+            class:list={["tile__logo", { "tile__logo--invert": logo.invertInDark }]}
+            src={logo.src}
+            alt=""
+            width="28"
+            height="28"
+            decoding="async"
+          />
+        ) : (
+          mono
+        )}
       </span>
     )}
     <span class="tile__body">
@@ -60,7 +73,18 @@ const metaItems = meta.filter(Boolean) as string[];
       <span class="tile__top">
         {mono ? (
           <span class="tile__mono" aria-hidden="true">
-            {mono}
+            {logo ? (
+              <img
+                class:list={["tile__logo", { "tile__logo--invert": logo.invertInDark }]}
+                src={logo.src}
+                alt=""
+                width="28"
+                height="28"
+                decoding="async"
+              />
+            ) : (
+              mono
+            )}
           </span>
         ) : (
           eyebrow && <span class="tile__eyebrow">{eyebrow}</span>

@@ -386,6 +386,19 @@
     font-size: var(--fs-sm);
     letter-spacing: -0.02em;
   }
+  .tile__logo {
+    width: 28px;
+    height: 28px;
+    object-fit: contain;
+  }
+  :root[data-theme="dark"] .tile__logo--invert {
+    filter: invert(1);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .tile__logo--invert {
+      filter: invert(1);
+    }
+  }
   .tile__num {
     flex: none;
     display: grid;

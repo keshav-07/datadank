@@ -1,0 +1,121 @@
+---
+publishedDate: "2026-10-16"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
+title: "Developer Tools for Data Engineers: The Day-One Toolkit"
+seoTitle: "Developer Tools for Data Engineers"
+description: "Developer tools for data engineers: the command line, Git, shell scripts, Python environments, Docker and repo automation you need on day one, and in what order."
+technology: ["dev-tools"]
+topic: ["fundamentals", "command-line", "git"]
+difficulty: "Beginner"
+pillar: true
+learningObjectives:
+  - "Know which developer tools a Data Engineer uses daily and why each one exists"
+  - "See how the command line, Git, Python environments and containers fit together in one workflow"
+  - "Follow the lessons in an order where each one builds on the last"
+  - "Use the checklist to judge when you are ready for SQL, Python and orchestration work"
+related: ["articles:dev-tools/command-line-for-data-work", "articles:dev-tools/git-for-data-engineers", "articles:dev-tools/shell-scripting-for-pipelines", "articles:dev-tools/python-environments-packaging", "articles:python/python-for-data-engineering", "articles:sql/sql-fundamentals"]
+next: "articles:dev-tools/command-line-for-data-work"
+versionContext: "The worked example was run with GNU bash 5.2, GNU coreutils 9.4, Git 2.43 and Python 3.11 in a temporary directory on Ubuntu 24.04; the output shown is the real output."
+sources:
+  - { label: "GNU Bash Reference Manual", url: "https://www.gnu.org/software/bash/manual/bash.html" }
+  - { label: "Git documentation", url: "https://git-scm.com/docs" }
+  - { label: "Python documentation: venv", url: "https://docs.python.org/3/library/venv.html" }
+  - { label: "Python Packaging User Guide", url: "https://packaging.python.org/en/latest/" }
+  - { label: "Docker documentation", url: "https://docs.docker.com/" }
+---
+
+Job descriptions for Data Engineers list SQL, Python, Spark and a cloud platform. They rarely list the tools underneath, because they are assumed: a terminal, Git, a working Python environment and Docker. Those assumptions show up on day one (clone the repository, run the pipeline locally, open a pull request) and in interviews through take-home tasks, pairing sessions and questions like "the job passed but the table is empty, what do you check first?".
+
+This course covers that toolkit. It is short on theory and long on commands you will type every week. Every example in it was run, and the output is real.
+
+## What you need on day one, and why
+
+| Tool | What it does for a Data Engineer | Lesson |
+|---|---|---|
+| The command line | Inspect, count, sample and move files of any size; run jobs on remote servers over SSH | [The command line for data work](/dev-tools/command-line-for-data-work/) |
+| Git | Version pipeline code, review changes through pull requests, keep data and secrets out of the repository | [Git for Data Engineers](/dev-tools/git-for-data-engineers/) |
+| Shell scripts | Glue steps together reliably: stop on errors, retry, log, rerun safely; schedule with cron | [Shell scripting for pipelines](/dev-tools/shell-scripting-for-pipelines/) |
+| Python environments | Install the same library versions on a laptop, in CI and in production | [Python environments and packaging](/dev-tools/python-environments-packaging/) |
+| Docker | Package the interpreter, libraries and code into one image; run a local Postgres next to your pipeline | [Docker for Data Engineers](/dev-tools/docker-for-data-engineers/) |
+| Make and pre-commit | One command per task (`make test`), and checks that run before every commit | [Makefiles and pre-commit hooks](/dev-tools/makefiles-pre-commit-data-repos/) |
+
+Each tool answers a question you will be asked in your first weeks:
+
+- **"What is actually in this file?"** The command line answers in seconds, without loading the file into memory: `head`, `wc -l`, `cut | sort | uniq -c`, `jq`.
+- **"What changed, who changed it, and can we undo it?"** Git history, pull requests, tags and `git revert`.
+- **"Why did the job report success when it failed?"** Exit codes and `set -euo pipefail`.
+- **"Why does it work on your laptop and not in production?"** Different Python versions or package versions; lock files and container images remove the difference.
+- **"How do I run this pipeline and its database locally?"** Docker Compose.
+
+## How the lessons fit together
+
+The lessons follow the order in which the tools build on each other:
+
+1. **[The command line](/dev-tools/command-line-for-data-work/)** (Beginner). Navigation, pipes and redirection, the text tools (`grep`, `sed`, `awk`, `sort`, `uniq`, `cut`), `find` and `xargs`, `jq` for JSON, inspecting large files, exit codes, environment variables and SSH. Everything else uses it.
+2. **[Git](/dev-tools/git-for-data-engineers/)** (Beginner). Commits, branches, merge vs rebase, conflicts, pull requests, a `.gitignore` for data projects, tags, and what to do when a secret is committed. From here on, every project you build is a repository.
+3. **[Shell scripting](/dev-tools/shell-scripting-for-pipelines/)** (Intermediate). Turn one-off commands into a script that validates arguments, logs, cleans up, retries, takes a lock and can be rerun safely; then schedule it with cron and see why teams move to an orchestrator.
+4. **[Python environments and packaging](/dev-tools/python-environments-packaging/)** (Intermediate). Virtual environments, `pip`, requirements vs lock files, `pyproject.toml`, uv and pip-tools, and a checklist for "works on my machine".
+5. **[Docker](/dev-tools/docker-for-data-engineers/)** (Intermediate). Images and containers, a multi-stage, non-root Dockerfile for a Python pipeline, volumes, configuration through environment variables, Docker Compose for Postgres plus a pipeline, and what Kubernetes adds.
+6. **[Makefiles and pre-commit hooks](/dev-tools/makefiles-pre-commit-data-repos/)** (Advanced). Tie the repository together so `make test` and `make run` work for everyone, and catch formatting errors, large files and secrets before they are committed.
+
+You do not need to finish this course before starting SQL or Python. A sensible plan is lessons 1 and 2 first (a few evenings), then [SQL](/sql/) and [Python](/python/) alongside lessons 3 to 6.
+
+## Worked example: the toolkit in ten commands
+
+A tiny version of what you will do on a real project: look at a file, start a repository that keeps the data out, and run a script in an isolated environment.
+
+```bash
+git init -q day-one && cd day-one
+printf 'order_id,country,amount\n1001,US,120.50\n1002,DE,35.00\n1003,US,89.99\n' > orders.csv
+head -n 1 orders.csv                                     # 1. command line: what is in the file?
+tail -n +2 orders.csv | cut -d, -f2 | sort | uniq -c
+printf 'orders.csv\n.venv/\n.env\n' > .gitignore           # 2. Git: version the code, never the data
+cat > count_rows.py <<'EOF'
+import csv, sys
+with open(sys.argv[1], newline="") as f:
+    print(sum(1 for _ in csv.DictReader(f)), "rows")
+EOF
+git add .gitignore count_rows.py && git commit -q -m "Add row counter" && git log --oneline
+python3 -m venv .venv                                    # 3. an isolated Python environment
+.venv/bin/python count_rows.py orders.csv; echo "exit=$?"
+git status --short
+```
+
+```text
+order_id,country,amount
+      1 DE
+      2 US
+3ef6704 Add row counter
+3 rows
+exit=0
+```
+
+The last command prints nothing: the working tree is clean because the data file and the virtual environment are ignored. The script's exit code (`0`) is what a scheduler would read to decide whether the run succeeded. The rest of the course takes each of these steps and makes it production-grade: a real `.gitignore` and pull requests, a locked dependency set, a container image, a script that fails loudly and can be rerun.
+
+## What "good" looks like
+
+You are ready to move on when you can do these without looking anything up:
+
+- Report a file's size, row count, header, last line and the distribution of one column, from the terminal.
+- Explain what `2>&1`, `|` and `$?` do, and why scripts start with `set -euo pipefail`.
+- Create a branch, commit, rebase on `main`, resolve a conflict and open a pull request.
+- Say what you would do, in order, if you pushed a database password.
+- Create a virtual environment from a lock file, and explain why pinning only direct dependencies is not enough.
+- Build and run a container for a Python job, and start it next to Postgres with Docker Compose.
+
+## Common mistakes when starting out
+
+- Opening large files in an editor or spreadsheet instead of sampling them with `head`, `tail` and `shuf`.
+- Running `git add .` before writing a `.gitignore`, and committing data extracts or `.env` files.
+- Installing packages into the system Python, or with a `pip` that belongs to a different interpreter.
+- Treating Docker as a virtual machine and storing important data inside a container instead of a volume.
+- Trusting "the job finished" without checking exit codes and row counts.
+
+## In an interview
+
+These tools are rarely a named interview round, but they are tested constantly. Take-home tasks are judged on whether the repository runs from a clean clone (`README`, lock file, `make test` or a Compose file), with no data or credentials committed. Pairing rounds show whether you can inspect a file or read a log quickly. Common direct questions: merge vs rebase, what a virtual environment is, image vs container, how you would handle a committed secret, and why a script reported success after a failure. Answering with the exact commands, and with the trade-offs, is what separates someone who has used the tools from someone who has read about them.
+
+## Key takeaway
+
+The command line, Git, reproducible Python environments and containers are the ground every pipeline stands on. Learn the command line and Git first, then make your scripts robust, your dependencies locked and your runtime containerised. Start with [the command line for data work](/dev-tools/command-line-for-data-work/).

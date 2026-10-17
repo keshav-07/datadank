@@ -12,8 +12,8 @@ shortAnswer: "Recurse from the root. If the current node is None, p or q, return
 followUps: ["How does the solution change if p or q might not be in the tree?", "How is it simpler for a binary search tree?", "How would you answer many LCA queries on the same tree quickly?", "What if each node has a parent pointer?"]
 versionContext: "Python 3 solutions verified with assert-based tests"
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-09"
+reviewedDate: "2026-10-09"
 practice: {"platform": "LeetCode", "number": 236, "title": "Lowest Common Ancestor of a Binary Tree", "url": "https://leetcode.com/problems/lowest-common-ancestor-of-a-binary-tree/"}
 previous: "interview-questions:dsa/construct-tree-from-preorder-and-inorder"
 next: "interview-questions:dsa/binary-tree-maximum-path-sum"
@@ -25,28 +25,28 @@ You are given the root of a binary tree (not necessarily a search tree) and two 
 
 This is widely known as LeetCode 236 (Lowest Common Ancestor of a Binary Tree). The BST version, which can use ordering, is a separate problem.
 
-Constraints for this version: 2 to 100,000 nodes, unique values, and `p` and `q` both exist.
+Values are unique and both `p` and `q` are guaranteed to be in the tree, which can be large and deep.
 
 ## Examples
 
-Tree used below (level order `[20, 8, 22, 4, 12, None, 30, None, None, 10, 14]`):
+Tree used below (level order `[50, 17, 60, 9, 23, None, 75, None, None, 19, 28]`):
 
 ```text
-          20
+          50
         /    \
-       8      22
-      / \       \
-     4   12      30
+      17      60
+     /  \       \
+    9    23      75
         /  \
-      10    14
+      19    28
 ```
 
 | `p` | `q` | LCA | Why |
 |---|---|---|---|
-| 10 | 14 | 12 | siblings under 12 |
-| 4 | 14 | 8 | on different sides of 8 |
-| 12 | 14 | 12 | a node is its own ancestor |
-| 10 | 30 | 20 | in different subtrees of the root |
+| 19 | 28 | 23 | siblings under 23 |
+| 9 | 28 | 17 | on different sides of 17 |
+| 23 | 28 | 23 | a node is its own ancestor |
+| 19 | 75 | 50 | in different subtrees of the root |
 
 ## Approach 1: brute force
 
@@ -88,17 +88,17 @@ It is easy to explain and O(n) visits, but copying paths costs up to O(n * h) me
 
 If the current node is `p` (or `q`), you can return it immediately without searching below: either the other node is beneath it, in which case this node is the LCA, or the other node is elsewhere, and an ancestor will see results from both sides.
 
-**Walkthrough** for `p = 4`, `q = 14`:
+**Walkthrough** for `p = 9`, `q = 28`:
 
 | Node | Left result | Right result | Returns |
 |---|---|---|---|
-| 4 | | | itself (it is `p`) |
-| 10 | None | None | None |
-| 14 | | | itself (it is `q`) |
-| 12 | None (from 10) | 14 | 14 |
-| 8 | 4 | 14 | **8**: both sides found something |
-| 22 | None | None (30 has neither) | None |
-| 20 | 8 | None | 8 |
+| 9 | | | itself (it is `p`) |
+| 19 | None | None | None |
+| 28 | | | itself (it is `q`) |
+| 23 | None (from 19) | 28 | 28 |
+| 17 | 9 | 28 | **17**: both sides found something |
+| 60 | None | None (75 has neither) | None |
+| 50 | 17 | None | 17 |
 
 ### Recursive
 
@@ -171,8 +171,8 @@ def find(root, val):
             stack.extend([node.left, node.right])
     return None
 
-tree = build_tree([20, 8, 22, 4, 12, None, 30, None, None, 10, 14])
-cases = [(10, 14, 12), (4, 14, 8), (12, 14, 12), (10, 30, 20), (20, 4, 20), (22, 30, 22)]
+tree = build_tree([50, 17, 60, 9, 23, None, 75, None, None, 19, 28])
+cases = [(19, 28, 23), (9, 28, 17), (23, 28, 23), (19, 75, 50), (50, 9, 50), (60, 75, 60)]
 for fn in (lca_by_paths, lowest_common_ancestor, lowest_common_ancestor_iterative):
     for a, b, want in cases:
         assert fn(tree, find(tree, a), find(tree, b)).val == want, (fn.__name__, a, b)

@@ -30,7 +30,7 @@ You are given a string `s` of lowercase letters and an integer `k` (at least 1).
 s = "xyxzzzy",  k = 2   ->  4    ("xzzz" or "zzzy")
 s = "abcbbd",   k = 3   ->  5    ("abcbb" or "bcbbd")
 s = "aaaa",     k = 1   ->  4    (the whole string)
-s = "aaaa",     k = 2   ->  -1   (only one distinct character exists)
+s = "zzzzz",    k = 2   ->  -1   (only one distinct character exists)
 ```
 
 ## Approach 1: brute force
@@ -100,7 +100,7 @@ for f in (longest_k_unique, longest_k_unique_brute):
     assert f("xyxzzzy", 2) == 4
     assert f("abcbbd", 3) == 5
     assert f("aaaa", 1) == 4
-    assert f("aaaa", 2) == -1                # fewer than k distinct overall
+    assert f("zzzzz", 2) == -1                # fewer than k distinct overall
     assert f("", 1) == -1                    # empty string
     assert f("abc", 3) == 3                  # whole string, exactly k
     assert f("abc", 1) == 1

@@ -29,7 +29,7 @@ Positions are always valid: `1 ≤ left ≤ right ≤ length`.
 ## Examples
 
 ```text
-1 -> 2 -> 3 -> 4 -> 5,  left = 2, right = 4   ->  1 -> 4 -> 3 -> 2 -> 5
+3 -> 6 -> 9 -> 12 -> 15 -> 18,  left = 3, right = 5   ->  3 -> 6 -> 15 -> 12 -> 9 -> 18
 1 -> 2 -> 3,            left = 1, right = 3   ->  3 -> 2 -> 1
 1 -> 2 -> 3,            left = 2, right = 2   ->  1 -> 2 -> 3      (nothing to do)
 7,                      left = 1, right = 1   ->  7
@@ -64,13 +64,13 @@ def reverse_between_values(head, left, right):
 
 **Idea in plain English.** Stop at the node just before the section, `prev`. The first node of the section, `curr`, will finish as the section's last node, so it never moves relative to `prev` except by being pushed back. Now repeatedly pull out the node right after `curr` and put it at the front of the section (right after `prev`). After `right - left` moves, the section is reversed and still attached at both ends. A dummy node in front of the head means `prev` always exists, even when `left = 1`.
 
-Walkthrough on `1 -> 2 -> 3 -> 4 -> 5`, `left = 2`, `right = 4` (`prev` = 1, `curr` = 2):
+Walkthrough on `3 -> 6 -> 9 -> 12 -> 15 -> 18`, `left = 3`, `right = 5` (`prev` = 6, `curr` = 9):
 
 | Move | Node moved to the front | List |
 |---|---|---|
-| start | | 1 -> 2 -> 3 -> 4 -> 5 |
-| 1 | 3 | 1 -> 3 -> 2 -> 4 -> 5 |
-| 2 | 4 | 1 -> 4 -> 3 -> 2 -> 5 |
+| start | | 3 -> 6 -> 9 -> 12 -> 15 -> 18 |
+| 1 | 12 | 3 -> 6 -> 12 -> 9 -> 15 -> 18 |
+| 2 | 15 | 3 -> 6 -> 15 -> 12 -> 9 -> 18 |
 
 ```python
 def reverse_between(head, left, right):
@@ -107,7 +107,7 @@ def to_list(head):
         head = head.next
     return out
 
-assert to_list(reverse_between(build([1, 2, 3, 4, 5]), 2, 4)) == [1, 4, 3, 2, 5]
+assert to_list(reverse_between(build([3, 6, 9, 12, 15, 18]), 3, 5)) == [3, 6, 15, 12, 9, 18]
 assert to_list(reverse_between(build([1, 2, 3]), 1, 3)) == [3, 2, 1]
 assert to_list(reverse_between(build([1, 2, 3]), 2, 2)) == [1, 2, 3]
 assert to_list(reverse_between(build([7]), 1, 1)) == [7]

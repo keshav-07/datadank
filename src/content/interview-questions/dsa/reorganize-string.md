@@ -27,8 +27,8 @@ Given a string of lowercase letters, rearrange its characters so that no two adj
 ## Examples
 
 ```text
-"aab"     ->  "aba"
-"aaab"    ->  ""          (three a's need at least two separators)
+"ppq"     ->  "pqp"
+"pppq"    ->  ""          (three p's need at least two separators)
 "aabbcc"  ->  e.g. "abcabc"
 "z"       ->  "z"
 ```
@@ -126,8 +126,8 @@ def possible(s):
     return not s or max(Counter(s).values()) <= (len(s) + 1) // 2
 
 for f in (reorganize, reorganize_slots, reorganize_brute):
-    assert valid("aab", f("aab"))
-    assert f("aaab") == ""
+    assert valid("ppq", f("ppq"))
+    assert f("pppq") == ""
     assert valid("aabbcc", f("aabbcc"))
     assert f("z") == "z"
     assert f("") == ""

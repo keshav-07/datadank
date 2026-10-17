@@ -1,7 +1,7 @@
 ---
 publishedDate: "2026-10-04"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-17"
+reviewedDate: "2026-10-17"
 title: "Snowflake Architecture: Storage, Compute and Cloud Services"
 seoTitle: "Snowflake Architecture: Storage, Compute, Services"
 description: "How Snowflake's storage, compute and cloud services layers fit together: micro-partitions, virtual warehouses, metadata, editions, credits and the three caches."
@@ -16,10 +16,13 @@ learningObjectives:
   - "Explain how credits are consumed by warehouses, serverless features and cloud services"
   - "Tell the result cache, the warehouse cache and the metadata cache apart and predict when each is used"
 related: ["articles:snowflake/snowflake-for-data-engineers", "interview-questions:snowflake/virtual-warehouses", "articles:snowflake/micro-partitions-clustering-pruning", "articles:data-warehousing/lake-vs-warehouse-vs-lakehouse", "cheat-sheets:snowflake"]
+previous: "articles:snowflake/snowflake-for-data-engineers"
 next: "articles:snowflake/loading-copy-snowpipe"
 sources:
   - { label: "Snowflake documentation: Key concepts and architecture", url: "https://docs.snowflake.com/en/user-guide/intro-key-concepts" }
   - { label: "Snowflake documentation: Overview of warehouses", url: "https://docs.snowflake.com/en/user-guide/warehouses-overview" }
+  - { label: "Snowflake documentation: Gen2 standard warehouses", url: "https://docs.snowflake.com/en/user-guide/warehouses-gen2" }
+  - { label: "Snowflake documentation: Adaptive Compute", url: "https://docs.snowflake.com/en/user-guide/warehouses-adaptive" }
   - { label: "Snowflake documentation: Snowflake editions", url: "https://docs.snowflake.com/en/user-guide/intro-editions" }
   - { label: "Snowflake documentation: Understanding compute cost", url: "https://docs.snowflake.com/en/user-guide/cost-understanding-compute" }
   - { label: "Snowflake documentation: Using persisted query results", url: "https://docs.snowflake.com/en/user-guide/querying-persisted-results" }
@@ -108,7 +111,7 @@ Key behaviours:
 - **Sizes** run from X-Small upwards, and each size step doubles the compute and the credits per hour. Sizing, scaling up versus out, multi-cluster warehouses and queueing are covered in [Virtual Warehouses: Sizing, Scaling and Concurrency](/snowflake/virtual-warehouses-scaling/).
 - **Warehouses are independent.** Two warehouses never share compute, so a heavy job on one cannot slow queries on another.
 - **Not every statement needs a warehouse.** DDL, `SHOW` commands and queries answered from metadata or the result cache are handled by cloud services.
-- There are several **warehouse types and generations**: standard warehouses (and, in many regions, a newer "Gen2" generation with its own credit rates), Snowpark-optimized warehouses with much more memory per node, and newer offerings such as Adaptive Compute. Which ones are available, and which is the default for new warehouses, depends on your region and account; check your account's documentation.
+- There are several **warehouse types and generations**. Standard warehouses come in two generations: a `CREATE WAREHOUSE` that does not specify `GENERATION` now gets **Gen2** (faster hardware and software, a higher credit rate per hour, and the Query Acceleration Service switched on by default), unless Gen2 is not offered in your region; Gen1 is still available with `GENERATION = '1'`, and Gen2 is not offered for 5X-Large and 6X-Large. Snowpark-optimized warehouses give much more memory per node. **Adaptive warehouses** (Adaptive Compute, Enterprise Edition and above in selected regions) remove sizing, multi-cluster and suspend settings altogether and bill per query from a shared pool of compute dedicated to your account.
 
 Snowflake also runs **serverless compute** that you do not size yourself: Snowpipe, serverless tasks, automatic clustering, materialized view maintenance, search optimization and others. It is billed to your account but does not appear as one of your warehouses.
 
@@ -270,7 +273,7 @@ The dollar price of a credit depends on edition, cloud region and whether you bu
 
 ### How warehouse credits scale with size
 
-For standard (first-generation) warehouses, the documented rates double with each size:
+For first-generation (Gen1) standard warehouses, the documented rates double with each size:
 
 | Size | Credits per hour |
 |------|------------------|
@@ -285,11 +288,11 @@ For standard (first-generation) warehouses, the documented rates double with eac
 | 5X-Large | 256 |
 | 6X-Large | 512 |
 
-Gen2 standard warehouses, Snowpark-optimized warehouses and other types have different rates, listed in the Service Consumption Table. The largest sizes are not available in every region.
+Gen2 standard warehouses also double per size step but start from a higher hourly rate, and Snowpark-optimized warehouses and other types have their own rates; all of them are listed in the Service Consumption Table. Because new standard warehouses default to Gen2 where it is available, check `SHOW WAREHOUSES` (the `generation` column) before using the Gen1 numbers below for a real estimate. Compare generations by credits per job, not per hour: a Gen2 warehouse that finishes the same job much faster can cost less in total. The largest sizes are not available in every region.
 
 ### A worked example
 
-A Medium standard warehouse (4 credits per hour) resumes, runs queries for 3 minutes 30 seconds, then sits idle until `AUTO_SUSPEND = 60` suspends it.
+A Medium Gen1 standard warehouse (4 credits per hour) resumes, runs queries for 3 minutes 30 seconds, then sits idle until `AUTO_SUSPEND = 60` suspends it.
 
 - Running time billed: 210 seconds of work plus 60 seconds idle before suspending = 270 seconds.
 - Credits: 4 × 270 / 3600 = **0.3 credits**.

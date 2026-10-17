@@ -2091,3 +2091,423 @@ A billing team summed usage events into Postgres with at-least-once commits. Aft
 - Is idempotency enough for side effects like sending emails? — Only with a dedup store keyed by event ID, checked before sending.
 
 ---
+
+### Q494. Write a transactional consume-transform-produce loop
+**ID:** KFK-26
+**Topic:** Kafka > Delivery Semantics & Transactions
+**Level:** Advanced
+**Frequency:** Common
+**Tags:** `kafka`, `transactions`, `exactly-once`, `read-committed`, `python`
+
+**Short Answer (2–3 lines):**
+Call `init_transactions()` once, with a stable `transactional.id`. Then, for each batch: `begin_transaction()`, produce the outputs, `send_offsets_to_transaction()` with the consumer's positions and group metadata, and `commit_transaction()`. On a failure that can be aborted, call `abort_transaction()` and rewind the consumer. Downstream consumers must use `read_committed`, or they will see aborted records.
+
+**Detailed Explanation:**
+Q70 explains what transactions are. This question is about writing the loop correctly.
+
+**The pieces**
+| Step | Why |
+|---|---|
+| `transactional.id` | Identity that survives restarts; `init_transactions()` bumps the epoch and fences zombies |
+| `isolation.level=read_committed` on the input consumer | Don't process another app's aborted data |
+| `enable.auto.commit=false` | Offsets are committed *inside* the transaction, not separately |
+| `send_offsets_to_transaction(positions, group_metadata)` | Ties input progress to output records atomically |
+| `commit_transaction()` | Writes commit markers to every output partition and `__consumer_offsets` |
+
+**Error handling**
+- *Abortable* errors (your own exception, a timeout in the transaction): `abort_transaction()`, then seek back to the first offset of the batch. Otherwise the consumer's in-memory position has already moved past it.
+- *Fatal* errors (`ProducerFenced`, `InvalidProducerEpoch`): another instance owns the `transactional.id`. Close and exit; don't retry.
+- `transaction.timeout.ms` (60 s by default) must cover a batch. The coordinator aborts transactions left open longer, and long transactions hold back the last stable offset for every `read_committed` reader.
+
+**`transactional.id` strategy.** Since KIP-447 (Kafka 2.5+), fencing also uses the consumer group generation. One stable ID per application instance is enough; you no longer need one per input partition.
+
+**Kafka 4.0+ (KIP-890, `transaction.version=2`)**: the broker verifies that each write belongs to an ongoing transaction, and the epoch is bumped on every transaction. This closes "hanging transaction" gaps. Clients get it automatically once the feature is finalised (this lab cluster shows `transaction.version` at level 2).
+
+**Cost.** Each commit adds round trips and a marker record per partition, so batch several hundred records or a few hundred milliseconds per transaction.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16, Apache Kafka 4.3 (transaction.version=2)
+# Consume-transform-produce with Kafka transactions: output records and input offsets commit atomically.
+from confluent_kafka import Consumer, Producer, TopicPartition
+
+consumer = Consumer({"bootstrap.servers": "localhost:19092", "group.id": "enricher",
+                     "auto.offset.reset": "earliest", "enable.auto.commit": False,
+                     "isolation.level": "read_committed"})
+producer = Producer({"bootstrap.servers": "localhost:19092",
+                     "transactional.id": "enricher-tx-0",    # stable per instance/partition set
+                     "transaction.timeout.ms": 60000})
+producer.init_transactions()          # fences any older producer with the same transactional.id
+consumer.subscribe(["tx-in"])
+
+batch_no, idle, failed_once = 0, 0, False
+while idle < 5:
+    msgs = consumer.consume(num_messages=3, timeout=1.0)
+    msgs = [m for m in msgs if not m.error()]
+    if not msgs:
+        idle += 1 if consumer.assignment() else 0; continue
+    idle, batch_no = 0, batch_no + 1
+    producer.begin_transaction()
+    try:
+        for m in msgs:
+            producer.produce("tx-out", key=m.value(), value=m.value().upper())
+        if batch_no == 2 and not failed_once:
+            failed_once = True
+            producer.flush()          # records reach the broker, then we fail before commit
+            raise RuntimeError("simulated failure mid-batch")
+        producer.send_offsets_to_transaction(consumer.position(consumer.assignment()),
+                                             consumer.consumer_group_metadata())
+        producer.commit_transaction()
+        print(f"batch {batch_no}: committed {[m.value().decode() for m in msgs]}")
+    except RuntimeError as e:
+        producer.abort_transaction()
+        print(f"batch {batch_no}: aborted ({e}); rewinding")
+        first = msgs[0]               # rewind to the first record of the failed batch
+        consumer.seek(TopicPartition(first.topic(), first.partition(), first.offset()))
+consumer.close()
+```
+Input: `order-1` … `order-9` on `tx-in`. Output, then both isolation levels reading `tx-out`:
+```text
+batch 1: committed ['order-1', 'order-2', 'order-3']
+batch 2: aborted (simulated failure mid-batch); rewinding
+batch 3: committed ['order-4', 'order-5', 'order-6']
+batch 4: committed ['order-7', 'order-8', 'order-9']
+== read_uncommitted
+ORDER-1 ORDER-2 ORDER-3 ORDER-4 ORDER-5 ORDER-6 ORDER-4 ORDER-5 ORDER-6 ORDER-7 ORDER-8 ORDER-9 
+== read_committed
+ORDER-1 ORDER-2 ORDER-3 ORDER-4 ORDER-5 ORDER-6 ORDER-7 ORDER-8 ORDER-9 
+```
+The aborted batch reached the log (flushed before the failure), so a `read_uncommitted` reader saw `ORDER-4..6` twice. A `read_committed` reader saw each exactly once. `kafka-get-offsets.sh` reported an end offset of 16: 12 data records plus 4 transaction markers, which is why offsets on transactional topics have gaps.
+
+**Real-World Use Case:**
+A currency-normalisation service read `payments.raw` and wrote `payments.normalised`. Under at-least-once, every redeploy produced a few duplicate payments, which downstream reconciliation flagged. Moving to this loop with `read_committed` consumers downstream removed the duplicates. The team batched 500 records per transaction to keep throughput.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Committing offsets with `consumer.commit()` as well as inside the transaction.
+- Not seeking back after an abort, which silently skips the failed batch.
+- Leaving downstream consumers on Java's default `read_uncommitted` (librdkafka defaults to `read_committed`).
+- Generating a random `transactional.id` per start, which disables zombie fencing.
+
+**Follow-up Questions Interviewers Ask:**
+- What does the transaction coordinator store? — Transaction state per `transactional.id` in `__transaction_state`, including the partitions involved.
+- Why do `read_committed` consumers sometimes stall? — An open transaction holds the last stable offset back until it commits, aborts or times out.
+- Does this work across clusters? — No; a transaction is scoped to one cluster.
+
+---
+### Q495. How Kafka stores a partition on disk: segments, indexes and deletion
+**ID:** KFK-27
+**Topic:** Kafka > Storage & Retention
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `kafka`, `segments`, `storage`, `retention`, `indexes`
+
+**Short Answer (2–3 lines):**
+A partition is a directory of **segments**. Each segment is a `.log` file of record batches, plus an `.index` (offset to file position) and a `.timeindex` (timestamp to offset), named after the segment's first offset. Writes go only to the newest, active segment. Retention and compaction work on whole closed segments, so data is deleted a segment at a time, never record by record.
+
+**Detailed Explanation:**
+**Files in `<log.dirs>/<topic>-<partition>/`**
+| File | Purpose |
+|---|---|
+| `00000000000000006666.log` | Record batches starting at offset 6666 |
+| `.index` | Sparse map offset → byte position, one entry per `index.interval.bytes` (4 KiB) |
+| `.timeindex` | Sparse map timestamp → offset, used by `offsets_for_times` and time-based resets |
+| `.snapshot` | Producer-state snapshot, used for idempotence and transactions after restart |
+| `leader-epoch-checkpoint` | Epoch → start offset, used for truncation after failover |
+| `partition.metadata` | Topic ID |
+
+**Rolling.** The active segment closes ("rolls") when it reaches `segment.bytes` (1 GiB) or `segment.ms` (7 days) old, or when its index fills up. The output below shows the index pre-allocated at 10 MB for the active segment and trimmed when the segment rolls.
+
+**Why segments matter in interviews**
+- **Retention lags.** A segment is deleted only when it's closed *and* wholly past `retention.ms` (judged by its largest timestamp), or the partition exceeds `retention.bytes`. On a low-traffic topic with 1 GiB segments, a "7-day" topic can keep months of data, because the active segment never rolls by size. Lower `segment.ms` for those topics.
+- **Retention is checked periodically**, every `log.retention.check.interval.ms` (5 minutes), and files are removed after `file.delete.delay.ms`.
+- **Compaction never touches the active segment** (see Q71).
+- **Reads are cheap**: a fetch binary-searches the sparse index, then streams bytes straight from the page cache to the socket (zero-copy).
+- **Many partitions mean many open files and mapped indexes** per broker, which is one reason partition counts have practical limits (see Q510).
+
+**Example / Code:**
+```bash
+# Runtime: Apache Kafka 4.3.1, single broker; topic created with --config segment.bytes=1048576
+bin/kafka-producer-perf-test.sh --bootstrap-server localhost:19092 --topic segdemo \
+  --num-records 20000 --throughput -1 --payload-file payload.jsonl --command-property linger.ms=10
+ls -l data/segdemo-0/ | awk '{print $5, $9}'
+bin/kafka-dump-log.sh --files data/segdemo-0/00000000000000000000.log | head -4
+bin/kafka-dump-log.sh --files data/segdemo-0/00000000000000000000.index | head -4
+```
+```text
+504 00000000000000000000.index
+1041493 00000000000000000000.log
+468 00000000000000000000.timeindex
+504 00000000000000006666.index
+1041737 00000000000000006666.log
+56 00000000000000006666.snapshot
+276 00000000000000006666.timeindex
+10485760 00000000000000013334.index
+1041434 00000000000000013334.log
+56 00000000000000013334.snapshot
+10485756 00000000000000013334.timeindex
+8 leader-epoch-checkpoint
+43 partition.metadata
+Dumping data/segdemo-0/00000000000000000000.log
+Log starting offset: 0
+baseOffset: 0 lastOffset: 103 count: 104 baseSequence: 0 lastSequence: 103 producerId: 1002 producerEpoch: 0 partitionLeaderEpoch: 0 isTransactional: false isControl: false deleteHorizonMs: OptionalLong.empty position: 0 CreateTime: 1792262973044 size: 16267 ...
+Dumping data/segdemo-0/00000000000000000000.index
+offset: 207 position: 16267
+offset: 311 position: 32536
+offset: 415 position: 48828
+```
+Each line of the dump is a *batch* (104 records here, with the idempotent producer's ID and sequence numbers). Setting `retention.bytes=2200000` on the 3.1 MB partition deleted nothing, because removing the oldest 1.04 MB segment would have taken the partition below the limit. Kafka only deletes a segment if the partition is still at least `retention.bytes` after the deletion. With `retention.bytes=2000000`, the next retention check (about four minutes later) logged `Incremented log start offset to 6666 due to segment deletion`, and `kafka-get-offsets.sh --time earliest` moved from `segdemo:0:0` to `segdemo:0:6666`.
+
+**Real-World Use Case:**
+A compliance team required that `audit-events` keep no more than 30 days. The topic had `retention.ms` set correctly, but it received only a few MB a day, so its single 1 GiB segment never rolled and nothing was ever deleted. Setting `segment.ms=86400000` (one day) made deletion happen on schedule.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Believing retention deletes individual records the moment they expire.
+- Forgetting that the active segment is never deleted or compacted.
+- Setting tiny `segment.bytes` cluster-wide, which creates huge numbers of files.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you delete data before retention would? — `kafka-delete-records.sh` moves the log start offset forward; whole segments below it are then removed.
+- What does `kafka-dump-log.sh --print-data-log` add? — The record keys and values, which is useful when debugging a poison message.
+- What happens on unclean shutdown? — The broker recovers segments after the last checkpoint and rebuilds indexes, which can make start-up slow on large logs.
+
+---
+
+### Q496. Record timestamps: CreateTime vs LogAppendTime, and how they affect retention and replay
+**ID:** KFK-28
+**Topic:** Kafka > Storage & Retention
+**Level:** Intermediate
+**Frequency:** Occasional
+**Tags:** `kafka`, `timestamps`, `retention`, `event-time`, `configuration`
+
+**Short Answer (2–3 lines):**
+Every record carries a timestamp. With `message.timestamp.type=CreateTime` (the default) it's whatever the producer set. With `LogAppendTime` the broker overwrites it with its own clock. Time-based retention, `offsets_for_times`, `--to-datetime` resets and stream windows all use this value. A wrong producer clock or replayed historical data can make records expire early, or get rejected by the broker.
+
+**Detailed Explanation:**
+| | `CreateTime` | `LogAppendTime` |
+|---|---|---|
+| Who sets it | Producer (default: send time; can be the event time) | Broker at append |
+| Meaning | Event time, if the producer sets it carefully | Ingestion time |
+| Validation | Rejected if more than `message.timestamp.after.max.ms` (1 h) in the future or more than `message.timestamp.before.max.ms` (unlimited by default) in the past | None; validation settings are ignored |
+| Good for | Stream processing on event time | Retention and replay by arrival time, audit |
+
+**How timestamps reach retention.** A segment is eligible for time-based deletion when its **largest** timestamp is older than `retention.ms`. So:
+- Backfilling year-old events with `CreateTime` makes their segments eligible almost as soon as they roll. They may vanish within minutes.
+- One record with a far-future timestamp would keep its segment alive. That's one reason Kafka 4.0 changed the default `message.timestamp.after.max.ms` from unlimited to 1 hour (KIP-1030). The before/after settings themselves arrived in 3.6 (KIP-937).
+
+**Batch-level rejection.** Timestamp validation happens per batch. If one record in a batch is out of range, the whole batch fails with `INVALID_TIMESTAMP`, including valid records that happened to share it. The first run of the demo below batched both test records together, and both were rejected.
+
+**Stream processing.** Kafka Streams and Flink extract event time from the record timestamp by default (see Q508 and Q29). If producers use `LogAppendTime`, windows reflect arrival time, not when things happened. Pick deliberately, and carry the business event time in the payload as well.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Kafka 4.3.1 CLI
+bin/kafka-topics.sh --bootstrap-server localhost:19092 --create --topic ts-create --partitions 1
+bin/kafka-topics.sh --bootstrap-server localhost:19092 --create --topic ts-append --partitions 1 \
+  --config message.timestamp.type=LogAppendTime
+```
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16, Apache Kafka 4.3
+import time
+from datetime import datetime, timezone
+from confluent_kafka import Producer, Consumer, TIMESTAMP_CREATE_TIME
+
+now = int(time.time() * 1000)
+cases = {"3 days old": now - 3 * 86400_000, "2 hours in future": now + 2 * 3600_000}
+p = Producer({"bootstrap.servers": "localhost:19092"})
+for topic in ("ts-create", "ts-append"):
+    for label, ts in cases.items():
+        def cb(err, msg, label=label, topic=topic):
+            print(f"{topic:9} {label:17} -> " + (err.name() if err else f"stored at offset {msg.offset()}"))
+        p.produce(topic, value=label, timestamp=ts, on_delivery=cb)
+        p.flush()      # one record per batch: a bad timestamp fails the WHOLE batch it is in
+
+c = Consumer({"bootstrap.servers": "localhost:19092", "group.id": f"ts-{now}", "auto.offset.reset": "earliest"})
+c.subscribe(["ts-create", "ts-append"])
+got = 0
+while got < 3:
+    m = c.poll(5)
+    if m is None or m.error():
+        continue
+    got += 1
+    kind, ts = m.timestamp()
+    kind = "CreateTime" if kind == TIMESTAMP_CREATE_TIME else "LogAppendTime"
+    print(f"read {m.topic():9} {m.value().decode():17} {kind:13} {datetime.fromtimestamp(ts / 1000, timezone.utc):%Y-%m-%d %H:%M}")
+c.close()
+```
+```text
+ts-create 3 days old        -> stored at offset 0
+ts-create 2 hours in future -> INVALID_TIMESTAMP
+ts-append 3 days old        -> stored at offset 0
+ts-append 2 hours in future -> stored at offset 1
+read ts-create 3 days old        CreateTime    2026-10-14 18:59
+read ts-append 3 days old        LogAppendTime 2026-10-17 18:59
+read ts-append 2 hours in future LogAppendTime 2026-10-17 18:59
+```
+(Run at 2026-10-17 18:59 UTC.) The `CreateTime` topic kept the producer's timestamp and rejected the future one. The `LogAppendTime` topic accepted both and replaced their timestamps with the append time.
+
+**Real-World Use Case:**
+A team replayed six months of orders from an archive into a 7-day topic, keeping the original event times as `CreateTime`. Downstream consumers started late and found most of the data already gone, because whole segments were past retention as soon as they rolled. Replaying into a topic with longer retention fixed it. `LogAppendTime` would have too, at the cost of losing event time in the record timestamp.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Assuming retention is measured from when the broker received the record.
+- Backfilling historical events into a short-retention `CreateTime` topic.
+- Not knowing that a single bad timestamp fails its whole batch.
+
+**Follow-up Questions Interviewers Ask:**
+- Can a consumer tell which type a record has? — Yes; the timestamp type is returned with each record (`msg.timestamp()` in Python).
+- What happens to timestamps when MirrorMaker 2 copies data? — It keeps the source timestamps, so the target topic's timestamp type and limits matter.
+- How do you find the offset for 09:00 yesterday? — `offsets_for_times`, which uses the time index (see Q482).
+
+---
+
+### Q497. Tiered storage: how it works and what it changes operationally
+**ID:** KFK-29
+**Topic:** Kafka > Storage & Retention
+**Level:** Advanced
+**Frequency:** Common
+**Tags:** `kafka`, `tiered-storage`, `kip-405`, `object-storage`, `retention`
+
+**Short Answer (2–3 lines):**
+Tiered storage (KIP-405, production-ready since Kafka 3.9) copies closed segments to remote storage such as S3, GCS or HDFS. It deletes them locally after a short `local.retention.ms`, while `retention.ms` still sets total retention. Brokers then hold mainly the hot tail on disk, so long retention is cheap and broker recovery or rebalancing moves far less data. Reads of old offsets are fetched from remote storage transparently.
+
+**Detailed Explanation:**
+**Architecture**
+- **RemoteStorageManager (RSM)**: a plugin that copies segments and indexes to and from the remote store. Apache Kafka ships the interface and no production implementation, so you use a vendor or open-source plugin.
+- **RemoteLogMetadataManager (RLMM)**: tracks which segments are remote. The default `TopicBasedRemoteLogMetadataManager` uses the internal `__remote_log_metadata` topic.
+- The leader's remote log manager uploads closed segments (checked every `remote.log.manager.task.interval.ms`, 30 s). Followers don't upload.
+
+**Two retention clocks**
+| Setting | Meaning |
+|---|---|
+| `retention.ms` / `retention.bytes` | Total retention, local plus remote |
+| `local.retention.ms` / `local.retention.bytes` | How long segments stay on broker disk; `-2` (default) means "same as total" |
+
+**What gets better**
+- Disk sizing depends on hot data only, so brokers become smaller and cheaper.
+- Adding or replacing a broker copies only the local tail. In 4.3, `follower.fetch.last.tiered.offset.enable` lets new followers skip data already in remote storage.
+- Long replays (Kappa-style reprocessing, see Q28) no longer need giant disks.
+
+**Limits and trade-offs**
+- **No compacted topics.**
+- Historical reads have object-store latency, and backfill throughput depends on the RSM, its caches and the fetch thread pools.
+- The metadata topic is critical. 4.3 adds `remote.log.metadata.topic.min.isr` (2 by default).
+- Turning it off needs care: `remote.log.copy.disable` and `remote.log.delete.on.disable` control how a topic leaves tiered storage.
+- Data in the bucket is in Kafka's segment format, not Parquet. It isn't a lake table. For analytics, still land data into Iceberg or Delta.
+
+**Example / Code:**
+```properties
+# Runtime: Apache Kafka 4.3 broker + a RemoteStorageManager plugin (Kafka ships none; plugin class shown is a placeholder)
+# --- broker (server.properties) ---
+remote.log.storage.system.enable=true
+remote.log.storage.manager.class.name=com.example.tiered.S3RemoteStorageManager
+remote.log.storage.manager.class.path=/opt/kafka/plugins/tiered/*
+remote.log.metadata.manager.listener.name=PLAINTEXT
+```
+```bash
+# Runtime: Apache Kafka 4.3.1 CLI — per-topic switch: 1 day on local disk, 1 year in total
+bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --topic clickstream \
+  --partitions 48 --replication-factor 3 \
+  --config remote.storage.enable=true \
+  --config local.retention.ms=86400000 \
+  --config retention.ms=31536000000
+```
+These commands were checked against the 4.3 topic and broker config reference. They weren't run in the lab, because there is no RSM plugin there to upload to.
+
+**Real-World Use Case:**
+A clickstream cluster kept 7 days on large local disks, and replacing a failed broker took many hours of re-replication. With tiered storage, 1 day local and 90 days total, disks shrank, broker replacement finished in a fraction of the time, and the analytics team could replay a month of events straight from Kafka.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Expecting tiered storage to work on compacted changelog topics.
+- Treating the remote bucket as a queryable data lake.
+- Setting `local.retention.ms` so low that ordinary consumer lag pushes reads into remote storage.
+- Assuming Apache Kafka includes an S3 plugin out of the box.
+
+**Follow-up Questions Interviewers Ask:**
+- What happens to consumers reading old offsets? — The broker fetches from remote storage transparently; the client doesn't change.
+- Which metrics matter? — Remote copy and fetch lag and errors, and the size of data waiting to upload.
+- How is it different from archiving to S3 with a Connect sink? — Tiered storage keeps data readable *as Kafka* by offset; a sink produces lake files for other engines.
+
+---
+### Q498. Kafka Connect architecture: workers, connectors, tasks and internal topics
+**ID:** KFK-30
+**Topic:** Kafka > Kafka Connect
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `kafka-connect`, `source`, `sink`, `distributed-mode`, `rest-api`
+
+**Short Answer (2–3 lines):**
+Kafka Connect is a framework for moving data between Kafka and other systems through configuration, not code. **Source** connectors write external data into Kafka, and **sink** connectors write Kafka data out. A cluster of **workers** runs **connectors**, which split their work into **tasks**. In distributed mode, workers share state through three internal topics (configs, offsets, status), and you manage everything through a REST API.
+
+**Detailed Explanation:**
+**Pieces**
+| Concept | What it is |
+|---|---|
+| Worker | A JVM process running the Connect runtime. Workers with the same `group.id` form a cluster |
+| Connector | A configured instance of a plugin, such as a JDBC sink for one database |
+| Task | A unit of parallel work. A sink's tasks act like consumers in a group; a source's tasks split tables, files or shards |
+| Converter | Turns Connect's internal data into bytes and back (see Q499) |
+| Transform (SMT) | A light, per-record change applied between connector and converter |
+| Plugin path | Where connector JARs are loaded from, each in its own isolated classloader |
+
+**Standalone vs distributed**
+- *Standalone*: one process, with offsets in a local file. Good for development or a single edge agent.
+- *Distributed*: any number of workers. Connector configs live in `config.storage.topic`, source offsets in `offset.storage.topic`, and state in `status.storage.topic`. Tasks rebalance across workers when one fails (incremental cooperative rebalancing, with `scheduled.rebalance.max.delay.ms` of 5 minutes before a lost worker's tasks are reassigned).
+
+**Offsets**
+- Sink connectors use normal consumer group offsets (`connect-<connector-name>`).
+- Source connectors store their own "source offsets" (a file position, a WAL LSN, a row timestamp) in the offsets topic. Since Kafka 3.6 (KIP-875) you can read and reset them through the REST API (`GET/PATCH/DELETE /connectors/{name}/offsets`).
+
+**When not to use Connect.** For complex business logic, use stream processing (Kafka Streams or Flink) and let Connect do only the I/O.
+
+**Example / Code:**
+```properties
+bootstrap.servers=localhost:19092
+group.id=connect-lab
+listeners=http://localhost:18083
+config.storage.topic=connect-lab-configs
+offset.storage.topic=connect-lab-offsets
+status.storage.topic=connect-lab-status
+config.storage.replication.factor=1
+offset.storage.replication.factor=1
+status.storage.replication.factor=1
+key.converter=org.apache.kafka.connect.storage.StringConverter
+value.converter=org.apache.kafka.connect.json.JsonConverter
+value.converter.schemas.enable=false
+plugin.path=/opt/kafka/libs/connect-file-4.3.1.jar
+exactly.once.source.support=enabled
+```
+```bash
+# Runtime: Apache Kafka 4.3.1 — start one distributed worker, then use the REST API
+bin/connect-distributed.sh worker.properties &
+curl -s localhost:18083/
+curl -s localhost:18083/connector-plugins | python3 -m json.tool | grep class
+curl -s localhost:18083/connectors/access-source/status
+curl -s localhost:18083/connectors/access-source/offsets
+```
+```text
+{"version":"4.3.1","commit":"26b251a451ce941d","kafka_cluster_id":"k823IPTOTlqVLpX-4sSHCg"}
+        "class": "org.apache.kafka.connect.file.FileStreamSinkConnector",
+        "class": "org.apache.kafka.connect.file.FileStreamSourceConnector",
+        "class": "org.apache.kafka.connect.mirror.MirrorCheckpointConnector",
+        "class": "org.apache.kafka.connect.mirror.MirrorHeartbeatConnector",
+        "class": "org.apache.kafka.connect.mirror.MirrorSourceConnector",
+{"name":"access-source","connector":{"state":"RUNNING","worker_id":"localhost:18083","version":"4.3.1"},"tasks":[{"id":0,"state":"RUNNING","worker_id":"localhost:18083","version":"4.3.1"}],"type":"source"}
+{"offsets":[{"partition":{"filename":"/var/log/web/access.log"},"offset":{"position":47}}]}
+```
+The file connectors ship with Kafka but have not been on the default classpath since 3.2, which is why `plugin.path` points at `connect-file-4.3.1.jar`. (Lab paths are shortened here.)
+
+**Real-World Use Case:**
+A team ran a Postgres CDC source and an S3 sink on a three-worker Connect cluster on Kubernetes, managed by an operator. When one worker's node was drained, its tasks moved to the other two workers. Source offsets in the offsets topic let the CDC task resume from the same log position.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Running production pipelines in standalone mode.
+- Creating Connect's internal topics with replication factor 1, or letting the offsets topic be deleted by retention (it must be compacted).
+- Putting many unrelated teams' connectors on one shared worker cluster with no isolation.
+- Setting `tasks.max` higher than the source can actually split into, and expecting more parallelism.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you restart only failed tasks? — `POST /connectors/{name}/restart?includeTasks=true&onlyFailed=true`.
+- Where do sink connectors keep their position? — In the consumer group `connect-<name>`, visible with `kafka-consumer-groups.sh`.
+- How do you keep secrets out of connector configs? — Config providers, such as `${file:/secrets/db.properties:password}` or vault-backed providers.
+
+---

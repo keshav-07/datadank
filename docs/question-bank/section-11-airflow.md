@@ -4024,3 +4024,387 @@ A finance team found that a "daily" job used `CURRENT_DATE - 1` in its SQL. Afte
 - What if the source isn't replayable? — Land raw data immutably first (an append-only bronze layer), and build every later step from that copy.
 
 ---
+
+### Q564. Walk through migrating a real Airflow 2 deployment to Airflow 3. What breaks first?
+**ID:** AF-46
+**Topic:** Airflow > Migration 2 to 3
+**Level:** Advanced
+**Frequency:** Very Common
+**Tags:** `airflow`, `migration`, `airflow-3`, `ruff`
+
+**Short Answer (2–3 lines):**
+Upgrade to the latest 2.x, clean and back up the metadata DB, and fix DAG code with `ruff check --select AIR3` (rules AIR301/302 for breaking changes, AIR311/312 for recommended ones). Install the standard provider and remove direct DB access from tasks. Run `airflow config update --fix` and `airflow db migrate`, then start the new components, including a separate DAG processor. The first things to break are removed imports, removed context keys and changed scheduling defaults.
+
+**Detailed Explanation:**
+Q47 lists what changed, and the site has a migration guide. This question is the *runbook*, with the traps that show up in practice:
+
+| Step | Detail |
+|---|---|
+| 1. Prerequisites | On 2.7+ (latest 2.x recommended). Supported Python. No SubDAGs, SLAs or SequentialExecutor |
+| 2. DB | `airflow db clean` to shrink the history (migrations on large tables are slow). Back up. `airflow dags reserialize` must show no errors |
+| 3. Code | `ruff check dags/ --select AIR3 --fix` (`--unsafe-fixes` for import moves, plus `F401` to drop dead imports) |
+| 4. Providers | Install `apache-airflow-providers-standard` (Bash, Python and Empty operators, sensors) |
+| 5. DB access | Rewrite tasks that use `Session`, `DagRun.find` or `TaskInstance` queries to use the context or the REST API (see Q557) |
+| 6. Config | `airflow config update`, then `--fix`. `webserver` settings move to `api` / `apiServer` in the Helm chart |
+| 7. Components | `airflow api-server`, `airflow dag-processor` (now required), scheduler, triggerer |
+| 8. Plugins | Flask-AppBuilder views need the FAB provider or a rewrite as FastAPI/React plugins |
+
+Behaviour changes that pass CI but break at run time:
+- **Removed context keys.** `execution_date`, `next_ds`, `prev_ds`, `yesterday_ds`, `conf` and others are gone. A callable that takes `execution_date` fails with `TypeError` when it runs (output below).
+- **`catchup_by_default=False`**, and **cron strings use `CronTriggerTimetable`**. Decide `create_cron_data_intervals` *before* upgrading (see Q535).
+- **Manual and asset runs can have `logical_date=None`** (see Q537).
+- `airflow.datasets` can no longer be imported in 3.3, even though ruff labels the move AIR311 ("still works").
+- SLAs are replaced by Deadline Alerts (see Q551). CeleryKubernetesExecutor is replaced by multiple executors (see Q553).
+
+Plan the switch as blue/green: run a new Airflow 3 environment next to the old one on a copy of the DB, compare the next few days of runs, and then move schedules over by pausing DAGs in one environment and unpausing them in the other.
+
+**Example / Code:**
+```python
+# Runtime: Airflow 2-style DAG file, before migration (legacy/old_style.py)
+from datetime import datetime
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from airflow.datasets import Dataset
+from airflow.models import Variable
+
+orders = Dataset("s3://lake/orders")
+
+def _load(execution_date, **context):
+    bucket = Variable.get("bucket")
+    print(execution_date, bucket)
+
+with DAG("old_style", schedule_interval="@daily", start_date=datetime(2024, 1, 1)) as dag:
+    PythonOperator(task_id="load", python_callable=_load, outlets=[orders])
+```
+```bash
+# Runtime: ruff 0.17, Apache Airflow 3.3
+ruff check legacy/ --select AIR3 --fix --unsafe-fixes   # rewrites imports, schedule_interval, Dataset
+ruff check legacy/ --select AIR3,F401 --fix             # drops the now-unused old import
+python run_test.py                                      # DagBag(...) then dag.test()
+```
+```text
+# Before the fixes, on Airflow 3.3:
+import error: ModuleNotFoundError: No module named 'airflow.datasets'
+# After ruff: the file parses, but the removed context key only fails when the task runs:
+import errors: {}
+TypeError: _load() missing 1 required positional argument: 'execution_date'
+run: failed
+```
+After ruff, the imports read `from airflow.sdk import Asset, DAG, Variable` and `from airflow.providers.standard.operators.python import PythonOperator`. Changing `execution_date` to `logical_date`, or to `data_interval_start`, completes the fix. That last step is why `dag.test()` belongs in the migration CI as well as linting.
+
+**Real-World Use Case:**
+A team with about 600 DAGs ran ruff's fixes in one pull request, which handled about 80% of the changes. The remaining failures came from `dag.test()` runs in CI: removed context keys and three tasks that queried `TaskInstance` directly. They also set `create_cron_data_intervals=True` for the first month to keep the old interval semantics, then moved DAGs one at a time to explicit timetables.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Upgrading in place without a DB backup or a cleanup first.
+- Treating a clean ruff run as "migration done" without running the DAGs.
+- Forgetting to deploy the DAG processor, so no DAGs appear after the upgrade.
+
+**Follow-up Questions Interviewers Ask:**
+- Can Airflow 2 and 3 share a metadata DB? — No. The migration is one-way. Run them side by side on separate DBs.
+- What about REST API clients? — `/api/v1` is gone. Move to `/api/v2` (FastAPI) or `airflowctl`, and update authentication to JWT-based tokens.
+
+---
+
+### Q565. MWAA, Cloud Composer or Astronomer: what are the trade-offs of managed Airflow?
+**ID:** AF-47
+**Topic:** Airflow > Managed Airflow
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `airflow`, `mwaa`, `cloud-composer`, `astronomer`
+
+**Short Answer (2–3 lines):**
+All three run the scheduler, DB, API server and workers for you. Amazon MWAA fits deeply into AWS: IAM, S3 for DAGs, VPC. Google Cloud Composer does the same for GCP, with GKE and GCS behind it. Astronomer (Astro) is an Airflow-focused platform on several clouds, with a CLI and image-based deploys, and it tends to offer new Airflow releases soonest. The trade-off is control versus convenience: version lag, limits on configuration and plugins, scaling knobs and cost model.
+
+**Detailed Explanation:**
+| Dimension | MWAA (AWS) | Cloud Composer (GCP) | Astronomer Astro | Self-managed (Helm/K8s) |
+|---|---|---|---|---|
+| DAG deploy | S3 bucket sync | GCS bucket sync | `astro deploy` (image or DAG-only) | Your choice: Git bundle, git-sync, image |
+| Dependencies | `requirements.txt` and plugins zip, startup script | PyPI packages in the environment config | Your Dockerfile | Your image |
+| Scaling | Environment class plus min/max workers | Environment size, worker autoscaling | Worker queues, autoscaling | Anything you build |
+| Identity | IAM execution role | Service accounts | Cloud identities per deployment | You wire it up |
+| Config access | Allow-listed overrides | Most overrides | Wide (env vars, image) | Full |
+| New Airflow versions | Usually lag upstream | Usually lag upstream | Typically fastest | Immediate |
+| Best when | All-AWS shop, small platform team | All-GCP shop, BigQuery-heavy | Many teams, multi-cloud, want Airflow expertise as a service | Strict control or cost needs, strong K8s team |
+
+How to evaluate one:
+- **Version support.** Which Airflow 3.x minor versions, and how quickly they arrive. Features from 3.2/3.3 such as asset partitioning, retry policies and deadline callbacks depend on it. *Product behaviour changes; checked October 2026. Confirm on each provider's supported-versions page before deciding.*
+- **Executor choice.** Some services fix the executor (for example Celery on MWAA). KubernetesPodOperator or the services' own container operators give isolation.
+- **Networking.** Private IPs, VPC peering, and the path to on-premises sources.
+- **Cost model.** Always-on environment fees versus usage-based pricing, plus the worker minimums when idle.
+- **Escape hatch.** Keep DAGs portable: standard providers, no service-only imports, config from env vars and secrets backends. Then moving between services is mostly redeploying.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 — run inside each environment (local, MWAA/Composer/Astro
+# image) and diff the output before moving DAGs between them.
+import sys
+import airflow
+from airflow.configuration import conf
+from airflow.providers_manager import ProvidersManager
+
+print("airflow", airflow.__version__, "| python", sys.version.split()[0])
+print("executor:", conf.get("core", "executor"))
+for name, info in sorted(ProvidersManager().providers.items()):
+    print(f"  {name}=={info.version}")
+```
+```text
+airflow 3.3.2 | python 3.11.15
+executor: LocalExecutor
+  apache-airflow-providers-common-compat==1.20.0
+  apache-airflow-providers-common-io==1.10.0
+  apache-airflow-providers-common-sql==2.2.0
+  apache-airflow-providers-smtp==3.1.0
+  apache-airflow-providers-standard==1.20.0
+```
+
+**Real-World Use Case:**
+A startup on AWS with one data engineer picked MWAA for IAM integration and zero cluster work. Two years later, now with five teams and GCP sources, they moved to a multi-cloud managed platform for per-team deployments and faster Airflow upgrades. Because their DAGs used only standard providers and secrets backends, the move took weeks rather than months.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Assuming every Airflow config option or plugin works on every managed service.
+- Using service-specific hacks, such as reading the S3 DAG bucket from task code, that lock you in.
+- Ignoring idle cost and version lag in the decision.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you test locally against a managed service? — Use the provider's local runner or CLI image (for example `astro dev start`, or the MWAA local runner) with the same requirements.
+- When does self-managed win? — When you need full config control, specific executors or networking, or very large scale with a team that can operate Kubernetes and Postgres.
+
+---
+
+### Q566. What do the task instance states mean, and which ones signal a problem?
+**ID:** AF-48
+**Topic:** Airflow > Task Lifecycle
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `airflow`, `task-states`, `debugging`, `lifecycle`
+
+**Short Answer (2–3 lines):**
+A task instance usually moves from no state → `scheduled` (dependencies met) → `queued` (sent to the executor) → `running` → `success` or `failed`, with `up_for_retry` between tries. Other states record decisions: `skipped`, `upstream_failed`, `up_for_reschedule` (a sensor between pokes), `deferred` (waiting in the triggerer), `removed`, `restarting` and, since 3.1, `awaiting_input` for human-in-the-loop tasks. A task that stays in `scheduled` or `queued` points to capacity or executor problems.
+
+**Detailed Explanation:**
+| State | Meaning | Worry when… |
+|---|---|---|
+| *(none)* | Created, dependencies not yet met | Upstream finished long ago (check the trigger rule) |
+| `scheduled` | Ready; waiting for a slot | It lasts for minutes: pools, `max_active_tasks` or `parallelism` are full (see Q549) |
+| `queued` | Handed to the executor | It lasts for minutes: workers down, broker problems, pods pending. `task_queued_timeout` (600 s) eventually fails or retries it |
+| `running` | Executing | Its heartbeat stops (see Q567) or it runs past `execution_timeout` |
+| `deferred` | Waiting in the triggerer | No triggerer is running, or the triggerer is overloaded |
+| `up_for_reschedule` | Sensor between pokes | Its `timeout` is very long |
+| `up_for_retry` | Failed, waiting `retry_delay` | Many tasks at once: a shared dependency is down |
+| `success` / `failed` | Final | — |
+| `skipped` | Branch, short-circuit or skip exception | Unexpected skips: trigger rules (see Q524) |
+| `upstream_failed` | A parent failed | — |
+| `removed` | Task no longer in the DAG version | After deploys that rename tasks |
+| `restarting` | Cleared while running | — |
+| `awaiting_input` | Human-in-the-loop task waiting for a person (3.1+) | Nobody is assigned to respond |
+
+DAG runs have only `queued`, `running`, `success` and `failed`. A run's final state comes from its leaf tasks (teardowns excepted).
+
+Tools for each state: the task-instance details panel in the UI, which lists unmet dependencies; `airflow tasks failed-deps`; `airflow tasks states-for-dag-run`; and the scheduler and executor logs for `queued` problems. For a full triage of slow or stuck tasks, see the site's guide.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Airflow 3.3 CLI — inspect the run from the trigger-rule example (see Q524)
+airflow dags list-runs trigger_rules_demo -o plain
+airflow tasks states-for-dag-run trigger_rules_demo "manual__2026-10-17T13:37:18.923999+00:00"
+```
+```text
+dag_id              run_id                                    state    run_after ...
+trigger_rules_demo  manual__2026-10-17T13:37:18.923999+00:00  failed   2026-10-17T13:37:18.923999+00:00 ...
+dag_id             | logical_date                     | task_id      | state           | start_date ...
+===================+==================================+==============+=================+===========
+trigger_rules_demo | 2026-10-17T13:37:18.718414+00:00 | load_eu      | success         | ...
+trigger_rules_demo | 2026-10-17T13:37:18.718414+00:00 | load_us      | failed          | ...
+trigger_rules_demo | 2026-10-17T13:37:18.718414+00:00 | build_report | upstream_failed | ...
+trigger_rules_demo | 2026-10-17T13:37:18.718414+00:00 | cleanup_tmp  | success         | ...
+trigger_rules_demo | 2026-10-17T13:37:18.718414+00:00 | page_on_call | success         | ...
+```
+
+**Real-World Use Case:**
+Every morning dozens of tasks sat in `queued` for 20 minutes. Their state showed the scheduler had done its part, so the problem was after the hand-off. The Kubernetes events showed pods `Pending` because a node pool had hit its autoscaling maximum. Raising the limit fixed it, with no Airflow configuration change.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Treating `scheduled` and `queued` as the same thing. They point to different bottlenecks.
+- Clearing tasks over and over without reading the unmet dependencies.
+- Not knowing `deferred` needs a running triggerer.
+
+**Follow-up Questions Interviewers Ask:**
+- What does `removed` mean after a deploy? — The task_id no longer exists in the DAG's version. With versioned bundles, old runs still show the old graph.
+- How do you force a stuck task to run again? — Find the cause first, then clear it. Marking it success or failed by hand skips callbacks.
+
+---
+
+### Q567. What are zombie tasks (heartbeat timeouts), and how do you debug them?
+**ID:** AF-49
+**Topic:** Airflow > Debugging
+**Level:** Advanced
+**Frequency:** Common
+**Tags:** `airflow`, `zombie-tasks`, `heartbeat`, `debugging`
+
+**Short Answer (2–3 lines):**
+A "zombie", now called a *task instance heartbeat timeout*, is a task that the database shows as `running` while its process has died: an out-of-memory kill, an evicted pod, a dead node. The scheduler notices that heartbeats stopped for longer than `[scheduler] task_instance_heartbeat_timeout` (300 s). It then fails the task or retries it. The fix is to find out *why* the process died, usually memory, and to make the task safe to rerun.
+
+**Detailed Explanation:**
+How detection works in Airflow 3: the worker's supervisor sends heartbeats through the Execution API. If they stop, the scheduler, checking every `task_instance_heartbeat_timeout_detection_interval` (10 s), marks the task failed, or `up_for_retry` if it has retries left, and records the reason.
+
+Common causes and evidence:
+| Cause | Evidence |
+|---|---|
+| OOM kill | Pod `OOMKilled` in `kubectl describe`; `dmesg` on VMs; the log stops suddenly mid-task |
+| Pod eviction or node scale-down | Kubernetes events; often during cluster-autoscaler downsizing |
+| Worker restart during a deploy | It happens at deploy times; check the Celery warm-shutdown settings |
+| Liveness probe killed the worker | Probe failures in the events |
+| Supervisor can't reach the API server | API server overloaded or network policy; heartbeat errors in the worker logs |
+
+Related timeouts, which people often mix up:
+| Setting | Fires when |
+|---|---|
+| `task_instance_heartbeat_timeout` (300 s) | A running task's heartbeat stops |
+| `[scheduler] task_queued_timeout` (600 s) | A task stays `queued` too long |
+| `execution_timeout` (task) | One try runs too long, even with a healthy heartbeat |
+| `dagrun_timeout` (DAG) | The whole run is too long |
+| `[dag_processor] dag_file_processor_timeout` (50 s) | Parsing one file takes too long |
+
+Prevention: give tasks resource requests and limits, stream data instead of loading it all into memory, use `KubernetesPodOperator` for heavy work, and make tasks idempotent so an automatic retry is harmless (see Q46). The docs give a recipe for reproducing heartbeat timeouts locally: set a long heartbeat interval and a very short timeout.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 — print the timeouts that decide when a task is declared dead/stuck
+from airflow.configuration import conf
+
+for section, key in [("scheduler", "task_instance_heartbeat_timeout"),
+                     ("scheduler", "task_instance_heartbeat_timeout_detection_interval"),
+                     ("scheduler", "task_queued_timeout"),
+                     ("dag_processor", "dag_file_processor_timeout"),
+                     ("sensors", "default_timeout")]:
+    print(f"[{section}] {key} = {conf.get(section, key)}")
+```
+```text
+[scheduler] task_instance_heartbeat_timeout = 300
+[scheduler] task_instance_heartbeat_timeout_detection_interval = 10.0
+[scheduler] task_queued_timeout = 600.0
+[dag_processor] dag_file_processor_timeout = 50
+[sensors] default_timeout = 604800
+```
+```bash
+# Triage a suspected zombie on Kubernetes (KubernetesExecutor / KPO)
+kubectl -n airflow get events --sort-by=.lastTimestamp | grep -E "OOMKilled|Evicted|Killing"
+kubectl -n airflow describe pod <worker-or-task-pod> | grep -A3 "Last State"
+```
+
+**Real-World Use Case:**
+A nightly enrichment task failed about one night in five, with the log stopping abruptly and the task marked failed several minutes later. `kubectl describe` showed `OOMKilled` at the 4 GiB limit when a partner's file was unusually large. The team moved the task to a KubernetesPodOperator with 12 GiB and chunked reads. Those failures stopped, and the retries that remained were harmless because the load overwrites its partition.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Raising `task_instance_heartbeat_timeout` to "fix" zombies. That only hides dead tasks for longer.
+- Confusing `execution_timeout` with the heartbeat timeout.
+- Retrying a non-idempotent task that was killed halfway through its writes.
+
+**Follow-up Questions Interviewers Ask:**
+- What is an "undead" task? — The reverse case: a process still running for a task the DB no longer considers running. Airflow tells it to stop on its next heartbeat.
+- How do you get alerted on zombies? — The failure callback fires as usual. Also watch the zombie or heartbeat-timeout metrics and the Kubernetes OOM events.
+
+---
+
+### Q568. Why is DAG parsing slow, and how do you keep parse time low?
+**ID:** AF-50
+**Topic:** Airflow > Performance
+**Level:** Intermediate
+**Frequency:** Very Common
+**Tags:** `airflow`, `performance`, `parsing`, `top-level-code`
+
+**Short Answer (2–3 lines):**
+Every DAG file is re-imported about every 30 seconds by the DAG processor, and again by workers at each task start. Anything at module level runs every time: API calls, DB queries, `Variable.get`, heavy imports such as pandas or ML libraries. Move that work into tasks, keep imports local to the tasks that need them, measure with `airflow dags report`, and use `.airflowignore` so non-DAG files aren't parsed.
+
+**Detailed Explanation:**
+Why it matters:
+- Slow files delay new DAGs and changes from appearing, and files over `dagbag_import_timeout` (30 s) become import errors, so DAGs "flicker" in and out of the UI.
+- With versioned bundles, every task start parses the file again, so parse time adds to task latency.
+- Parse-time calls multiply quickly: 200 files × 2 lookups each × 2 parses a minute is 800 secrets-backend calls a minute.
+
+Fixes, roughly in order of impact:
+| Fix | How |
+|---|---|
+| No I/O at top level | Move the work into a task. Use dynamic task mapping for lists only known at run time (see Q529) |
+| Lazy heavy imports | `import pandas` inside the task function |
+| Templates instead of Python lookups | `{{ var.value.x }}`, `{{ conn.x.host }}` render at run time |
+| Static config for factories | YAML in the bundle, `yaml.safe_load` once (see Q531) |
+| `get_parsing_context()` | Workers build only the DAG they need |
+| `.airflowignore` | Skip `sql/`, `tests/` and helper packages (glob syntax by default in 3.x) |
+| Processor tuning | `parsing_processes`, `min_file_process_interval`, `refresh_interval`, more DAG processor replicas or separate bundles |
+| `parsing_pre_import_modules = True` (default) | Imports `airflow` modules once in the parent process |
+
+Measure before tuning. `airflow dags report` lists the parse duration per file. The `dag_processing.last_duration` metric, tagged by file, shows trends. A CI parse-time budget stops regressions (see Q560). The official best-practices guide says the same: top-level code is the most common cause of slow schedulers.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 — dags/slow_top_level.py
+# BAD: work at import time runs on every parse (every ~30 s per file, on every DAG processor)
+import time
+from datetime import datetime
+from airflow.sdk import dag, task
+
+def fetch_tables_from_api():
+    time.sleep(1.5)                                   # stands in for an HTTP call / DB query
+    return ["orders", "customers", "invoices"]
+
+TABLES = fetch_tables_from_api()                      # runs at parse time!
+
+@dag(schedule="@daily", start_date=datetime(2026, 1, 1), catchup=False)
+def slow_top_level():
+    for t in TABLES:
+        @task(task_id=f"load_{t}")
+        def load(table=t):
+            print(table)
+        load()
+
+slow_top_level()
+```
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 — dags/fast_top_level.py
+# GOOD: the file only declares structure; work happens inside tasks at run time
+from datetime import datetime
+from airflow.sdk import dag, task
+
+@dag(schedule="@daily", start_date=datetime(2026, 1, 1), catchup=False)
+def fast_top_level():
+    @task
+    def list_tables() -> list[str]:
+        import time; time.sleep(1.5)                  # the same API call, now at run time
+        return ["orders", "customers", "invoices"]
+
+    @task
+    def load(table: str):
+        import pandas as pd                           # heavy import only where it is used
+        print(pd.__version__, table)
+
+    load.expand(table=list_tables())
+
+fast_top_level()
+```
+```bash
+# Runtime: Apache Airflow 3.3 CLI, dags_folder pointing at the two files above
+airflow dags report
+```
+```text
+file              | duration       | dag_num | task_num | dags
+==================+================+=========+==========+===============
+slow_top_level.py | 0:00:01.524504 | 1       | 3        | slow_top_level
+fast_top_level.py | 0:00:00.007452 | 1       | 2        | fast_top_level
+```
+The same work costs 1.5 s on *every* parse in the first file, and only once per run, inside a task, in the second.
+
+**Real-World Use Case:**
+A deployment's DAG processor took 9 minutes to work through 800 files, so new DAGs took up to 10 minutes to appear. `airflow dags report` showed 40 files each spending 5 to 8 seconds calling a metadata API at import time. Moving those calls into tasks, and adding `.airflowignore` for the SQL and test folders, brought a full parse pass under 60 seconds.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Raising `dagbag_import_timeout` instead of removing top-level I/O.
+- Assuming the scheduler parses files in Airflow 3. The DAG processor does (see Q519).
+- `datetime.now()` in DAG arguments, which also changes the serialised DAG on every parse and creates needless versions.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you find heavy imports? — `python -X importtime dags/my_dag.py` shows the cost of each import.
+- Does a slow DAG file slow down the others? — It uses one of the `parsing_processes` slots, so many slow files delay every file's next parse.
+
+---

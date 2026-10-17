@@ -1,7 +1,7 @@
 ---
 publishedDate: "2026-10-09"
-updatedDate: "2026-10-09"
-reviewedDate: "2026-10-09"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
 title: "How do you handle task failures and alerting in Airflow?"
 seoTitle: "Airflow Failure Handling and Alerting: Interview"
 description: "Interview answer: handle Airflow failures by retrying transient errors with backoff, failing fast on permanent ones, alerting on final failure."
@@ -44,8 +44,8 @@ import contextlib, io, tempfile
 from datetime import datetime, timedelta
 from airflow.dag_processing.bundles.manager import DagBundlesManager
 from airflow.dag_processing.dagbag import DagBag, sync_bag_to_db
-from airflow.exceptions import AirflowFailException
 from airflow.sdk import dag, task
+from airflow.sdk.exceptions import AirflowFailException
 from airflow.utils.session import create_session
 
 events = []
@@ -59,18 +59,21 @@ def note_retry(context):
 
 attempts = {"n": 0}
 
-@dag(schedule=None, start_date=datetime(2026, 1, 1),
-     default_args={"retries": 2, "retry_delay": timedelta(seconds=0),
-                   "on_failure_callback": alert_on_failure, "on_retry_callback": note_retry})
+# In a DAG file you would usually put these in default_args; they are passed per task here
+# because DAG serialization stores default_args callables as source code, which an in-memory demo lacks.
+policy = {"retries": 2, "retry_delay": timedelta(seconds=0),
+          "on_failure_callback": alert_on_failure, "on_retry_callback": note_retry}
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1))
 def failure_demo():
-    @task
+    @task(**policy)
     def flaky_api():
         attempts["n"] += 1
         if attempts["n"] < 2:
             raise TimeoutError("upstream API timed out")
         return "ok"
 
-    @task
+    @task(**policy)
     def validate(_):
         raise AirflowFailException("schema mismatch: column amount missing")
 

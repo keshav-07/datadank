@@ -1,7 +1,7 @@
 ---
 publishedDate: "2026-10-04"
-updatedDate: "2026-10-09"
-reviewedDate: "2026-10-09"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
 title: "How should Airflow retries and idempotency work together?"
 seoTitle: "Airflow Retries and Idempotency: Interview Answer"
 description: "Interview answer: Airflow retries rerun a failed task, so each task must produce the same result for its data interval however many times it runs."
@@ -49,7 +49,7 @@ Retry settings usually go in `default_args`. In Airflow 3, `retry_exponential_ba
 ```python
 from datetime import datetime, timedelta
 from airflow.sdk import dag, task
-from airflow.exceptions import AirflowFailException
+from airflow.sdk.exceptions import AirflowFailException
 
 default_args = {
     "retries": 3,

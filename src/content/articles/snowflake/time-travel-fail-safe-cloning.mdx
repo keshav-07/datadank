@@ -1,7 +1,7 @@
 ---
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-17"
+reviewedDate: "2026-10-17"
 title: "Snowflake Time Travel, Fail-safe and Zero-Copy Cloning"
 seoTitle: "Snowflake Time Travel, Fail-safe and Cloning"
 description: "Query and restore past data with Snowflake Time Travel, set retention by edition, understand the 7-day Fail-safe and use zero-copy clones safely."
@@ -22,6 +22,7 @@ sources:
   - { label: "Snowflake documentation: Understanding and using Time Travel", url: "https://docs.snowflake.com/en/user-guide/data-time-travel" }
   - { label: "Snowflake documentation: Understanding and viewing Fail-safe", url: "https://docs.snowflake.com/en/user-guide/data-failsafe" }
   - { label: "Snowflake documentation: Storage costs for Time Travel and Fail-safe", url: "https://docs.snowflake.com/en/user-guide/data-cdp-storage-costs" }
+  - { label: "Snowflake documentation: Backups for disaster recovery and immutable storage", url: "https://docs.snowflake.com/en/user-guide/backups" }
   - { label: "Snowflake documentation: CREATE ... CLONE", url: "https://docs.snowflake.com/en/sql-reference/sql/create-clone" }
   - { label: "Snowflake documentation: Cloning considerations", url: "https://docs.snowflake.com/en/user-guide/object-clone" }
   - { label: "Snowflake documentation: Working with temporary and transient tables", url: "https://docs.snowflake.com/en/user-guide/tables-temp-transient" }
@@ -52,7 +53,7 @@ Time Travel storage is billed like any other storage. A table that is completely
 
 **Pitfalls**
 
-- Treating Time Travel as a backup strategy on its own. It is bounded by retention, follows the table's lifecycle and lives in the same account; for long-term or cross-account protection use replication or exports.
+- Treating Time Travel as a backup strategy on its own. It is bounded by retention and follows the table's lifecycle; for longer point-in-time recovery use backup sets (below), and for region or account loss use replication.
 - Forgetting the cost on high-churn tables. See `TIME_TRAVEL_BYTES` in `TABLE_STORAGE_METRICS`.
 
 **In interviews**
@@ -303,6 +304,46 @@ Common uses:
 
 Explain "zero-copy" (metadata pointers to immutable micro-partitions, copy-on-write afterwards), list two or three uses, and mention what is not copied (table grants without `COPY GRANTS`, load history) and that tasks are suspended.
 
+## Backups: snapshots beyond Time Travel
+
+Time Travel ends after the retention period and Fail-safe is not yours to use, so for "restore last month's version" or regulatory retention Snowflake offers **backups**, available in every edition. A **backup set** is a schema-level object holding point-in-time backups of one table, schema or database; a **backup policy** adds a schedule (every N minutes, at least 60, or a cron expression) and an expiry. Like clones, backups point at immutable micro-partitions instead of copying them, so taking one is fast and you pay for the micro-partitions it keeps alive.
+
+{/* noexec */}
+```sql
+-- Snowflake SQL (not executed here)
+CREATE BACKUP POLICY daily_90d
+  SCHEDULE = '1440 MINUTE'
+  EXPIRE_AFTER_DAYS = 90;
+
+CREATE BACKUP SET orders_backups FOR TABLE analytics.orders
+  WITH BACKUP POLICY daily_90d;
+
+ALTER BACKUP SET orders_backups ADD BACKUP;        -- an extra manual backup before a risky change
+
+SHOW BACKUPS IN BACKUP SET orders_backups;          -- backup_id, created_on, expire_on
+
+-- Restore into a new table, then compare, swap or merge as with a Time Travel clone
+CREATE TABLE analytics.orders_restored
+  FROM BACKUP SET orders_backups IDENTIFIER '<backup_id>';
+```
+
+What to know:
+
+- **Retention lock** (`CREATE BACKUP POLICY ... WITH RETENTION LOCK`) makes backups undeletable until they expire, even by administrators, which is the ransomware and WORM-compliance use case; it and legal holds need Business Critical Edition or higher.
+- **Not everything is covered.** Transient tables are no longer supported in new backups, and external, hybrid and Iceberg tables are excluded; restored dynamic tables and tasks come back suspended.
+- **Cost**: scheduled creation and expiry run on serverless compute, restores use Snowflake-managed compute, and retained data shows up as `RETAINED_FOR_CLONE_BYTES` in `TABLE_STORAGE_METRICS` and in the `BACKUP_STORAGE_USAGE` view.
+- **Restores create a new object** with a different name. To keep backing up the same table into the same set, load the restored rows back into the original (for example `TRUNCATE` then `INSERT ... SELECT`) rather than dropping the original and renaming the restored copy.
+
+How the recovery tools compare:
+
+| Tool | Window | Who can restore | Typical use |
+|------|--------|-----------------|-------------|
+| Time Travel (`AT`/`BEFORE`, `UNDROP`) | Retention period, 1 day by default, up to 90 on Enterprise | You | Undo a bad statement or drop from the last hours or days |
+| Zero-copy clone | As long as you keep it | You | Snapshot before a migration, dev copies |
+| Backup set | As long as the policy keeps backups | You | Scheduled point-in-time copies, compliance retention, ransomware protection with a retention lock |
+| Replication to another account | Continuous | You, in the other account | Region or cloud outage (disaster recovery) |
+| Fail-safe | 7 days after Time Travel | Snowflake Support only | Last resort after an operational failure |
+
 ## Practice questions
 
 <details>
@@ -354,4 +395,5 @@ The clone shares micro-partitions with production. As production changed, the mi
 - Fail-safe adds 7 non-configurable days for permanent tables only, recoverable solely by Snowflake Support, and is billed.
 - `CREATE OR REPLACE` is a drop: recover with rename plus `UNDROP` within retention.
 - Zero-copy clones share micro-partitions and are billed for divergence; table grants need `COPY GRANTS`, tasks are suspended and load history is not copied.
+- Backup sets (all editions) give scheduled point-in-time copies beyond Time Travel; a retention lock (Business Critical) makes them undeletable until expiry.
 - Use transient tables for rebuildable staging data, and watch `TIME_TRAVEL_BYTES`, `FAILSAFE_BYTES` and `RETAINED_FOR_CLONE_BYTES`.

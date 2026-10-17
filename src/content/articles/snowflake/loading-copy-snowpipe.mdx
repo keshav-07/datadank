@@ -1,7 +1,7 @@
 ---
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-17"
+reviewedDate: "2026-10-17"
 title: "Loading Data into Snowflake: Stages, COPY INTO and Snowpipe"
 seoTitle: "Snowflake Loading: Stages, COPY INTO, Snowpipe"
 description: "Loading data into Snowflake: file formats, stages and COPY INTO, then automation with Snowpipe auto-ingest, the REST API and Snowpipe Streaming."
@@ -23,6 +23,7 @@ sources:
   - { label: "Snowflake documentation: CREATE STAGE", url: "https://docs.snowflake.com/en/sql-reference/sql/create-stage" }
   - { label: "Snowflake documentation: Snowpipe", url: "https://docs.snowflake.com/en/user-guide/data-load-snowpipe-intro" }
   - { label: "Snowflake documentation: Automating Snowpipe for Amazon S3", url: "https://docs.snowflake.com/en/user-guide/data-load-snowpipe-auto-s3" }
+  - { label: "Snowflake documentation: Snowpipe costs", url: "https://docs.snowflake.com/en/user-guide/data-load-snowpipe-billing" }
   - { label: "Snowflake documentation: Snowpipe REST API", url: "https://docs.snowflake.com/en/user-guide/data-load-snowpipe-rest-apis" }
   - { label: "Snowflake documentation: Snowpipe Streaming", url: "https://docs.snowflake.com/en/user-guide/snowpipe-streaming/data-load-snowpipe-streaming-overview" }
 versionContext: "Written against the current Snowflake documentation (October 2026). The Snowflake SQL examples were not executed, because no Snowflake account is available in this environment. Snowpipe moved to per-GB pricing in 2025 and Snowpipe Streaming has two architectures with different billing; check your account's documentation for current rates."
@@ -224,7 +225,7 @@ How it differs from bulk `COPY`:
 | Order of loading | Within one statement | Not guaranteed; files may load in any order |
 | Billing | Warehouse time | Per GB ingested (see below) |
 
-**Cost**: Snowflake moved Snowpipe to a fixed number of credits per GB ingested: text formats such as CSV and JSON are measured uncompressed, binary formats such as Parquet by their observed size. This reached Business Critical and VPS accounts in August 2025 and Standard and Enterprise accounts in December 2025. The rate is in the Service Consumption Table; check your account's documentation.
+**Cost**: Snowflake moved Snowpipe to a fixed number of credits per GB ingested: text formats such as CSV and JSON are measured uncompressed, binary formats such as Parquet by their observed size. This reached Business Critical and VPS accounts on 1 August 2025 and Standard and Enterprise accounts on 8 December 2025; before that, Snowpipe charged for compute time plus a fee per 1,000 files. The rate is in the Service Consumption Table. One practical consequence: a gzip-compressed CSV file that is 1 GB in storage and 5 GB uncompressed is billed as 5 GB, while a 1 GB Parquet file is billed as 1 GB, so when you control the producer, a binary format can make the same feed much cheaper to ingest. File count no longer changes the bill, but tiny files still add latency.
 
 Managing a pipe:
 
@@ -350,6 +351,8 @@ Snowflake now documents two architectures:
 | Client | `snowflake-ingest-java` SDK | Newer Snowpipe Streaming SDKs |
 | Server-side object | Writes directly to the table | Data flows through a **PIPE** object, which holds transformations and schema validation |
 | Billing | Serverless compute time plus active client connections | Flat rate per uncompressed GB ingested |
+
+The high-performance architecture is the one Snowflake now describes as Snowpipe Streaming, with the older SDK documented separately as the classic architecture; new pipelines should start on it. It can also write to Snowflake-managed Iceberg tables and can add new columns it detects in the stream (schema evolution) without manual DDL.
 
 Both keep an **offset token** per channel: the client records the position of the last row committed (for example a Kafka offset), and on restart reads the token from Snowflake to resume without duplicates or gaps. That is how the Kafka connector achieves exactly-once delivery into a table.
 

@@ -1,7 +1,7 @@
 ---
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-17"
+reviewedDate: "2026-10-17"
 title: "Snowflake Table Types and Semi-Structured Data: VARIANT, FLATTEN, Dynamic and Iceberg Tables"
 seoTitle: "Snowflake Table Types, VARIANT and FLATTEN"
 description: "Choose between permanent, transient, temporary, external, dynamic and Iceberg tables in Snowflake, and query JSON with VARIANT paths and FLATTEN."
@@ -25,6 +25,8 @@ sources:
   - { label: "Snowflake documentation: FLATTEN", url: "https://docs.snowflake.com/en/sql-reference/functions/flatten" }
   - { label: "Snowflake documentation: Querying semi-structured data", url: "https://docs.snowflake.com/en/user-guide/querying-semistructured" }
   - { label: "Snowflake documentation: Dynamic tables", url: "https://docs.snowflake.com/en/user-guide/dynamic-tables/overview" }
+  - { label: "Snowflake documentation: CREATE DYNAMIC TABLE", url: "https://docs.snowflake.com/en/sql-reference/sql/create-dynamic-table" }
+  - { label: "Snowflake documentation: Apache Iceberg tables", url: "https://docs.snowflake.com/en/user-guide/tables-iceberg" }
   - { label: "Snowflake documentation: CREATE ICEBERG TABLE (Snowflake as the Iceberg catalog)", url: "https://docs.snowflake.com/en/sql-reference/sql/create-iceberg-table-snowflake" }
 versionContext: "Written against the current Snowflake documentation (October 2026). The Snowflake SQL examples were not executed, because no Snowflake account is available in this environment. The JSON and FLATTEN analogue was run on PostgreSQL 16 with jsonb functions and its output is shown; it is PostgreSQL syntax, not Snowflake syntax. Dynamic table refresh modes and Iceberg catalog support change often; check your account's documentation."
 ---
@@ -140,7 +142,7 @@ Rules you need:
 - **Missing keys return SQL NULL.** A key that is present with JSON `null` returns a VARIANT null, which displays as `null` and is not SQL NULL; `IS_NULL_VALUE()` tests for it, and casting it to a type gives SQL NULL.
 - **Bad JSON**: `PARSE_JSON` fails on invalid input; `TRY_PARSE_JSON` returns NULL instead.
 - **Storage and pruning**: Snowflake stores frequently occurring paths in a columnar way where it can, so common fields prune and compress well. Fields with mixed types or very sparse keys benefit less; extract the important ones into typed columns.
-- A single `VARIANT` value has a maximum size; check your account's documentation for the current limit before loading very large documents.
+- A single `VARIANT`, `OBJECT` or `ARRAY` value can hold up to 128 MB of uncompressed data (the limit used to be 16 MB), and internal overhead makes the practical maximum somewhat smaller. Split very large documents, or use `STRIP_OUTER_ARRAY` so a file holding one big array loads as one row per element.
 
 ### Runnable analogue: JSON paths in PostgreSQL
 
@@ -317,8 +319,8 @@ Key settings:
 |---------|---------|
 | `TARGET_LAG` | Maximum staleness relative to the base tables, for example `'15 minutes'`. The minimum is 60 seconds. Actual lag can exceed it if refreshes take longer |
 | `TARGET_LAG = DOWNSTREAM` | No schedule of its own: refresh when dynamic tables that depend on it refresh. Typical for intermediate tables |
-| `WAREHOUSE` | The warehouse that runs refreshes, billed like any other warehouse use. This is the standard setup in the documentation's examples; check the `CREATE DYNAMIC TABLE` reference for other compute options in your account |
-| `REFRESH_MODE` | `INCREMENTAL` (process only changes), `FULL` (recompute), or `AUTO` (Snowflake chooses at creation based on the query). The documentation lists the current set of modes |
+| `WAREHOUSE` | Required: the warehouse that runs refreshes, billed like any other warehouse use. An optional `INITIALIZATION_WAREHOUSE` can run the first (and any re-) initialisation on a bigger warehouse |
+| `REFRESH_MODE` | `AUTO` (the default: incremental where the query allows it, otherwise full), `INCREMENTAL`, `FULL`, `ADAPTIVE` (incremental, but Snowflake reinitialises the table when a full rebuild would be much cheaper) or `CUSTOM_INCREMENTAL` (your own `MERGE INTO SELF` or `INSERT INTO SELF` statement in a `REFRESH USING` clause). It cannot be changed with `ALTER`; Snowflake recommends setting it explicitly so behaviour does not change between releases |
 | `INITIALIZE` | `ON_CREATE` (populate immediately, the default) or `ON_SCHEDULE` |
 
 A chain of dynamic tables forms a pipeline graph that Snowflake schedules as a whole. You can suspend, resume and manually refresh them (`ALTER DYNAMIC TABLE ... SUSPEND | RESUME | REFRESH`) and inspect refreshes in Snowsight or with `DYNAMIC_TABLE_REFRESH_HISTORY`.
@@ -337,7 +339,7 @@ Choosing between the options:
 
 - Non-deterministic or unsupported constructs make a dynamic table fall back to full refresh, which can be expensive on large data. Check the refresh mode Snowflake chose after creation.
 - Setting a short target lag everywhere: every refresh resumes the warehouse. Use `DOWNSTREAM` for intermediate tables and the longest lag the business accepts.
-- Expecting dynamic tables to handle SCD Type 2 history: they compute the current result of a query; keeping history needs streams and tasks or snapshots.
+- Expecting a `SELECT`-based dynamic table to keep SCD Type 2 history: it computes the current result of a query. History needs streams and tasks, snapshots, or a `CUSTOM_INCREMENTAL` dynamic table whose `REFRESH USING` statement you write and test yourself (Snowflake then schedules it but no longer guarantees the result equals a query).
 
 **In interviews**
 
@@ -352,7 +354,7 @@ There are two kinds, depending on which **catalog** manages the table's metadata
 | | Snowflake-managed (Snowflake as the catalog) | Externally managed (external catalog) |
 |--|---------------------------------------------|---------------------------------------|
 | Catalog | Snowflake | AWS Glue, an Iceberg REST catalog, Snowflake Open Catalog, or metadata files in object storage, through a **catalog integration** |
-| Writes from Snowflake | Full DML, like native tables | Historically read-only; write support depends on the catalog type, so check the current documentation |
+| Writes from Snowflake | Full DML, like native tables | Supported for tables in a remote **Iceberg REST catalog** (including AWS Glue's and Snowflake Open Catalog's REST endpoints); a **catalog-linked database** discovers and syncs a remote catalog's namespaces and tables. Other catalog sources are read-only |
 | Other engines | Read through Snowflake's catalog support, or by syncing to Snowflake Open Catalog (`CATALOG_SYNC`) | Read and write through their catalog as usual |
 | Snowflake features | Most table features, including clustering and Time Travel through Iceberg snapshots | More limited; metadata refreshed from the external catalog |
 
@@ -418,7 +420,7 @@ Orders whose `items` array is empty or missing produce no rows from `FLATTEN` by
 <details>
 <summary>When would you choose a dynamic table over a stream and task?</summary>
 
-When the transformation can be expressed as a query (joins, aggregations, filters) and a freshness target is enough: the dynamic table handles change tracking, scheduling and incremental refresh. Choose streams and tasks when you need procedural control: SCD Type 2 history, conditional deletes, calls to procedures or external functions, or exactly custom `MERGE` semantics.
+When the transformation can be expressed as a query (joins, aggregations, filters) and a freshness target is enough: the dynamic table handles change tracking, scheduling and incremental refresh. Choose streams and tasks when you need procedural control: SCD Type 2 history, conditional deletes, calls to procedures or external functions, or several statements per run. A single custom `MERGE` can now also live in a `CUSTOM_INCREMENTAL` dynamic table, which keeps Snowflake's scheduling while you own the merge logic.
 
 </details>
 

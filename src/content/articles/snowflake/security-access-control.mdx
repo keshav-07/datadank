@@ -1,7 +1,7 @@
 ---
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-17"
+reviewedDate: "2026-10-17"
 title: "Snowflake Security: RBAC, Masking, Row Access Policies and Network Policies"
 seoTitle: "Snowflake Security: RBAC, Masking, Row Access"
 description: "Design Snowflake access control with roles and ownership, protect data with masking, row access policies and secure views, and lock down network access."
@@ -24,8 +24,9 @@ sources:
   - { label: "Snowflake documentation: Using Dynamic Data Masking", url: "https://docs.snowflake.com/en/user-guide/security-column-ddm-use" }
   - { label: "Snowflake documentation: Use row access policies", url: "https://docs.snowflake.com/en/user-guide/security-row-using" }
   - { label: "Snowflake documentation: Controlling network traffic with network policies", url: "https://docs.snowflake.com/en/user-guide/network-policies" }
+  - { label: "Snowflake documentation: Planning for the deprecation of single-factor password sign-ins", url: "https://docs.snowflake.com/en/user-guide/security-mfa-rollout" }
   - { label: "Snowflake documentation: Understanding encryption key management", url: "https://docs.snowflake.com/en/user-guide/security-encryption-manage" }
-versionContext: "Written against the current Snowflake documentation (October 2026). The Snowflake SQL examples were not executed, because no Snowflake account is available in this environment. Masking and row access policies need Enterprise Edition or higher; authentication requirements (MFA, password deprecation) were being phased in during 2025 and 2026, so check your account's documentation for the current state."
+versionContext: "Written against the current Snowflake documentation (October 2026). The Snowflake SQL examples were not executed, because no Snowflake account is available in this environment. Masking and row access policies need Enterprise Edition or higher; the MFA and password phase-out timeline follows Snowflake's published rollout plan (final phase August to October 2026)."
 ---
 
 Security questions in Snowflake interviews are rarely about cryptography. They are about **who can see what**: how roles and privileges are structured, how sensitive columns and rows are protected for some users and not others, and how access to the account itself is restricted. This lesson covers the access control model, role design, ownership, masking and row access policies, secure views, network policies, encryption and authentication.
@@ -350,7 +351,7 @@ ALTER USER etl_service SET RSA_PUBLIC_KEY = 'MIIBIjANBgkqh...';
 
 **Authentication policies** restrict which methods, clients and security integrations a user or the account may use, and can require MFA.
 
-Snowflake has been **phasing out single-factor password sign-ins**: the documented plan required MFA for human users of Snowsight first and then for all password-based sign-ins in later phases scheduled through 2026, while service users are expected to use key pairs, OAuth or tokens rather than passwords. Check your account's documentation for which phase applies to you.
+Snowflake has been **phasing out single-factor password sign-ins** in three phases: MFA for every Snowsight password login (September 2025 to January 2026), MFA for all newly created human users plus no new `LEGACY_SERVICE` users (May to July 2026), and finally MFA for all human users with a password and **no passwords at all for non-human users** (August to October 2026), when remaining `LEGACY_SERVICE` users are converted to `TYPE = SERVICE`. Each phase is enforced account by account over its window, so by late 2026 a pipeline that still logs in with a password will fail: service users need key pairs, OAuth, workload identity federation or programmatic access tokens.
 
 **Pitfalls**
 

@@ -9,8 +9,8 @@ questionType: ["coding"]
 estimatedMinutes: 6
 interviewRelevance: "Medium"
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-09"
+reviewedDate: "2026-10-09"
 shortAnswer: "Because timestamps arrive in increasing order, the requests inside the window always form a contiguous block at the end of the history. Keep them in a deque: on each new request, append its time, then pop from the front while the oldest time is earlier than t - 3000. The deque length is the answer. Each timestamp is added and removed once, so the cost is amortised O(1) per call, with space bounded by the number of requests in one window."
 followUps: ["What changes if timestamps can arrive out of order?", "How would you count per user or per API key?", "How would you bound memory if a window could hold millions of requests?"]
 versionContext: "Python 3 solutions verified with assert-based tests"
@@ -26,10 +26,10 @@ Design a counter class with one method, `ping(t)`, called each time a request ar
 ## Examples
 
 ```text
-ping(100)   -> 1    window [-2900, 100]: 100
-ping(2500)  -> 2    window [-500, 2500]: 100, 2500
-ping(3100)  -> 3    window [100, 3100]: 100, 2500, 3100   (100 is exactly on the edge)
-ping(3101)  -> 3    window [101, 3101]: 2500, 3100, 3101
+ping(200)   -> 1    window [-2800, 200]: 200
+ping(1700)  -> 2    window [-1300, 1700]: 200, 1700
+ping(3200)  -> 3    window [200, 3200]: 200, 1700, 3200   (200 is exactly on the edge)
+ping(5000)  -> 2    window [2000, 5000]: 3200, 5000
 ```
 
 ## Approach 1: brute force
@@ -56,10 +56,10 @@ Walkthrough of the example:
 
 | ping | Append | Drop from front (time below t − 3000) | Queue | Return |
 |---|---|---|---|---|
-| 100 | 100 | | 100 | 1 |
-| 2500 | 2500 | | 100 2500 | 2 |
-| 3100 | 3100 | none (100 is not below 100) | 100 2500 3100 | 3 |
-| 3101 | 3101 | 100 | 2500 3100 3101 | 3 |
+| 200 | 200 | | 200 | 1 |
+| 1700 | 1700 | | 200 1700 | 2 |
+| 3200 | 3200 | none (200 is not below 200) | 200 1700 3200 | 3 |
+| 5000 | 5000 | 200, 1700 | 3200 5000 | 2 |
 
 ```python
 from collections import deque
@@ -85,7 +85,7 @@ import random
 
 for cls in (RecentCounter, RecentCounterScan):
     c = cls()
-    assert [c.ping(t) for t in (100, 2500, 3100, 3101)] == [1, 2, 3, 3]
+    assert [c.ping(t) for t in (200, 1700, 3200, 5000)] == [1, 2, 3, 2]
     c2 = cls()
     assert c2.ping(1) == 1                                     # single call
     c3 = cls()

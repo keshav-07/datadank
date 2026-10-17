@@ -15,9 +15,9 @@ learningObjectives:
   - "Keep credentials in Secrets Manager and define infrastructure with CloudFormation or the CDK"
   - "Attribute cost to pipelines with activated cost allocation tags"
 prerequisites: ["articles:aws/glue-catalog-crawlers-etl", "articles:aws/athena", "articles:aws/lake-formation"]
-related: ["articles:delta-lake/delta-vs-traditional-lake-tables", "articles:etl-elt/data-quality-checks-contracts", "articles:delta-lake/schema-evolution-patterns", "system-designs:scalable-lakehouse"]
+related: ["articles:delta-lake/delta-vs-traditional-lake-tables", "articles:etl-elt/data-quality-checks-contracts", "articles:delta-lake/schema-evolution-patterns", "system-designs:scalable-lakehouse", "interview-questions:aws/s3-data-lake-layout", "interview-questions:aws/aws-data-platform-cost-optimization"]
 previous: "articles:aws/aws-data-services-landscape"
-versionContext: "Service status and features checked against the AWS documentation and What's New posts in October 2026; DataBrew and AppFlow were not on AWS's services-in-maintenance list when checked. AWS CLI, Athena SQL, Glue scripts, CloudFormation and CDK code need an AWS account and were written from the documentation and not executed; JSON documents were checked to parse and Python code to compile. The data quality rule evaluator and the tag checker are small local models that run on Python 3.11, not the AWS services."
+versionContext: "Service status and features checked against the AWS documentation and What's New posts in October 2026 (services-in-maintenance list and S3 Tables maintenance re-checked on 16 October 2026); DataBrew and AppFlow were not on AWS's services-in-maintenance list when checked. AWS CLI, Athena SQL, Glue scripts, CloudFormation and CDK code need an AWS account and were written from the documentation and not executed; JSON documents were checked to parse and Python code to compile. The data quality rule evaluator and the tag checker are small local models that run on Python 3.11, not the AWS services."
 sources:
   - { label: "Amazon S3 User Guide: Working with S3 Tables and table buckets", url: "https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-tables.html" }
   - { label: "AWS Glue: Data Quality Definition Language (DQDL) reference", url: "https://docs.aws.amazon.com/glue/latest/dg/dqdl.html" }

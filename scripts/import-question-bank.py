@@ -79,6 +79,18 @@ PAGES = {
             seoTitle="Behavioral Interview Questions for Data Engineers",
             description="18 behavioral interview questions for data engineers with STAR-style answers: project walkthroughs, incidents, mistakes, stakeholders and leadership.",
             covers="project walkthroughs, incidents, mistakes, conflict, prioritisation, stakeholders, mentoring and leadership"),
+    10: dict(folder="kafka", slug="kafka-interview-questions", hub="kafka", label="Kafka",
+             noun="Kafka interview questions", technology=["kafka", "data-engineering"], section="learn",
+             title="Top 50 Apache Kafka Interview Questions and Answers",
+             seoTitle="Top 50 Kafka Interview Questions and Answers",
+             description="Top 50 Apache Kafka interview questions with answers: partitions, consumer groups, delivery guarantees, KRaft, Connect, Streams and operations.",
+             covers="topics and partitions, producers and consumers, consumer groups, delivery guarantees and transactions, KRaft, Kafka Connect, Kafka Streams, schemas and operations"),
+    11: dict(folder="airflow", slug="airflow-interview-questions", hub="airflow", label="Airflow",
+             noun="Airflow interview questions", technology=["airflow", "data-engineering"], section="learn",
+             title="Top 50 Apache Airflow Interview Questions and Answers",
+             seoTitle="Top 50 Airflow Interview Questions and Answers",
+             description="Top 50 Apache Airflow 3 interview questions with answers: DAGs, TaskFlow, scheduling, assets, backfills, executors, testing and migration.",
+             covers="DAG parsing, TaskFlow and operators, dependencies and trigger rules, dynamic task mapping, scheduling and assets, backfills, deferrable tasks, executors, testing, CI/CD and Airflow 3 migration"),
 }
 
 DEEP = {
@@ -106,6 +118,12 @@ DEEP = {
     356: "python/generators-large-datasets", 364: "python/exceptions-in-pipelines",
     374: "python/process-large-csv-limited-memory", 379: "python/api-retries-backoff",
     422: "kafka/consumer-lag-causes-fixes", 427: "airflow/slow-scheduler-stuck-tasks",
+    529: "airflow/dynamic-task-mapping", 536: "airflow/catchup-and-backfill",
+    537: "airflow/logical-date-and-data-interval", 542: "airflow/cross-dag-dependencies",
+    543: "airflow/sensors-and-deferrable-operators", 545: "airflow/xcom-vs-external-storage",
+    550: "airflow/retries-and-idempotency", 552: "airflow/failure-handling-and-alerting",
+    553: "airflow/choosing-an-executor", 560: "airflow/testing-airflow-dags",
+    564: "airflow/airflow-2-to-3-migration", 568: "airflow/slow-scheduler-stuck-tasks",
 }
 
 QDIR = ROOT / "src/content/interview-questions"

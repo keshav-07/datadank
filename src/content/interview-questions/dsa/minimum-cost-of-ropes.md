@@ -27,7 +27,7 @@ You have ropes of given positive lengths. You may join any two ropes into one; d
 ## Examples
 
 ```text
-[4, 3, 2, 6]   ->  29   (2+3=5, 4+5=9, 6+9=15; 5 + 9 + 15)
+[5, 2, 8, 3]   ->  33   (2+3=5, 5+5=10, 8+10=18; 5 + 10 + 18)
 [1, 1, 1, 1]   ->  8    (1+1, 1+1, 2+2)
 [7]            ->  0    (nothing to join)
 [5, 5]         ->  10
@@ -90,7 +90,7 @@ def min_cost(ropes):
 import random
 
 for f in (min_cost, min_cost_brute):
-    assert f([4, 3, 2, 6]) == 29
+    assert f([5, 2, 8, 3]) == 33
     assert f([1, 1, 1, 1]) == 8
     assert f([7]) == 0
     assert f([]) == 0
@@ -111,7 +111,7 @@ print("ok")
 ## Edge cases and pitfalls
 
 - Copy the list before `heapify` if the caller still needs it; `heapify` rearranges in place.
-- Joining in the given order, or always adding the next rope to one growing rope, is not optimal: `[4, 3, 2, 6]` in order costs 7 + 9 + 15 = 31, against 29 for the greedy.
+- Joining in the given order, or always adding the next rope to one growing rope, is not optimal: `[5, 2, 8, 3]` in order costs 7 + 15 + 18 = 40, against 33 for the greedy.
 - Totals can exceed 32-bit integers in languages with fixed-width ints; Python is safe, but say so in a Java or C++ answer.
 - Zero or one rope costs nothing.
 

@@ -26,7 +26,7 @@ You get a tree with `n` nodes labelled `0` to `n - 1`, as a list of `n - 1` undi
 as the root, and the height is then the number of edges on the longest path from the root down to a leaf. Return
 all nodes whose choice as root gives the minimum possible height, in any order.
 
-This is LeetCode 310, Minimum Height Trees. Assume `n` up to about 20,000, which rules out anything quadratic.
+This is LeetCode 310, Minimum Height Trees. Trees can have tens of thousands of nodes, which rules out anything quadratic.
 
 ## Examples
 
@@ -65,7 +65,7 @@ def find_min_height_trees_brute(n, edges):
     return [r for r in range(n) if heights[r] == best]
 ```
 
-**Complexity:** O(n^2) time (n BFS runs of O(n) each) and O(n) space. Fine for checking, too slow at 20,000 nodes.
+**Complexity:** O(n^2) time (n BFS runs of O(n) each) and O(n) space. Fine for checking, too slow for trees with tens of thousands of nodes.
 
 ## Approach 2: optimal (trim leaves layer by layer)
 

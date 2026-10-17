@@ -26,7 +26,7 @@ A row of flowers is described by a list `bloom`, where `bloom[i]` is the day flo
 
 This is LeetCode 1482, Minimum Number of Days to Make m Bouquets. It is a binary search on the answer with a greedy feasibility check.
 
-Assume up to 100,000 flowers, bloom days up to a billion, and `m`, `k` up to about a million.
+Rows can be long and bloom days can be as large as a billion, so trying every day is too slow; `m * k` can exceed the number of flowers.
 
 ## Examples
 

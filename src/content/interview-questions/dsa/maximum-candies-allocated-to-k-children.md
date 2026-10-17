@@ -26,7 +26,7 @@ You have several piles of candies, given as a list of positive integers, and `k`
 
 This is LeetCode 2226, Maximum Candies Allocated to K Children. It is binary search on the answer in its "largest feasible value" form.
 
-Assume up to 100,000 piles, each up to ten million, and `k` up to about 10^12.
+Piles can be large (millions of candies) and `k` can be far larger than the total, so the search range is big and the answer can be 0.
 
 ## Examples
 
@@ -52,7 +52,7 @@ def max_share_linear(candies, k):
     return 0
 ```
 
-This is O(n * M) for the largest pile `M`, far too slow at ten million per pile.
+This is O(n * M) for the largest pile `M`, far too slow when piles hold millions of candies.
 
 ## Approach 2: optimal (binary search on the share)
 

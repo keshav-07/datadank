@@ -24,7 +24,7 @@ next: "interview-questions:dsa/rotate-image"
 
 You are given a list of integers `nums` arranged in a circle, so the element after the last one is the first one. Return the largest possible sum of a non-empty contiguous subarray, where a subarray may wrap around the end but may use each element at most once. This is LeetCode 918, Maximum Sum Circular Subarray.
 
-The list has up to about 3 · 10^4 elements and values can be negative.
+The list is non-empty, can be long, and values can be negative.
 
 ## Examples
 

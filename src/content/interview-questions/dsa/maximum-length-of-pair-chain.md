@@ -27,8 +27,8 @@ You get n pairs `[left, right]` with `left < right`. Pair `q` can follow pair `p
 ## Examples
 
 ```text
-[[1, 2], [3, 4], [2, 3]]           ->  2   ([1, 2] -> [3, 4]; [2, 3] touches both)
-[[1, 2], [7, 8], [4, 5]]           ->  3
+[[5, 6], [1, 3], [3, 5]]           ->  2   ([1, 3] -> [5, 6]; [3, 5] touches both)
+[[10, 12], [2, 4], [6, 8]]         ->  3
 [[1, 10], [2, 3], [4, 5], [6, 7]]  ->  3   (skip the long pair)
 [[5, 6]]                           ->  1
 ```
@@ -83,8 +83,8 @@ def chain_brute(pairs):
     return 0
 
 for f in (chain_greedy, chain_dp, chain_brute):
-    assert f([[1, 2], [3, 4], [2, 3]]) == 2
-    assert f([[1, 2], [7, 8], [4, 5]]) == 3
+    assert f([[5, 6], [1, 3], [3, 5]]) == 2
+    assert f([[10, 12], [2, 4], [6, 8]]) == 3
     assert f([[1, 10], [2, 3], [4, 5], [6, 7]]) == 3
     assert f([[5, 6]]) == 1
     assert f([]) == 0

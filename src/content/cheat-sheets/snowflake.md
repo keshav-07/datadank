@@ -1,7 +1,7 @@
 ---
 publishedDate: "2026-10-04"
-updatedDate: "2026-10-09"
-reviewedDate: "2026-10-09"
+updatedDate: "2026-10-17"
+reviewedDate: "2026-10-17"
 title: "Snowflake Cheat Sheet"
 description: "A quick Snowflake reference: warehouses, loading, streams and tasks, dynamic tables, Time Travel, cloning, clustering, caches, security and cost-control habits."
 inventoryId: "CHEAT-05"
@@ -27,6 +27,7 @@ ALTER WAREHOUSE etl_wh SUSPEND;
 | Fact | Value |
 |------|-------|
 | Credits per hour (standard Gen1) | XS 1, S 2, M 4, L 8, XL 16, doubling per size |
+| New standard warehouses | Gen2 by default where available: higher hourly rate, query acceleration on; compare credits per job |
 | Billing | Per second while running, 60-second minimum per resume |
 | Default `AUTO_SUSPEND` (SQL) | 600 seconds |
 | Cloud services | Billed only above 10% of daily warehouse credits |
@@ -96,6 +97,7 @@ AS SELECT sku, SUM(qty) AS units FROM analytics.order_items GROUP BY sku;
 SELECT * FROM orders AT (OFFSET => -60 * 60);           -- one hour ago
 SELECT * FROM orders BEFORE (STATEMENT => '<query_id>');
 UNDROP TABLE orders;
+CREATE BACKUP SET orders_backups FOR TABLE orders WITH BACKUP POLICY daily_90d;   -- backups beyond Time Travel
 CREATE TABLE orders_backup CLONE orders;                 -- zero-copy clone
 CREATE TABLE orders_fix CLONE orders BEFORE (STATEMENT => '<query_id>');
 ```
@@ -151,4 +153,4 @@ FROM raw.events, LATERAL FLATTEN(INPUT => payload:items, OUTER => TRUE) f;
 | One warehouse per workload | Size and attribute cost separately |
 | Check "partitions scanned" in the query profile | Fix pruning before scaling up |
 | Transient tables for rebuildable staging | No Fail-safe storage |
-| Resource monitors on warehouses, budgets for serverless | Monitors do not cover serverless features |
+| Resource monitors on warehouses, budgets for serverless | Monitors do not cover serverless features; budgets forecast, notify and can call a procedure |

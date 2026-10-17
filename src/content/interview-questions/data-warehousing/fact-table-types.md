@@ -4,7 +4,7 @@ updatedDate: "2026-10-16"
 reviewedDate: "2026-10-16"
 title: "Transaction, periodic snapshot or accumulating snapshot: which fact table would you build?"
 seoTitle: "Fact Table Types: Transaction vs Snapshot"
-description: "Fact table types interview answer: when to build transaction, periodic snapshot and accumulating snapshot facts, with SQL that builds all three from one event log."
+description: "Fact table types interview answer: when to build transaction, periodic snapshot or accumulating snapshot facts, with SQL that builds all three from one log."
 technology: ["data-warehousing", "data-engineering"]
 topic: ["fact-tables", "snapshots", "dimensional-modeling", "semi-additive"]
 difficulty: "Medium"

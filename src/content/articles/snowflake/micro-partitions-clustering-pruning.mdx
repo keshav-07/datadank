@@ -1,7 +1,7 @@
 ---
 publishedDate: "2026-10-04"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-17"
+reviewedDate: "2026-10-17"
 title: "Snowflake Micro-Partitions, Clustering and Search Optimization"
 seoTitle: "Snowflake Micro-Partitions, Clustering, Search Opt"
 description: "Snowflake micro-partitions and clustering: how metadata drives pruning, measuring clustering depth, when clustering keys pay off, and search optimization."
@@ -176,7 +176,7 @@ ALTER TABLE events DROP CLUSTERING KEY;
 - **Mind cardinality.** The column needs enough distinct values for pruning to be useful, but not so many that clustering is expensive. A timestamp with microsecond precision or a unique ID is too fine; use an expression that coarsens it, such as `TO_DATE(event_ts)` or `TRUNC(customer_id, -3)`. A boolean is too coarse to help.
 - **Keep it short.** The documentation suggests at most three or four columns or expressions; more adds cost with little benefit.
 - **Order from lower to higher cardinality** in a multi-column key, because clustering on the first column dominates.
-- **Long strings**: clustering may only use a prefix of a string key's value (the documentation describes this per clustering version), so keys whose values differ only after a long common prefix cluster poorly. Use an expression that extracts the distinguishing part.
+- **Long strings**: Clustering Classic uses only the first 5 bytes of each clustering key column, so string keys whose values share a long common prefix (`'customer-000123'`, `'customer-000124'`) cluster poorly; use an expression that extracts the distinguishing part. Tables on the newer Optima Clustering engine can use up to 1 KB in total across the key columns.
 
 **Pitfalls**
 
@@ -262,7 +262,7 @@ ORDER BY credits DESC;
 
 Manual reclustering (an old `ALTER TABLE ... RECLUSTER` command) is deprecated. You can still re-sort a table yourself with `INSERT OVERWRITE INTO t SELECT * FROM t ORDER BY ...` on a warehouse, which is sometimes the cheapest one-off fix for a table that rarely changes.
 
-**Billing change in 2026.** Snowflake's documentation describes **Optima Clustering**, a newer clustering engine billed by the volume of data ingested into the clustered table rather than by serverless compute hours. From 1 September 2026, newly clustered tables use it, while tables already clustered stay on "Clustering Classic". Check your account's documentation for which engine your tables use and how it is priced.
+**Billing change in 2026.** Snowflake's documentation describes **Optima Clustering**, a newer clustering engine billed by the volume of data ingested into the clustered table rather than by serverless compute hours. From 1 September 2026, newly clustered tables use it, while tables already clustered stay on "Clustering Classic" indefinitely: changing the clustering key does not move a table to Optima, and there is no migrate command. `SYSTEM$CLUSTERING_INFORMATION` reports which engine a table uses, and the `VERSION` column of `AUTOMATIC_CLUSTERING_HISTORY` (`OPTIMA` or `CLASSIC`) lets you compare their costs over time. The billing model changes the cost-benefit test below: on Optima, cost follows how much data you load into the table rather than how much reclustering work your update pattern causes.
 
 **Pitfalls**
 

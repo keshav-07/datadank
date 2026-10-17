@@ -9,7 +9,7 @@ whatToLearnFirst: ["articles:dbt/dbt-for-data-engineers"]
 relatedTechnologies: ["sql","etl-elt","data-warehousing","airflow"]
 cheatSheet: "cheat-sheets:dbt"
 monogram: "dbt"
-lessons: ["articles:dbt/dbt-for-data-engineers", "articles:dbt/models-ref-and-sources", "articles:dbt/materializations", "articles:dbt/incremental-models", "articles:dbt/tests-and-data-quality", "articles:dbt/snapshots-scd-type-2"]
+lessons: ["articles:dbt/dbt-for-data-engineers", "articles:dbt/models-ref-and-sources", "articles:dbt/materializations", "articles:dbt/incremental-models", "articles:dbt/tests-and-data-quality", "articles:dbt/snapshots-scd-type-2", "articles:dbt/jinja-macros-and-packages"]
 updatedDate: 2026-10-17
 ---
 

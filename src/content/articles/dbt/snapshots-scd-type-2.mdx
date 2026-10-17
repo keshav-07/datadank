@@ -1,0 +1,211 @@
+---
+publishedDate: "2026-10-16"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
+title: "dbt Snapshots and SCD Type 2: Timestamp vs Check Strategy and Hard Deletes"
+seoTitle: "dbt Snapshots and SCD Type 2 Explained"
+description: "dbt snapshots for SCD Type 2 history: YAML snapshot config, timestamp vs check strategy, hard_deletes options, meta columns and point-in-time queries, run for real."
+technology: ["dbt", "data-warehousing", "sql"]
+topic: ["snapshots", "slowly-changing-dimensions"]
+difficulty: "Intermediate"
+learningObjectives:
+  - "Explain why snapshots exist and how they differ from incremental models"
+  - "Configure a YAML snapshot (dbt 1.9+) with the timestamp or check strategy"
+  - "Read the dbt_valid_from, dbt_valid_to, dbt_scd_id and dbt_is_deleted columns"
+  - "Choose a hard_deletes option and know what each records"
+  - "Query current rows and point-in-time history from a snapshot"
+prerequisites: ["articles:dbt/tests-and-data-quality", "articles:data-warehousing/slowly-changing-dimensions"]
+related: ["articles:data-warehousing/dimension-tables", "articles:etl-elt/cdc-patterns-and-failure-modes"]
+previous: "articles:dbt/tests-and-data-quality"
+versionContext: "Snapshots run on dbt Core 1.12.6 with dbt-duckdb 1.11.0 (DuckDB 1.5.6, Python 3.11) on 16 October 2026. The SQL block reloads the real snapshot rows and runs on DuckDB. Output is trimmed and timestamps are removed from logs."
+sources:
+  - { label: "dbt documentation: Add snapshots to your DAG", url: "https://docs.getdbt.com/docs/build/snapshots" }
+  - { label: "dbt documentation: Snapshot configurations", url: "https://docs.getdbt.com/reference/snapshot-configs" }
+  - { label: "dbt documentation: hard_deletes", url: "https://docs.getdbt.com/reference/resource-configs/hard-deletes" }
+  - { label: "dbt documentation: snapshot_meta_column_names", url: "https://docs.getdbt.com/reference/resource-configs/snapshot_meta_column_names" }
+---
+
+Most source systems overwrite rows. When customer 3 moves from Singapore to Malaysia, the `customers` table simply shows Malaysia from then on, and the fact that orders before the move were placed from Singapore is lost. A **snapshot** keeps that history: each time it runs, dbt compares the source with what it captured before and records changed rows as new versions with validity timestamps. The result is a Slowly Changing Dimension Type 2 (SCD2) table.
+
+## Snapshots vs incremental models
+
+Both write to an existing table without rebuilding it, but they answer different questions:
+
+| | Incremental model | Snapshot |
+|---|---|---|
+| Purpose | Process only new or changed rows of a derived table | Record every version of a mutable source row |
+| On change | Overwrites (merge) or adds (append) | Closes the old version, inserts a new one |
+| Rebuildable? | Yes, with `--full-refresh` from the source | No: history the source no longer has cannot be recreated |
+| Typical input | Staging models | A source, lightly cleaned at most |
+
+Because a snapshot cannot be rebuilt, treat its table as precious: do not drop it casually, and do not put fragile business logic inside it. The dbt docs suggest that if you must clean data first, do it in an ephemeral or staging model and point the snapshot at that.
+
+## Configuring snapshots in YAML
+
+Since dbt 1.9, snapshots are defined in YAML (older versions used a `{% snapshot %}` SQL block, which the docs now call the legacy configuration). The course project has two, in `snapshots/snapshots.yml`:
+
+```yaml
+snapshots:
+  - name: customers_snapshot
+    relation: source('shop', 'customers')
+    description: SCD Type 2 history of customers, using the source's updated_at column.
+    config:
+      schema: snapshots
+      unique_key: id
+      strategy: timestamp
+      updated_at: updated_at
+      hard_deletes: new_record
+
+  - name: orders_status_snapshot
+    relation: source('shop', 'orders')
+    description: History of order status changes, detected by comparing columns.
+    config:
+      schema: snapshots
+      unique_key: id
+      strategy: check
+      check_cols: ['status']
+```
+
+- `relation` is what to capture: a `source()` or a `ref()`.
+- `unique_key` identifies a row in the source; it must be unique there, or versions get tangled.
+- `strategy` decides how a change is detected (next section).
+- `schema` places the table. Since 1.9 a snapshot without `target_schema` uses `generate_schema_name`, so the same snapshot lands in `dbt_dev_snapshots` in development and, with this project's custom macro (lesson 7), in `snapshots` in production.
+
+`dbt snapshot` runs them (`dbt build` includes them too):
+
+```text
+$ dbt snapshot
+1 of 2 OK snapshotted dbt_dev_snapshots.customers_snapshot ..................... [OK in 0.09s]
+2 of 2 OK snapshotted dbt_dev_snapshots.orders_status_snapshot ................. [OK in 0.03s]
+```
+
+dbt adds metadata columns to the captured ones. For `customers_snapshot` the table is:
+
+```text
+id, first_name, last_name, email, country_code, updated_at,
+dbt_scd_id, dbt_updated_at, dbt_valid_from, dbt_valid_to, dbt_is_deleted
+```
+
+`dbt_valid_from` and `dbt_valid_to` bound each version (`dbt_valid_to` is null for the current one, unless you set `dbt_valid_to_current`, for example to `9999-12-31`); `dbt_scd_id` is a unique id per version; `dbt_is_deleted` exists because `hard_deletes: new_record` is set. `snapshot_meta_column_names` renames any of them to your conventions.
+
+## Timestamp strategy
+
+The timestamp strategy trusts an `updated_at` column: if a row's `updated_at` is newer than the version already captured, the old version is closed and a new one inserted. The docs state that `updated_at` populates `dbt_valid_from` and `dbt_valid_to` for this strategy.
+
+Between the first and second snapshot runs, the loader changed customer 3's email and country (with a new `updated_at`), deleted customer 5, and inserted customer 6. After the second run:
+
+```text
+│ id │        email        │ country_code │     updated_at      │       dbt_valid_from       │        dbt_valid_to        │ dbt_is_deleted │
+│  1 │ ASHA@example.com    │ in           │ 2026-10-12 08:00:00 │ 2026-10-12 08:00:00        │ NULL                       │ False          │
+│  2 │ ben@example.com     │ ng           │ 2026-10-12 08:00:00 │ 2026-10-12 08:00:00        │ NULL                       │ False          │
+│  3 │ chen@example.com    │ sg           │ 2026-10-12 08:00:00 │ 2026-10-12 08:00:00        │ 2026-10-15 07:00:00        │ False          │
+│  3 │ chen.li@example.com │ my           │ 2026-10-15 07:00:00 │ 2026-10-15 07:00:00        │ NULL                       │ False          │
+│  4 │ dana@example.com    │ mx           │ 2026-10-12 08:00:00 │ 2026-10-12 08:00:00        │ NULL                       │ False          │
+│  5 │ emil@example.com    │ se           │ 2026-10-12 08:00:00 │ 2026-10-12 08:00:00        │ 2026-10-16 22:00:06.138401 │ False          │
+│  5 │ emil@example.com    │ se           │ 2026-10-12 08:00:00 │ 2026-10-16 22:00:06.138401 │ NULL                       │ True           │
+│  6 │ farah@example.com   │ jo           │ 2026-10-15 07:30:00 │ 2026-10-15 07:30:00        │ NULL                       │ False          │
+```
+
+Read it row by row:
+
+- Customer 3 has two versions. The first is valid from 12 to 15 October 07:00, exactly the source's `updated_at` values.
+- Customer 5's deletion was recorded as a new version with `dbt_is_deleted = True`. The source has no deletion time, so dbt used the time the snapshot ran (16 October 22:00) to close the old version and open the deleted one.
+- Customer 6 appears with a single current version.
+- `ASHA@example.com` is still upper case: the snapshot captures the source as it is. Clean it in the model that reads the snapshot.
+
+## Check strategy
+
+When the source has no trustworthy `updated_at`, the check strategy compares column values instead: if any column in `check_cols` differs from the current version, a new version is recorded. The order snapshot watches `status`:
+
+```text
+│  id │ status  │     updated_at      │       dbt_valid_from       │       dbt_valid_to        │
+│ 103 │ shipped │ 2026-10-13 11:00:00 │ 2026-10-16 21:59:55.504407 │ NULL                      │
+│ 104 │ placed  │ 2026-10-13 12:00:00 │ 2026-10-16 21:59:55.504407 │ 2026-10-16 22:00:06.31859 │
+│ 104 │ shipped │ 2026-10-15 08:00:00 │ 2026-10-16 22:00:06.31859  │ NULL                      │
+│ 108 │ shipped │ 2026-10-15 09:05:00 │ 2026-10-16 22:00:06.31859  │ NULL                      │
+```
+
+Order 104's change from `placed` to `shipped` was detected. Notice the validity times: with the check strategy and no `updated_at` configured, dbt uses the snapshot's run time, not the time the status actually changed (the docs describe the same default and let you set an `updated_at` column alongside `check_cols`). The history is only as precise as your snapshot schedule.
+
+| | Timestamp | Check |
+|---|---|---|
+| Detects change by | `updated_at` newer than captured | Any `check_cols` value differs |
+| Validity times | From the source's `updated_at` | Snapshot run time (unless `updated_at` is also set) |
+| Cost | Cheap comparison on one column | Compares every listed column |
+| Risk | Missed changes if the source forgets to bump `updated_at` | Noise if a checked column changes for irrelevant reasons |
+
+Prefer timestamp when the source maintains `updated_at` reliably. The docs advise listing `check_cols` explicitly rather than using `all`, or condensing many columns into a hash.
+
+## Hard deletes
+
+`hard_deletes` (dbt 1.9+) decides what happens when a row disappears from the source:
+
+| Value | Behaviour |
+|---|---|
+| `ignore` (default) | Nothing: the last version stays current forever |
+| `invalidate` | Sets `dbt_valid_to` on the current version (replaces the legacy `invalidate_hard_deletes=true`) |
+| `new_record` | Closes the current version and inserts a new one with `dbt_is_deleted = True`; if the row comes back, another version with `False` is added |
+
+`new_record` is the most informative: "current" rows include deleted ones, flagged, so a dimension can show that a customer existed and was deleted rather than silently losing them. With `ignore`, customer 5 would still look active.
+
+## Querying a snapshot
+
+Two queries cover most uses. The block below reloads the real rows from `customers_snapshot` (meta columns trimmed) and runs both:
+
+```sql
+create table customers_snapshot (
+    id integer, email varchar, country_code varchar,
+    dbt_valid_from timestamp, dbt_valid_to timestamp, dbt_is_deleted varchar
+);
+insert into customers_snapshot values
+    (1, 'ASHA@example.com',    'in', '2026-10-12 08:00:00', null,                         'False'),
+    (2, 'ben@example.com',     'ng', '2026-10-12 08:00:00', null,                         'False'),
+    (3, 'chen@example.com',    'sg', '2026-10-12 08:00:00', '2026-10-15 07:00:00',        'False'),
+    (3, 'chen.li@example.com', 'my', '2026-10-15 07:00:00', null,                         'False'),
+    (4, 'dana@example.com',    'mx', '2026-10-12 08:00:00', null,                         'False'),
+    (5, 'emil@example.com',    'se', '2026-10-12 08:00:00', '2026-10-16 22:00:06.138401', 'False'),
+    (5, 'emil@example.com',    'se', '2026-10-16 22:00:06.138401', null,                  'True'),
+    (6, 'farah@example.com',   'jo', '2026-10-15 07:30:00', null,                         'False');
+
+-- current, non-deleted customers
+select id, email, country_code
+from customers_snapshot
+where dbt_valid_to is null
+  and dbt_is_deleted = 'False'
+order by id;
+
+-- customers as they were at 2026-10-14 12:00
+select id, email, country_code
+from customers_snapshot
+where dbt_valid_from <= timestamp '2026-10-14 12:00:00'
+  and (dbt_valid_to > timestamp '2026-10-14 12:00:00' or dbt_valid_to is null)
+order by id;
+```
+
+The first returns customers 1, 2, 3 (Malaysia), 4 and 6. The second returns 1 to 5, with customer 3 in Singapore and customer 5 still present, which is what you join facts to when you need the attributes in force at the time of each order: `order_ts >= dbt_valid_from and (order_ts < dbt_valid_to or dbt_valid_to is null)`. Note the half-open interval: using `between` on both ends would match two versions at the exact change instant.
+
+In a project you would wrap this in a model (`dim_customers_history`) that reads `ref('customers_snapshot')`, cleans the columns the way staging does, and adds `is_current`.
+
+## Operating snapshots
+
+- **Schedule them.** A snapshot only sees the state at each run. If a row changes twice between runs, the intermediate value is never captured. The docs stress running snapshots frequently.
+- **Never full-refresh history away.** There is no source to rebuild from. Back up or clone the table before risky changes.
+- **Moving a snapshot creates a new, empty history.** Changing its schema or name (for example by introducing a custom `generate_schema_name`) makes dbt build a fresh table in the new location; the old history stays behind until you migrate it.
+- **Keep the unique key unique.** Add `unique` and `not_null` tests on the source key; if two source rows share a key, dbt cannot tell which one is the current version and the history becomes unreliable.
+- **Prefer CDC for high-frequency change.** If every change matters (financial balances), capture the change stream from the source with a CDC tool; snapshots are a polling approach.
+
+## Common mistakes
+
+- **Snapshotting a heavily transformed model.** When the logic changes, history captured with the old logic cannot be fixed. Snapshot the source and transform downstream.
+- **Using `between` for point-in-time joins**, which double-counts at boundaries.
+- **Leaving `hard_deletes` at `ignore`** when deletions matter, so deleted entities look current forever.
+- **`check_cols: all` on wide tables**, which records versions for irrelevant column changes.
+- **Assuming validity times are business times** with the check strategy; they are run times unless you configure `updated_at`.
+
+## In an interview
+
+"How do you implement SCD Type 2 in dbt?" Answer: with a snapshot. Explain the config (`relation`, `unique_key`, strategy), the two strategies and when each fits, what `dbt_valid_from`/`dbt_valid_to` mean, how `hard_deletes` handles deletions, and how you query current and point-in-time rows. Then show judgment: snapshots cannot be rebuilt, must run on a schedule that matches how often the source changes, and should capture raw data with cleaning downstream. A common follow-up is "snapshot vs incremental with merge": merge is SCD Type 1 (overwrite), snapshot is SCD Type 2 (keep versions).
+
+## Key takeaway
+
+A snapshot turns a source that forgets into a table that remembers. Pick the timestamp strategy when `updated_at` is reliable and check otherwise, set `hard_deletes` deliberately, run it often, and treat its table as irreplaceable.

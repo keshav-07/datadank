@@ -4,7 +4,7 @@ updatedDate: "2026-10-16"
 reviewedDate: "2026-10-16"
 title: "Kinesis Data Streams or Amazon MSK: which would you pick for streaming on AWS?"
 seoTitle: "Kinesis Data Streams vs Amazon MSK: Interview"
-description: "Kinesis Data Streams vs Amazon MSK on AWS: capacity modes, shard and partition limits, ordering, retention, ecosystem and operations, with a shard-sizing model."
+description: "Kinesis Data Streams vs Amazon MSK: capacity modes, shard and partition limits, ordering, retention, ecosystem and operations, with a shard-sizing model."
 technology: ["aws", "kafka"]
 topic: ["kinesis", "msk", "streaming", "comparison"]
 difficulty: "Medium"

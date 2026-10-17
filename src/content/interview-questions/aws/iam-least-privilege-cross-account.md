@@ -4,7 +4,7 @@ updatedDate: "2026-10-16"
 reviewedDate: "2026-10-16"
 title: "How do you give a data pipeline least-privilege IAM access, including cross-account?"
 seoTitle: "IAM Least Privilege and Cross-Account: Interview"
-description: "IAM least privilege for a data pipeline: one role per job, scoped S3, Glue and KMS actions, and cross-account access with trust policies, bucket and key policies."
+description: "IAM least privilege for a data pipeline: one role per job, scoped S3, Glue and KMS actions, and cross-account access with trust and bucket policies."
 technology: ["aws"]
 topic: ["iam", "security", "cross-account", "least-privilege"]
 difficulty: "Medium"

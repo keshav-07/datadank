@@ -1,7 +1,7 @@
 ---
 title: "Apache Kafka and Real-Time Data Engineering"
-shortName: "Kafka"
-description: "Kafka is a distributed log used for streaming data. Learn topics, partitions, consumer groups and delivery semantics before building streaming pipelines."
+shortName: "Apache Kafka"
+description: "Apache Kafka is a distributed log used for streaming data. Learn topics, partitions, consumer groups and delivery semantics before building streaming pipelines."
 group: streaming
 order: 5
 keyFacts: ["Ordering is guaranteed only within a partition","Consumer groups scale reads by partition","Kafka 4.x runs on KRaft only; ZooKeeper is gone","Exactly-once needs care end to end"]

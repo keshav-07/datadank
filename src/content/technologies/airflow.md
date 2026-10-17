@@ -1,7 +1,7 @@
 ---
 title: "Apache Airflow for Data Engineers"
-shortName: "Airflow"
-description: "Airflow schedules and orchestrates pipelines as DAGs. Learn scheduling, task dependencies, retries and idempotent task design."
+shortName: "Apache Airflow"
+description: "Apache Airflow schedules and orchestrates pipelines as DAGs. Learn scheduling, task dependencies, retries and idempotent task design."
 group: streaming
 order: 6
 keyFacts: ["Workflows are Python-defined DAGs","Retries are only safe if tasks are idempotent","Orchestrate work; do not run heavy processing inside Airflow"]

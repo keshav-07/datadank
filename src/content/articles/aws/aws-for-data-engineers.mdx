@@ -7,17 +7,17 @@ topic: ["fundamentals", "architecture"]
 difficulty: "Beginner"
 pillar: true
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
 learningObjectives:
   - "Place each major AWS data service in one of seven layers: ingest, store, process, query, orchestrate, govern and monitor"
   - "Describe a reference lakehouse architecture on AWS and the path a record takes through it"
   - "Choose between overlapping services such as Athena and Redshift, Glue and EMR, Kinesis and MSK, or Step Functions and Airflow"
   - "Explain the pricing dimensions of the main services without quoting prices"
 prerequisites: ["articles:data-warehousing/lake-vs-warehouse-vs-lakehouse"]
-related: ["articles:etl-elt/modern-data-pipelines", "articles:etl-elt/batch-vs-streaming", "system-designs:scalable-lakehouse", "system-designs:real-time-analytics-pipeline"]
+related: ["articles:etl-elt/modern-data-pipelines", "articles:etl-elt/batch-vs-streaming", "system-designs:scalable-lakehouse", "system-designs:real-time-analytics-pipeline", "interview-questions:aws/glue-vs-emr-vs-emr-serverless", "interview-questions:aws/kinesis-data-streams-vs-msk", "interview-questions:aws/step-functions-vs-airflow-mwaa", "interview-questions:aws/aws-data-platform-cost-optimization"]
 next: "articles:aws/s3-for-data-engineers"
-versionContext: "Describes AWS services as documented in October 2026. This overview has no executable code; the service lessons hold the commands and policies, which were written from the AWS documentation and not run against an AWS account."
+versionContext: "Describes AWS services as documented in October 2026 (re-checked 16 October 2026 against the AWS services-in-maintenance list and the Athena pricing page). This overview has no executable code; the service lessons hold the commands and policies, which were written from the AWS documentation and not run against an AWS account."
 sources:
   - { label: "AWS Whitepaper: Big Data Analytics Options on AWS", url: "https://docs.aws.amazon.com/whitepapers/latest/big-data-analytics-options/amazon-athena.html" }
   - { label: "Amazon S3 User Guide: Storage classes", url: "https://docs.aws.amazon.com/AmazonS3/latest/userguide/storage-class-intro.html" }
@@ -165,7 +165,7 @@ Prices change and vary by Region, so learn what each service charges for and loo
 | Service | What you pay for |
 |---|---|
 | S3 | GB-months stored (by storage class), requests, retrievals for infrequent-access and archive classes, data transfer out, optional features such as Inventory |
-| Athena | Data scanned per query (rounded up, with a minimum per query) or, with provisioned capacity, reserved DPUs |
+| Athena | Data scanned per query (rounded up to the megabyte, with a 10 MB minimum per query) or, with capacity reservations, DPU-hours of reserved capacity |
 | Glue | DPU-hours for jobs, crawlers and interactive sessions, billed per second with a minimum; Data Catalog storage and requests beyond the free allowance |
 | Redshift | Node-hours for provisioned clusters plus managed storage for RA3; RPU-hours for Serverless; Spectrum data scanned; concurrency scaling beyond free credits |
 | EMR | The EC2 (or EKS, or Serverless vCPU and memory) resources plus a per-second EMR charge |
@@ -177,7 +177,7 @@ Across the stack, the biggest levers are the same: store columnar, compressed, w
 
 ## Services to know about but not build on
 
-AWS publishes a list of services in maintenance, which are closed to new customers. Check it before you design around an older service. For data engineers the notable changes are: **S3 Select** closed to new customers on 25 July 2024, **Kinesis Data Analytics for SQL applications** was discontinued (applications deleted from 27 January 2026) in favour of Managed Service for Apache Flink, and **Lake Formation governed tables** ended on 31 December 2024 in favour of Iceberg, Hudi and Delta Lake.
+AWS publishes a list of services in maintenance, which are closed to new customers. Check it before you design around an older service. For data engineers the notable changes are: **S3 Select** closed to new customers on 25 July 2024, **Kinesis Data Analytics for SQL applications** was discontinued (applications deleted from 27 January 2026) in favour of Managed Service for Apache Flink, **Lake Formation governed tables** ended on 31 December 2024 in favour of Iceberg, Hudi and Delta Lake, and **AWS Glue for Ray jobs** joined the maintenance list on 31 March 2026, so new Python-at-scale jobs should use Glue for Spark (or EMR) instead.
 
 ## Interview checklist
 

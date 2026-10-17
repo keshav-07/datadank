@@ -5,8 +5,8 @@ technology: ["kafka"]
 topic: ["consumer-groups", "rebalancing", "static-membership"]
 difficulty: "Intermediate"
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-17"
+reviewedDate: "2026-10-17"
 learningObjectives:
   - "Find a group's coordinator and explain what it stores"
   - "Compare eager, cooperative and the KIP-848 consumer rebalance protocols"
@@ -18,7 +18,7 @@ related: ["articles:kafka/topics-partitions-consumer-groups", "interview-questio
 previous: "articles:kafka/consumers-offsets"
 next: "articles:kafka/replication-isr"
 sources:
-  - { label: "Apache Kafka documentation: Consumer rebalance protocol", url: "https://kafka.apache.org/41/operations/consumer-rebalance-protocol/" }
+  - { label: "Apache Kafka documentation: Consumer rebalance protocol", url: "https://kafka.apache.org/43/operations/consumer-rebalance-protocol/" }
   - { label: "Apache Kafka documentation: Consumer configs", url: "https://kafka.apache.org/41/configuration/consumer-configs/" }
   - { label: "Apache Kafka 4.0.0 release announcement", url: "https://kafka.apache.org/blog/2025/03/18/apache-kafka-4.0.0-release-announcement/" }
   - { label: "Apache Kafka documentation: Operations", url: "https://kafka.apache.org/39/operations/" }
@@ -173,10 +173,10 @@ The movement is incremental like cooperative rebalancing, but B and A released t
 
 ### Choosing and migrating
 
-- The **server** enables protocols with `group.coordinator.rebalance.protocols` (default `classic,consumer,streams` in 4.3). The **Java client** still defaults to `group.protocol=classic` in 4.3; the documented plan is for the consumer protocol to become the client default in Kafka 5.0 and the only client option in 6.0.
+- On the **server**, the consumer protocol is on by default since 4.0 and is controlled by the `group.version` feature flag (`kafka-features.sh`). The older broker setting `group.coordinator.rebalance.protocols` (default `classic,consumer,streams`) is deprecated in 4.3 and goes away in 5.0, when feature versions alone decide which protocols are enabled. The **Java client** still defaults to `group.protocol=classic` in 4.3; the documented plan is for the consumer protocol to become the client default in Kafka 5.0 and the only client option in 6.0.
 - With `group.protocol=consumer`, client settings `partition.assignment.strategy`, `session.timeout.ms` and `heartbeat.interval.ms` are not used. Pick a server-side assignor with `group.remote.assignor` (`uniform` by default, or `range`).
 - A group can be upgraded **online** by rolling consumers with `group.protocol=consumer`, as long as the classic group does not use an assignor with custom metadata. Client-side custom assignors are not supported by the new protocol.
-- Kafka Streams has its own rebalance protocol (KIP-1071, the `streams` value above); Streams applications use `classic` unless configured otherwise.
+- Kafka Streams has its own broker-side rebalance protocol (KIP-1071, the `streams` value above). It became production-ready for its core feature set in 4.2 (migrate existing classic Streams groups only on 4.2.1 or later); Streams applications keep using `classic` unless you opt in with the Streams `group.protocol=streams` setting.
 
 ### Pitfalls
 

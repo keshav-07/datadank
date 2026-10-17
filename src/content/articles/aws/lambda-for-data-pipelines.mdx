@@ -5,8 +5,8 @@ technology: ["aws"]
 topic: ["lambda", "serverless", "event-driven"]
 difficulty: "Intermediate"
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-09"
-reviewedDate: "2026-10-09"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
 learningObjectives:
   - "Explain Lambda's execution model, hard limits and when Lambda is the wrong tool for a data job"
   - "Wire Lambda to S3, SQS and Kinesis and know which invocation model each uses"
@@ -14,7 +14,7 @@ learningObjectives:
   - "Reduce cold starts, package dependencies with layers and tune memory and timeout"
   - "Design retries, partial batch failures, dead-letter queues and on-failure destinations"
 prerequisites: ["articles:aws/iam-for-data-engineers"]
-related: ["articles:etl-elt/idempotency-in-data-pipelines", "articles:etl-elt/pipeline-reliability-and-retries"]
+related: ["articles:etl-elt/idempotency-in-data-pipelines", "articles:etl-elt/pipeline-reliability-and-retries", "interview-questions:aws/lambda-for-etl-limits", "interview-questions:aws/s3-event-driven-ingestion"]
 previous: "articles:aws/iam-for-data-engineers"
 next: "articles:aws/glue-catalog-crawlers-etl"
 versionContext: "Limits checked against the AWS Lambda documentation in October 2026. Python handler and sizing examples run locally on Python 3.11 with simulated events; deployment commands, boto3 calls and JSON configuration were written from the Lambda documentation and not executed against AWS. Duration figures in the memory-tuning example are illustrative inputs, not measurements."
@@ -54,6 +54,8 @@ The limits that shape data designs:
 | Asynchronous invocation payload | 1 MB (raised from 256 KB in October 2025; the part above 256 KB is billed as extra requests) |
 | Deployment package | 250 MB unzipped including layers; container images up to 10 GB |
 | Default account concurrency | 1,000 concurrent executions per Region (can be raised) |
+
+The quotas page also lists **Lambda Managed Instances**, functions that run on EC2 capacity Lambda manages for you; for those, asynchronous and most event-source-mapping invocations can run up to 90 minutes. The 15-minute limit above is the one for ordinary functions, and it is the number interviewers expect.
 
 **When not to use Lambda.** Anything that might run longer than 15 minutes, needs more than 10 GB of memory, or needs a shuffle across many machines (large joins, big aggregations) belongs in Glue, EMR or AWS Batch. Lambda shines for small, independent units of work: one file, one message, one batch of stream records.
 

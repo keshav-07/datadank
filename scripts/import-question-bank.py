@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "docs/question-bank/data-engineering-interview-master.md"
 ARTICLES = ROOT / "src/content/articles"
 DATA = ROOT / "src/data/question-banks.json"
-DATE = "2026-10-16"
+DATE = "2026-10-16"  # default; a page can set its own `date`
 
 # Section number -> article. `hub` is the /interview/<hub>/ practice page that links to it (if any).
 PAGES = {
@@ -79,13 +79,13 @@ PAGES = {
             seoTitle="Behavioral Interview Questions for Data Engineers",
             description="18 behavioral interview questions for data engineers with STAR-style answers: project walkthroughs, incidents, mistakes, stakeholders and leadership.",
             covers="project walkthroughs, incidents, mistakes, conflict, prioritisation, stakeholders, mentoring and leadership"),
-    10: dict(folder="kafka", slug="kafka-interview-questions", hub="kafka", label="Kafka",
+    10: dict(folder="kafka", slug="kafka-interview-questions", hub="kafka", label="Kafka", date="2026-10-17",
              noun="Kafka interview questions", technology=["kafka", "data-engineering"], section="learn",
-             title="Top 50 Apache Kafka Interview Questions and Answers",
-             seoTitle="Top 50 Kafka Interview Questions and Answers",
-             description="Top 50 Apache Kafka interview questions with answers: partitions, consumer groups, delivery guarantees, KRaft, Connect, Streams and operations.",
+             title="Top 40 Apache Kafka Interview Questions and Answers",
+             seoTitle="Top 40 Kafka Interview Questions and Answers",
+             description="Top 40 Apache Kafka interview questions with answers: partitions, consumer groups, delivery guarantees, KRaft, Connect, Streams and operations.",
              covers="topics and partitions, producers and consumers, consumer groups, delivery guarantees and transactions, KRaft, Kafka Connect, Kafka Streams, schemas and operations"),
-    11: dict(folder="airflow", slug="airflow-interview-questions", hub="airflow", label="Airflow",
+    11: dict(folder="airflow", slug="airflow-interview-questions", hub="airflow", label="Airflow", date="2026-10-17",
              noun="Airflow interview questions", technology=["airflow", "data-engineering"], section="learn",
              title="Top 50 Apache Airflow Interview Questions and Answers",
              seoTitle="Top 50 Airflow Interview Questions and Answers",
@@ -118,12 +118,18 @@ DEEP = {
     356: "python/generators-large-datasets", 364: "python/exceptions-in-pipelines",
     374: "python/process-large-csv-limited-memory", 379: "python/api-retries-backoff",
     422: "kafka/consumer-lag-causes-fixes", 427: "airflow/slow-scheduler-stuck-tasks",
-    529: "airflow/dynamic-task-mapping", 536: "airflow/catchup-and-backfill",
-    537: "airflow/logical-date-and-data-interval", 542: "airflow/cross-dag-dependencies",
-    543: "airflow/sensors-and-deferrable-operators", 545: "airflow/xcom-vs-external-storage",
-    550: "airflow/retries-and-idempotency", 552: "airflow/failure-handling-and-alerting",
-    553: "airflow/choosing-an-executor", 560: "airflow/testing-airflow-dags",
-    564: "airflow/airflow-2-to-3-migration", 568: "airflow/slow-scheduler-stuck-tasks",
+    470: "kafka/kraft-vs-zookeeper", 474: "kafka/choose-partition-count",
+    477: "kafka/kafka-ordering-guarantees", 480: "kafka/at-least-once-delivery",
+    483: "kafka/consumer-lag-causes-fixes", 486: "kafka/rebalancing-problems",
+    489: "kafka/acks-min-insync-replicas-durability", 493: "kafka/exactly-once-semantics",
+    495: "kafka/retention-sizing", 500: "kafka/poison-messages-dlq",
+    502: "kafka/cdc-with-debezium", 504: "kafka/schema-evolution-schema-registry",
+    519: "airflow/dynamic-task-mapping", 526: "airflow/catchup-and-backfill",
+    527: "airflow/logical-date-and-data-interval", 532: "airflow/cross-dag-dependencies",
+    533: "airflow/sensors-and-deferrable-operators", 535: "airflow/xcom-vs-external-storage",
+    540: "airflow/retries-and-idempotency", 542: "airflow/failure-handling-and-alerting",
+    543: "airflow/choosing-an-executor", 550: "airflow/testing-airflow-dags",
+    554: "airflow/airflow-2-to-3-migration", 558: "airflow/slow-scheduler-stuck-tasks",
 }
 
 QDIR = ROOT / "src/content/interview-questions"
@@ -331,9 +337,9 @@ def main():
             "topic": ["interview-questions"],
             "difficulty": "Intermediate",
             "section": page["section"],
-            "publishedDate": DATE,
-            "updatedDate": DATE,
-            "reviewedDate": DATE,
+            "publishedDate": page.get("date", DATE),
+            "updatedDate": page.get("date", DATE),
+            "reviewedDate": page.get("date", DATE),
             "related": related,
             "versionContext": "Product names and defaults as of October 2026; code snippets state their dialect or runtime",
         }

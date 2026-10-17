@@ -40,8 +40,6 @@ const hub = await getHub(tech!);
 const COVERED_BY: Record<string, string> = {
   spark: "pyspark",
   "delta-lake": "databricks",
-  airflow: "data-engineering",
-  kafka: "data-engineering",
   aws: "data-engineering",
 };
 const own = banks.find((b) => b.hub === tech);

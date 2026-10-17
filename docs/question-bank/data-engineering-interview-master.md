@@ -2,9 +2,9 @@
 
 ## How to Use This File
 
-This guide holds 468 original interview questions for data engineering roles, grouped into nine sections. Each question has a global number (Q1–Q468) and a section ID (for example `SQL-07`), so it can be referenced unambiguously.
+This guide holds 558 original interview questions for data engineering roles, grouped into eleven sections. Each question has a global number (Q1–Q558) and a section ID (for example `SQL-07`), so it can be referenced unambiguously.
 
-**Fields in every standard question (Sections 1–7 and 9):**
+**Fields in every standard question (Sections 1–7, 9, 10 and 11):**
 - **ID / Topic:** section code and subtopic path (`Section > Subtopic`).
 - **Level:** Beginner (fundamentals, 0–2 years), Intermediate (working knowledge, 2–5 years), Advanced (design, internals and trade-offs, 5+ years). Each section targets roughly 30% / 45% / 25%.
 - **Frequency:** how often the topic comes up in real interviews: Very Common, Common or Occasional.
@@ -32,6 +32,8 @@ This guide holds 468 original interview questions for data engineering roles, gr
 - [Section 7: Python for Data Engineering (Q351–Q400)](#section-7-python-for-data-engineering)
 - [Section 8: Scenario-Based & System Design (Q401–Q450)](#section-8-scenario-based--system-design)
 - [Section 9: Behavioral Questions for Data Engineers (Q451–Q468)](#section-9-behavioral-questions-for-data-engineers)
+- [Section 10: Apache Kafka (Q469–Q508)](#section-10-apache-kafka)
+- [Section 11: Apache Airflow (Q509–Q558)](#section-11-apache-airflow)
 - [Appendix A: Glossary of Key Terms](#appendix-a-glossary-of-key-terms)
 - [Appendix B: Source Types Consulted](#appendix-b-source-types-consulted)
 - [Appendix C: Validation Report](#appendix-c-validation-report)
@@ -29762,6 +29764,7799 @@ Candidates who ask about the team's current challenges often end up in a deeper 
 
 ---
 
+## Section 10: Apache Kafka
+
+### Q469. Walk through the life of one record from producer to consumer
+**ID:** KFK-01
+**Topic:** Kafka > Architecture
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `kafka`, `architecture`, `producer`, `consumer`, `high-watermark`
+
+**Short Answer (2–3 lines):**
+The producer serialises the record, picks a partition, and adds it to an in-memory batch. A background sender ships the batch to that partition's leader broker. The leader appends it to its log, followers copy it, and the leader acknowledges once enough replicas have it. A consumer in a group then fetches from the leader up to the high watermark and later commits its offset.
+
+**Detailed Explanation:**
+Interviewers use this question to see whether you can connect the pieces covered in Q67 into one flow.
+
+1. **Metadata.** On start-up the client contacts any `bootstrap.servers` broker. It learns which broker leads each partition and caches that map, refreshing it when leadership moves.
+2. **Serialise and partition.** Key and value become bytes (Avro, JSON, Protobuf). The partitioner hashes the key, or uses a sticky choice when there's no key (see Q472).
+3. **Accumulate.** The record joins a per-partition batch in the producer's buffer. The batch is sent when it reaches `batch.size` or `linger.ms` expires (see Q475).
+4. **Produce request.** The sender thread groups batches by leader broker and sends one request per broker. With idempotence on (the default), each batch carries a producer ID and sequence number.
+5. **Append and replicate.** The leader writes the batch to the active segment of the partition log (page cache, not a forced fsync). Followers fetch it just as consumers do.
+6. **Acknowledge.** With `acks=all`, the leader replies once every in-sync replica has the batch and the ISR is at least `min.insync.replicas`. The high watermark (HW) advances to the last offset that all ISR members hold.
+7. **Consume.** A group consumer's `poll()` sends fetch requests. The broker returns data only up to the HW, so consumers never read records that could vanish after a leader failover. `read_committed` consumers stop at the last stable offset instead (see Q70).
+8. **Commit.** The consumer commits "next offset to read" to `__consumer_offsets`. The record stays on disk until retention removes it, whether or not anyone read it.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16, Apache Kafka 4.3 broker on localhost:19092
+import json
+from confluent_kafka import Producer, Consumer
+
+p = Producer({"bootstrap.servers": "localhost:19092", "acks": "all", "linger.ms": 5})
+
+def on_delivery(err, msg):
+    if err:
+        print("FAILED", err)
+    else:
+        print(f"acked key={msg.key().decode()} partition={msg.partition()} offset={msg.offset()}")
+
+for i, acct in enumerate(["acc-1", "acc-2", "acc-1"]):
+    p.produce("payments", key=acct, value=json.dumps({"seq": i, "amount": 10 * i}),
+              on_delivery=on_delivery)
+p.flush(10)   # produce() is async; flush waits for every acknowledgement
+
+c = Consumer({"bootstrap.servers": "localhost:19092", "group.id": "lifecycle-demo",
+              "auto.offset.reset": "earliest"})
+c.subscribe(["payments"])
+seen = 0
+while seen < 3:
+    m = c.poll(5.0)
+    if m is None or m.error():
+        continue
+    seen += 1
+    print(f"read  key={m.key().decode()} partition={m.partition()} offset={m.offset()} value={m.value().decode()}")
+c.close()   # commits final offsets (auto-commit) and leaves the group
+```
+Output against a 3-partition `payments` topic:
+```text
+acked key=acc-1 partition=2 offset=0
+acked key=acc-1 partition=2 offset=1
+acked key=acc-2 partition=0 offset=0
+read  key=acc-1 partition=2 offset=0 value={"seq": 0, "amount": 0}
+read  key=acc-1 partition=2 offset=1 value={"seq": 2, "amount": 20}
+read  key=acc-2 partition=0 offset=0 value={"seq": 1, "amount": 10}
+```
+Both `acc-1` records share a partition and keep their order. Across partitions the consumer saw them in a different order from the one they were sent in.
+
+**Real-World Use Case:**
+A payments team saw "acknowledged" events missing from a downstream report. Walking through the flow showed the producer used `acks=1`. A leader crashed after acknowledging but before followers fetched, so those records were never replicated. Switching to `acks=all` with `min.insync.replicas=2` closed the gap.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Saying the producer writes to "the topic" or to any broker; it writes to the partition leader.
+- Thinking each `send()` is one network request, which ignores batching.
+- Believing consumers can read a record as soon as the leader writes it, before the high watermark moves.
+- Thinking records are deleted once consumed.
+
+**Follow-up Questions Interviewers Ask:**
+- Does Kafka fsync every write? — No; it relies on replication plus the OS page cache, and flush settings are left at their defaults in most deployments.
+- What does a consumer commit? — The offset of the *next* record to read, per partition, stored in `__consumer_offsets`.
+- Where does the consumer get partition leaders from? — From cluster metadata returned by any broker, refreshed on errors such as `NOT_LEADER_OR_FOLLOWER`.
+
+---
+
+### Q470. Running KRaft: controllers, quorum sizing and metadata versions
+**ID:** KFK-02
+**Topic:** Kafka > Architecture (KRaft)
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `kafka`, `kraft`, `controller`, `metadata`, `upgrades`
+
+**Short Answer (2–3 lines):**
+In KRaft, a small set of controller nodes runs a Raft quorum that stores all cluster metadata in the `__cluster_metadata` log. One of them is the active controller. Use three controllers (or five for very large clusters), on dedicated nodes in production. Upgrades are two-step: roll the binaries, then raise `metadata.version` with `kafka-features.sh`.
+
+**Detailed Explanation:**
+Why ZooKeeper went away is a separate question (it has its own page on this site). This one is about running KRaft day to day.
+
+**Roles.** `process.roles` can be `broker`, `controller`, or `broker,controller` (combined). Combined mode suits development and small clusters. Production clusters use dedicated controllers, so a broker under heavy load can't starve the quorum.
+
+**Quorum sizing.** Raft needs a majority. Three voters survive one failure and five survive two. An even number adds no extra tolerance. Spread voters across racks or availability zones.
+
+**Metadata log.** Every change (topic created, ISR shrunk, ACL added) is a record in `__cluster_metadata`. Brokers replicate this log and apply it locally, so a failover means a new leader is elected among voters who already have the metadata. Nothing has to be reloaded, which is why failover is fast. Snapshots keep the log bounded.
+
+**Static vs dynamic quorum.** Older setups listed voters in `controller.quorum.voters`. Newer ones use `controller.quorum.bootstrap.servers` and format with `--standalone` or `--initial-controllers`. Voters can then be added or removed at runtime (KIP-853).
+
+**Feature versions.** `metadata.version` and feature flags such as `group.version`, `transaction.version`, `share.version` and `streams.version` turn on new protocols. Clusters freshly formatted with 4.3 enable them all, as the output below shows. An upgraded cluster must finalise them explicitly. Product behaviour changes; checked October 2026 against the Apache Kafka 4.3 docs.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Kafka 4.3.1, single combined-mode node (lab only)
+bin/kafka-storage.sh format -t "$(bin/kafka-storage.sh random-uuid)" \
+  -c server.properties --standalone
+bin/kafka-server-start.sh server.properties &
+
+bin/kafka-metadata-quorum.sh --bootstrap-server localhost:19092 describe --status
+bin/kafka-features.sh --bootstrap-server localhost:19092 describe
+# After a rolling upgrade of every node:
+# bin/kafka-features.sh --bootstrap-server localhost:19092 upgrade --release-version 4.3
+```
+Abridged output:
+```text
+ClusterId:              k823IPTOTlqVLpX-4sSHCg
+LeaderId:               1
+LeaderEpoch:            1
+HighWatermark:          22
+MaxFollowerLag:         0
+CurrentVoters:          [{"id": 1, "directoryId": "z8TbHZkrQJKUlHkNa007Ag", "endpoints": ["CONTROLLER://localhost:19093"]}]
+Feature: metadata.version   SupportedMinVersion: 3.3-IV3  SupportedMaxVersion: 4.3-IV0  FinalizedVersionLevel: 4.3-IV0
+Feature: share.version      SupportedMinVersion: 0        SupportedMaxVersion: 1        FinalizedVersionLevel: 1
+Feature: streams.version    SupportedMinVersion: 0        SupportedMaxVersion: 1        FinalizedVersionLevel: 1
+```
+
+**Real-World Use Case:**
+A team running combined nodes saw controller elections whenever a broker garbage-collected under heavy produce load. They moved to three small dedicated controller nodes in different zones, and the elections stopped.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Proposing two or four controllers.
+- Forgetting the `kafka-features.sh upgrade` step, then wondering why new protocols are unavailable after an upgrade.
+- Assuming a 3.x ZooKeeper cluster can jump straight to 4.x; it must migrate to KRaft first, ideally on 3.9, the bridge release.
+- Expecting `metadata.version` downgrades to always work; releases with metadata changes can't be downgraded.
+
+**Follow-up Questions Interviewers Ask:**
+- What does `MaxFollowerLag` tell you? — How far the slowest voter or observer trails the metadata leader; growth means a controller or broker is struggling.
+- Can a broker serve traffic if the quorum loses its majority? — Existing partitions keep serving, but no metadata changes (leader elections, topic creation) can happen.
+
+---
+
+### Q471. Create and configure a topic from the CLI
+**ID:** KFK-03
+**Topic:** Kafka > Topics & Partitions
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `kafka`, `topics`, `cli`, `configuration`
+
+**Short Answer (2–3 lines):**
+Use `kafka-topics.sh --create` with a name, partition count and replication factor, plus any `--config` overrides. Change settings later with `kafka-configs.sh --alter`. Topic-level settings such as `retention.ms` override broker defaults such as `log.retention.hours`. In production, disable auto-creation and manage topics as code.
+
+**Detailed Explanation:**
+Creating a topic means making three kinds of decisions:
+
+| Decision | Flag or config | Can change later? |
+|---|---|---|
+| Partitions | `--partitions` | Increase only (see Q474) |
+| Replication factor | `--replication-factor` | Yes, but only with a reassignment plan |
+| Retention, cleanup, size limits | `--config retention.ms=…`, `cleanup.policy`, `max.message.bytes` | Yes, dynamically |
+| Durability | `min.insync.replicas` | Yes, dynamically |
+
+**Config precedence.** Topic override, then the broker's dynamic default (cluster-wide), then `server.properties`, then the built-in default. `kafka-configs.sh --describe` shows the "synonyms" chain, so you can see where each effective value comes from.
+
+**Names differ between layers.** The topic setting `max.message.bytes` corresponds to the broker setting `message.max.bytes`, and `retention.ms` corresponds to `log.retention.ms`. Candidates mix these up often.
+
+**Auto-creation.** `auto.create.topics.enable` is still `true` by default, with `num.partitions=1` and `default.replication.factor=1`. A typo in a producer's topic name then silently creates a one-partition, unreplicated topic. Turn it off and create topics through Terraform, a GitOps job or an operator such as Strimzi.
+
+**Naming.** Pick a convention such as `<domain>.<entity>.<event>.v<major>`. Avoid mixing `.` and `_`, because metric names treat them as the same character.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Kafka 4.3.1 CLI against a local broker
+B=localhost:19092
+bin/kafka-topics.sh --bootstrap-server $B --create --topic orders \
+  --partitions 6 --replication-factor 1 \
+  --config retention.ms=259200000 --config cleanup.policy=delete
+bin/kafka-topics.sh --bootstrap-server $B --describe --topic orders
+
+bin/kafka-configs.sh --bootstrap-server $B --alter --entity-type topics --entity-name orders \
+  --add-config retention.ms=604800000,max.message.bytes=2097152
+bin/kafka-configs.sh --bootstrap-server $B --describe --entity-type topics --entity-name orders
+```
+Output (abridged):
+```text
+Created topic orders.
+Topic: orders	TopicId: U9XPxNLBRkKoSm5ODJFMyQ	PartitionCount: 6	ReplicationFactor: 1	Configs: min.insync.replicas=1,cleanup.policy=delete,retention.ms=259200000
+	Topic: orders	Partition: 0	Leader: 1	Replicas: 1	Isr: 1	Elr: 	LastKnownElr: 
+Completed updating config for topic orders.
+  max.message.bytes=2097152 sensitive=false synonyms={DYNAMIC_TOPIC_CONFIG:max.message.bytes=2097152, DEFAULT_CONFIG:message.max.bytes=1048588}
+  retention.ms=604800000 sensitive=false synonyms={DYNAMIC_TOPIC_CONFIG:retention.ms=604800000}
+```
+(Replication factor 1 is only for this single-node lab. Use 3 in production.)
+
+**Real-World Use Case:**
+A data platform team kept topic definitions in a YAML file per domain. CI ran a plan that showed partition and config changes, and refused any decrease in partitions or replication factor before applying.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Leaving auto-creation on in production.
+- Setting broker-level properties on a topic, or the reverse.
+- Creating production topics with replication factor 1.
+- Using `--alter --config` on `kafka-topics.sh`; topic configs are changed with `kafka-configs.sh`.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you delete one override? — `kafka-configs.sh --alter --delete-config retention.ms`; since 4.3 this is a no-op if the key isn't set.
+- How do you raise the replication factor? — Generate a JSON plan listing the new replica sets and run `kafka-reassign-partitions.sh --execute`, with throttles.
+- Where is `TopicId` used? — It is a unique ID that tells a deleted topic apart from a recreated one with the same name.
+
+---
+
+### Q472. How the producer picks a partition, and why Python and Java can disagree
+**ID:** KFK-04
+**Topic:** Kafka > Topics & Partitions
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `kafka`, `partitioner`, `murmur2`, `librdkafka`, `keys`
+
+**Short Answer (2–3 lines):**
+With a key, the Java client uses `murmur2(key) % partitions`. Without a key, it fills a "sticky" batch for one partition before moving on, preferring faster brokers. librdkafka-based clients (Python `confluent-kafka`, Go, .NET) default to a CRC32-based `consistent_random` partitioner. So the same key can land in different partitions unless you set `partitioner=murmur2_random`.
+
+**Detailed Explanation:**
+**Java default (Kafka 3.3+)**
+- Keyed record: `toPositive(murmur2(keyBytes)) % numPartitions`. Same key, same partition, as long as the partition count doesn't change.
+- Null key: the built-in partitioner sticks to one partition until a batch fills, then switches. `partitioner.adaptive.partitioning.enable=true` (the default) sends fewer records to brokers that are responding slowly. The old `DefaultPartitioner` and `UniformStickyPartitioner` classes are deprecated.
+- `partitioner.ignore.keys=true` ignores keys and spreads records evenly. Use it only when per-key ordering doesn't matter.
+
+**librdkafka default**
+- `partitioner=consistent_random` hashes keys with CRC32, and spreads null keys randomly.
+- `murmur2_random` matches the Java client for keyed records.
+
+**Why it matters.** Kafka Streams, ksqlDB, Connect and Java services all assume murmur2. Suppose a Python service writes `customer_id`-keyed records and a Java service writes the same keys to the same topic. Their records for one customer end up in different partitions, which breaks per-key ordering and joins. Co-partitioning for stream-table joins (see Q507) quietly fails too.
+
+**Custom partitioners** are possible: implement `Partitioner` in Java, or specify the partition explicitly in `produce()`. They are hard to keep consistent across languages, so prefer choosing a good key (see Q473).
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16 (librdkafka 2.16), Apache Kafka 4.3, 6-partition topic "orders"
+from confluent_kafka import Producer
+
+def where(partitioner, keys):
+    p = Producer({"bootstrap.servers": "localhost:19092", "partitioner": partitioner})
+    out = {}
+    def cb(err, msg):
+        out[msg.key().decode()] = msg.partition()
+    for k in keys:
+        p.produce("orders", key=k, value=b"{}", on_delivery=cb)
+    p.flush()
+    return out
+
+keys = ["cust-17", "cust-42", "cust-99"]
+print("librdkafka default (consistent_random, CRC32):", where("consistent_random", keys))
+print("Java-compatible   (murmur2_random)         :", where("murmur2_random", keys))
+```
+```text
+librdkafka default (consistent_random, CRC32): {'cust-42': 4, 'cust-99': 5, 'cust-17': 2}
+Java-compatible   (murmur2_random)         : {'cust-17': 1, 'cust-42': 2, 'cust-99': 2}
+```
+The same three keys written with the Java `kafka-console-producer.sh` (`--reader-property parse.key=true`) landed in partitions 1, 2 and 2, which matches `murmur2_random`.
+
+**Real-World Use Case:**
+A team rewrote a Java ingestion service in Python. A downstream Kafka Streams join started missing most matches. The new producer used librdkafka's CRC32 default, and setting `partitioner=murmur2_random` fixed it.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Saying null-key records are always sent round-robin, one record per partition.
+- Assuming every client library uses the same hash.
+- Hashing on a value that changes for the same entity, such as an email address that can be edited.
+
+**Follow-up Questions Interviewers Ask:**
+- Why did Kafka move to sticky partitioning for null keys? — Larger batches, fewer requests and lower latency than spreading every record.
+- Can you send to a specific partition? — Yes, pass `partition=` explicitly; you then own the balancing logic.
+- What happens to key placement when partitions are added? — Most keys move (see Q474).
+
+---
+
+### Q473. What makes a good message key?
+**ID:** KFK-05
+**Topic:** Kafka > Topics & Partitions
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `kafka`, `keys`, `ordering`, `compaction`, `data-skew`
+
+**Short Answer (2–3 lines):**
+The key should be the entity whose events must stay in order, or whose latest state you want kept, such as `order_id` or `account_id`. It should be stable, and have many values spread evenly. Use a null key only when ordering doesn't matter and you want even spread.
+
+**Detailed Explanation:**
+A key does three jobs at once:
+1. **Routing and ordering.** Same key, same partition, so events for that key stay in order (see Q69).
+2. **Compaction identity.** On compacted topics the key decides what counts as "the same row" (see Q71).
+3. **Join co-partitioning.** Kafka Streams and Flink joins expect both sides keyed and partitioned the same way.
+
+**A good key is:**
+- **Aligned with the ordering need.** For order lifecycle events, `order_id`. For a ledger balance, `account_id` (all of an account's postings in sequence).
+- **High-cardinality and roughly uniform.** `country` puts most traffic on a handful of partitions. Skewed keys create hot partitions (see Q438).
+- **Stable.** Use an immutable ID, not a mutable attribute.
+- **Small.** Keys are stored with every record and hashed on every send.
+
+**Trade-offs to discuss**
+| Key choice | Ordering scope | Skew risk |
+|---|---|---|
+| `null` | None | Lowest |
+| `user_id` | Per user | Bots and heavy users |
+| `tenant_id` | Per tenant | High when one tenant is very large |
+| `tenant_id:user_id` | Per user within a tenant | Low |
+
+**Composite keys** keep ordering for the smallest unit that needs it. If one tenant is 40% of traffic, `tenant_id` alone is a bad key, while `tenant_id:order_id` spreads load and still keeps each order in sequence.
+
+**Keys vs headers.** Put routing and identity in the key. Put metadata such as trace IDs, schema hints and source system in headers, so the key stays meaningful for compaction.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16
+from confluent_kafka import Producer
+
+p = Producer({"bootstrap.servers": "localhost:19092", "partitioner": "murmur2_random"})
+event = {"tenant": "t-9", "order_id": "o-1001", "status": "PAID"}
+
+# Order-level ordering, spread across partitions even for a huge tenant
+key = f'{event["tenant"]}:{event["order_id"]}'
+p.produce("orders", key=key, value=str(event),
+          headers=[("trace_id", b"9f2c"), ("source", b"checkout")])
+p.flush()
+```
+
+**Real-World Use Case:**
+A marketplace keyed its `listing-events` topic by `seller_id`. One wholesale seller created a partition that lagged hours behind the rest. Re-keying to `listing_id` kept the guarantee that mattered (each listing's updates in order) and evened out the load.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Using a timestamp or random UUID as the key on a compacted topic, which disables compaction in practice.
+- Choosing low-cardinality keys such as status or country.
+- Re-keying a live topic without planning a cut-over for consumers that depend on per-key order.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you keep order when you must re-key? — Write to a new topic with the new key, drain the old topic, then switch consumers over.
+- What if one key is hot but must stay ordered? — Scale that consumer vertically, or split the entity's events into sub-streams that don't need ordering between them.
+- Does Kafka enforce key uniqueness? — No; a key is just bytes, and uniqueness only matters for compaction semantics.
+
+---
+
+### Q474. Can you change a topic's partition count, and what breaks when you do?
+**ID:** KFK-06
+**Topic:** Kafka > Topics & Partitions
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `kafka`, `partitions`, `scaling`, `keys`, `ordering`
+
+**Short Answer (2–3 lines):**
+You can only increase the partition count; Kafka refuses a decrease. Adding partitions changes `hash(key) % N`, so most keys start landing in a different partition. Per-key ordering breaks across the change, and compacted topics or keyed state can end up with a key's old and new values in two places. Existing data is never moved.
+
+**Detailed Explanation:**
+**What happens on increase**
+- New, empty partitions are created and assigned to brokers. Existing records stay where they are.
+- Producers notice on their next metadata refresh (`metadata.max.age.ms`, 5 minutes by default) and start routing keys by the new modulo.
+- Consumer groups rebalance to pick up the new partitions. With `auto.offset.reset=latest`, records written to a new partition *before* the group gets its first assignment can be skipped. The consumer config docs warn about exactly this.
+
+**What breaks**
+| Concern | Effect |
+|---|---|
+| Per-key order | Old events for key K are in partition 0 and new ones in partition 3, and consumers may process them in either order |
+| Compacted topics | Two "latest" values for K in different partitions; readers can see a stale one |
+| Kafka Streams state | Stores are partitioned by input partition, so keys are now in the wrong task. Treat it as an application reset |
+| Join co-partitioning | Both sides of a join must have equal partition counts |
+
+**Why no decrease?** Records in a removed partition would have nowhere to go without rewriting offsets, and offsets are the contract consumers rely on.
+
+**Safer patterns**
+1. Over-provision at creation (see the partition-count page).
+2. If you must grow a keyed topic: create `orders.v2` with more partitions, dual-write or replicate into it, and let consumers drain v1 before switching.
+3. For unkeyed topics (logs, clicks), adding partitions in place is usually fine.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Kafka 4.3.1 CLI
+bin/kafka-topics.sh --bootstrap-server localhost:19092 --alter --topic payments --partitions 2
+# Error while executing topic command : The topic payments currently has 3 partition(s); 2 would not be an increase.
+bin/kafka-topics.sh --bootstrap-server localhost:19092 --alter --topic payments --partitions 6
+```
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16, Apache Kafka 4.3 (topic "payments" grown from 3 to 6 partitions)
+from confluent_kafka import Producer
+
+def murmur2(data: bytes) -> int:
+    """Kafka's Java murmur2 (same as Utils.murmur2), returns a signed 32-bit int."""
+    m, r, length = 0x5BD1E995, 24, len(data)
+    h = (0x9747B28C ^ length) & 0xFFFFFFFF
+    for i in range(0, length - length % 4, 4):
+        k = int.from_bytes(data[i:i + 4], "little")
+        k = (k * m) & 0xFFFFFFFF; k ^= k >> r; k = (k * m) & 0xFFFFFFFF
+        h = ((h * m) & 0xFFFFFFFF) ^ k
+    tail = data[length - length % 4:]
+    if len(tail) >= 3: h ^= tail[2] << 16
+    if len(tail) >= 2: h ^= tail[1] << 8
+    if len(tail) >= 1: h ^= tail[0]; h = (h * m) & 0xFFFFFFFF
+    h ^= h >> 13; h = (h * m) & 0xFFFFFFFF; h ^= h >> 15
+    return h - (1 << 32) if h >= 1 << 31 else h
+
+def partition_for(key: str, n: int) -> int:
+    return (murmur2(key.encode()) & 0x7FFFFFFF) % n   # toPositive(hash) % numPartitions
+
+p = Producer({"bootstrap.servers": "localhost:19092", "partitioner": "murmur2_random"})
+actual = {}
+for k in ["acc-1", "acc-2", "acc-3", "acc-4"]:
+    p.produce("payments", key=k, value=b"{}", on_delivery=lambda e, m: actual.update({m.key().decode(): m.partition()}))
+p.flush()
+for k in sorted(actual):
+    print(f"{k}: with 3 partitions -> {partition_for(k, 3)}, with 6 -> {partition_for(k, 6)}, broker stored it in {actual[k]}")
+```
+```text
+acc-1: with 3 partitions -> 0, with 6 -> 3, broker stored it in 3
+acc-2: with 3 partitions -> 2, with 6 -> 2, broker stored it in 2
+acc-3: with 3 partitions -> 2, with 6 -> 5, broker stored it in 5
+acc-4: with 3 partitions -> 2, with 6 -> 5, broker stored it in 5
+```
+Three of the four keys moved partition, so their old and new events now live in different logs.
+
+**Real-World Use Case:**
+A team doubled partitions on a compacted `customer-profile` topic to fix lag. A downstream cache rebuilt from the topic began serving old addresses for some customers, because two "latest" records now existed per key. They rebuilt into a new topic and re-pointed consumers.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Saying "just add partitions" for lag on a keyed or compacted topic without mentioning remapping.
+- Believing Kafka moves existing data into the new partitions.
+- Forgetting that Kafka Streams apps reading the topic need a reset.
+
+**Follow-up Questions Interviewers Ask:**
+- Is moving partitions between brokers the same thing? — No; `kafka-reassign-partitions.sh` moves replicas but keeps the count and the key mapping.
+- How do consumers notice new partitions? — Through metadata refresh, followed by a rebalance.
+- Is there any way to reduce partitions? — Only by creating a new topic and migrating to it.
+
+---
+
+### Q475. Producer batching, linger.ms and compression: tuning for throughput
+**ID:** KFK-07
+**Topic:** Kafka > Producers
+**Level:** Intermediate
+**Frequency:** Very Common
+**Tags:** `kafka`, `producer`, `batching`, `linger-ms`, `compression`
+
+**Short Answer (2–3 lines):**
+The producer groups records per partition into batches. A batch is sent when it reaches `batch.size` or when `linger.ms` expires, whichever comes first. Bigger batches mean fewer requests and much better compression, and compression is applied per batch. Kafka 4.0 changed the Java default `linger.ms` from 0 to 5. Raise `linger.ms` and `batch.size` and use `lz4` or `zstd` for high-volume topics.
+
+**Detailed Explanation:**
+**The knobs (Java defaults, Kafka 4.3)**
+| Setting | Default | Effect |
+|---|---|---|
+| `batch.size` | 16384 bytes | Upper bound per partition batch |
+| `linger.ms` | 5 | Maximum wait to fill a batch |
+| `buffer.memory` | 32 MB | Total memory for unsent records; when it's full, `send()` blocks up to `max.block.ms` |
+| `compression.type` | `none` | `gzip`, `snappy`, `lz4`, `zstd` |
+| `max.request.size` | 1 MB | Largest request, and so the largest single record |
+
+librdkafka (Python, Go, .NET) uses the same names with different defaults: `linger.ms=5`, `batch.size=1000000`, `batch.num.messages=10000`.
+
+**Why lingering can lower latency.** Under load, records queue behind in-flight requests anyway. Bigger batches mean fewer requests, less broker CPU and shorter queues, so tail latency often falls. That's the reasoning behind the 4.0 default change, and the lab run below shows the same effect.
+
+**Compression.** It happens in the producer, per batch. Brokers store the compressed batch as-is when the topic's `compression.type=producer` (the default), and consumers decompress. So compression saves network, disk and replication traffic together. Small batches compress badly, which is why batching and compression are tuned together.
+- `lz4`: very fast and a good default.
+- `zstd`: best ratio for a little more CPU. Good for cross-region links and long retention.
+- `snappy`: older and similar to lz4.
+- `gzip`: high CPU, rarely the right choice today.
+
+Setting a topic-level `compression.type` that differs from the producer's codec forces the broker to recompress every batch, which costs broker CPU.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Kafka 4.3.1, kafka-producer-perf-test.sh, single local broker, 6 partitions,
+# payload.jsonl = 2,000 sample JSON click events (~150 bytes each)
+for cfg in "linger.ms=0 compression.type=none" "linger.ms=5 compression.type=none" \
+           "linger.ms=20 batch.size=131072 compression.type=lz4" \
+           "linger.ms=20 batch.size=131072 compression.type=zstd"; do
+  echo "== $cfg"
+  bin/kafka-producer-perf-test.sh --bootstrap-server localhost:19092 --topic perf \
+    --num-records 300000 --throughput -1 --payload-file payload.jsonl \
+    --command-property ${cfg// / --command-property } 2>&1 | tail -1
+done
+```
+```text
+== linger.ms=0 compression.type=none
+300000 records sent, 163309.744148 records/sec (22.78 MB/sec), 275.02 ms avg latency, 510.00 ms max latency, 301 ms 50th, 490 ms 95th, 503 ms 99th, 509 ms 99.9th.
+== linger.ms=5 compression.type=none
+300000 records sent, 200534.759358 records/sec (27.97 MB/sec), 127.28 ms avg latency, 417.00 ms max latency, 98 ms 50th, 303 ms 95th, 323 ms 99th, 331 ms 99.9th.
+== linger.ms=20 batch.size=131072 compression.type=lz4
+300000 records sent, 203389.830508 records/sec (28.37 MB/sec), 20.29 ms avg latency, 494.00 ms max latency, 18 ms 50th, 41 ms 95th, 73 ms 99th, 91 ms 99.9th.
+== linger.ms=20 batch.size=131072 compression.type=zstd
+300000 records sent, 190355.329949 records/sec (26.55 MB/sec), 44.56 ms avg latency, 548.00 ms max latency, 12 ms 50th, 183 ms 95th, 201 ms 99th, 211 ms 99.9th.
+```
+Writing 100,000 of the same records to single-partition topics, one per codec, then checking `kafka-log-dirs.sh --describe` gave: none 15.62 MB, snappy 3.78 MB, lz4 3.81 MB, zstd 2.12 MB. These are lab numbers on one laptop-class node, so measure your own payloads.
+
+**Real-World Use Case:**
+A clickstream producer sent more than 100k small JSON events per second with `linger.ms=0`. Brokers were CPU-bound on request handling. Moving to `linger.ms=20`, `batch.size=256KB` and `lz4` cut request rate and network egress, and p99 latency dropped as well.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Assuming `linger.ms` always adds that much latency to every record.
+- Compressing at the broker (a topic `compression.type` that differs from the producer's) and burning broker CPU.
+- Raising `batch.size` without also raising `buffer.memory` when there are many partitions.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you see actual batch sizes? — Producer metrics `batch-size-avg`, `records-per-request-avg` and `compression-rate-avg`.
+- What happens when `buffer.memory` is exhausted? — `send()` blocks for up to `max.block.ms`, then throws a `TimeoutException`.
+- Does compression change offsets? — No; each record keeps its own offset inside the compressed batch.
+
+---
+
+### Q476. Producer retries, timeouts and error handling
+**ID:** KFK-08
+**Topic:** Kafka > Producers
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `kafka`, `producer`, `retries`, `delivery-timeout`, `error-handling`
+
+**Short Answer (2–3 lines):**
+Modern producers retry transient errors, such as leader changes and `NOT_ENOUGH_REPLICAS`, almost indefinitely (`retries=2147483647`). The real limit is `delivery.timeout.ms` (2 minutes in Java), the total time from `send()` to success or failure. Non-retriable errors, such as a record that's too large or an authorisation failure, fail fast. Your code must handle both in the delivery callback, or the record is lost silently.
+
+**Detailed Explanation:**
+**Timeline of one record (Java defaults)**
+- `max.block.ms` (60 s): how long `send()` itself may block waiting for metadata or buffer space.
+- `linger.ms` (5): time spent waiting in a batch.
+- `request.timeout.ms` (30 s): how long to wait for each broker response.
+- `retry.backoff.ms` (100) growing to `retry.backoff.max.ms` (1 s): exponential backoff between retries.
+- `delivery.timeout.ms` (120 s): an overall cap that must be at least `linger.ms + request.timeout.ms`.
+
+In librdkafka the overall cap is `message.timeout.ms` (alias `delivery.timeout.ms`) and defaults to 300 s.
+
+**Error classes**
+| Retriable (the client handles it) | Non-retriable (your code must) |
+|---|---|
+| `NOT_LEADER_OR_FOLLOWER`, `NOT_ENOUGH_REPLICAS`, `REQUEST_TIMED_OUT`, network errors | `RECORD_TOO_LARGE` / `MSG_SIZE_TOO_LARGE`, `TOPIC_AUTHORIZATION_FAILED`, serialisation errors, `INVALID_RECORD` |
+
+**What your code should do**
+- Always pass a callback (Java `send(record, callback)`, Python `on_delivery=`). An ignored future means silent loss.
+- On final failure: log, raise a metric, and either stop the application (for critical data) or write the record to a local spool or fallback store so it can be replayed.
+- Don't wrap `send()` in your own retry loop on top of client retries. It duplicates records and breaks the ordering guarantees that idempotence gives you (see Q477).
+- Keep `retries` at its default and tune `delivery.timeout.ms` instead, as the Kafka docs recommend.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16, Apache Kafka 4.3
+# Setup: topic "small-msgs" created with --config max.message.bytes=1000
+import time
+from confluent_kafka import Producer
+
+def send(bootstrap, topic, value):
+    p = Producer({"bootstrap.servers": bootstrap, "acks": "all",
+                  "delivery.timeout.ms": 5000,   # total budget for send + all retries
+                  "retry.backoff.ms": 200})
+    start = time.time()
+    def on_delivery(err, msg):
+        took = time.time() - start
+        if err is None:
+            print(f"{topic}: delivered after {took:.1f}s")
+        else:
+            print(f"{topic}: failed after {took:.1f}s -> {err.name()} (retriable={err.retriable()})")
+    p.produce(topic, value=value, on_delivery=on_delivery)
+    p.flush(15)
+
+send("localhost:19092", "small-msgs", b"x" * 500)    # fits
+send("localhost:19092", "small-msgs", b"x" * 5000)   # too big for the topic: retrying can't help
+send("localhost:1", "orders", b"x")                  # no broker: retried until delivery.timeout.ms
+```
+```text
+small-msgs: delivered after 0.0s
+small-msgs: failed after 0.0s -> MSG_SIZE_TOO_LARGE (retriable=False)
+orders: failed after 5.0s -> _MSG_TIMED_OUT (retriable=False)
+```
+The third record was retried internally for the whole 5-second budget, and only then reported as a final failure.
+
+**Real-World Use Case:**
+An order service used fire-and-forget sends with no callback. During a broker upgrade some batches expired after `delivery.timeout.ms`, and nobody noticed for a week. The fix was a callback that increments a "failed sends" metric and writes failed records to a local spool replayed on start-up.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Setting `retries=0` "to avoid duplicates", when idempotence already removes them.
+- Ignoring the future or callback returned by `send()`.
+- Setting `delivery.timeout.ms` below `linger.ms + request.timeout.ms`, which the Java client rejects.
+- Treating `TimeoutException` as proof the record was *not* written; it may have been.
+
+**Follow-up Questions Interviewers Ask:**
+- Can a timed-out record still be in Kafka? — Yes; the broker may have written it before the response was lost, so consumers should be idempotent anyway.
+- What does `max.block.ms` protect? — The calling thread, from blocking forever when metadata is missing or the buffer is full.
+- How do you surface producer health? — Metrics such as `record-error-rate`, `record-retry-rate` and `request-latency-avg`.
+
+---
+
+### Q477. max.in.flight.requests.per.connection, idempotence and ordering
+**ID:** KFK-09
+**Topic:** Kafka > Producers
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `kafka`, `producer`, `idempotence`, `ordering`, `max-in-flight`
+
+**Short Answer (2–3 lines):**
+`max.in.flight.requests.per.connection` is how many unacknowledged requests a producer may have open to one broker. Without idempotence, a value above 1 combined with retries can reorder records: batch 2 succeeds while batch 1 is being retried. With idempotence on, the broker uses sequence numbers to keep order for any value up to 5. Java enables idempotence by default; librdkafka does not.
+
+**Detailed Explanation:**
+**The reordering scenario (idempotence off)**
+1. Batch A (offsets 1–100) and batch B (101–200) are both in flight.
+2. A fails with a transient error, while B succeeds and is appended.
+3. A is retried and appended after B, so the partition holds B before A.
+
+The old fix was `max.in.flight=1`, which caps throughput at one round trip per batch.
+
+**With idempotence.** Each batch carries a producer ID, an epoch and a per-partition sequence number. The broker remembers the last 5 batches per producer and partition. It rejects an out-of-order sequence so the client retries in order, and it discards duplicates. Hence the limit: `max.in.flight ≤ 5`.
+
+**Defaults differ by client**
+| Client | `enable.idempotence` default | `acks` default | `max.in.flight` default |
+|---|---|---|---|
+| Java (3.0+) | `true` (unless conflicting configs) | `all` | 5 |
+| librdkafka 2.16 (`confluent-kafka`) | `false` | `all` (-1) | 1000000 |
+
+**The silent-disable trap (Java).** If you don't set `enable.idempotence` but do set `acks=1`, `retries=0` or `max.in.flight=6`, Java quietly turns idempotence off. If you set it explicitly to `true` alongside a conflicting value, the client throws a `ConfigException`. librdkafka refuses to start, as the output below shows.
+
+Idempotence covers one producer session against each partition. For guarantees across restarts or across partitions, use transactions (see Q70 and Q494).
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16
+from confluent_kafka import Producer
+
+try:
+    Producer({"bootstrap.servers": "localhost:19092",
+              "enable.idempotence": True,
+              "max.in.flight.requests.per.connection": 10})
+except Exception as e:
+    print(type(e).__name__, e)
+
+# Safe, ordered, high-throughput settings for a Python producer:
+p = Producer({"bootstrap.servers": "localhost:19092",
+              "enable.idempotence": True,   # implies acks=all, retries, max.in.flight<=5
+              "linger.ms": 20,
+              "compression.type": "lz4"})
+```
+```text
+KafkaException KafkaError{code=_INVALID_ARG,val=-186,str="Failed to create producer: `max.in.flight` must be set <= 5 when `enable.idempotence` is true"}
+```
+
+**Real-World Use Case:**
+A Python CDC relay published row changes with librdkafka's defaults (idempotence off, a huge in-flight limit). During a broker restart, updates for some rows were applied out of order downstream, so the final value was stale. Enabling idempotence fixed it without any throughput loss.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Recommending `max.in.flight=1` as the only way to keep order.
+- Assuming Python and Java producers share defaults.
+- Setting `acks=1` for speed and losing idempotence without noticing.
+
+**Follow-up Questions Interviewers Ask:**
+- What is `OutOfOrderSequenceException`? — The broker saw a sequence gap it can't explain, often after data loss on the broker; the producer must be recreated.
+- Does idempotence cost much? — Very little: a few bytes per batch and some broker-side state per producer.
+- Does idempotence survive a producer restart? — No; a new session gets a new producer ID unless you use a `transactional.id`.
+
+---
+
+### Q478. Synchronous vs asynchronous sends, flush() and delivery callbacks
+**ID:** KFK-10
+**Topic:** Kafka > Producers
+**Level:** Beginner
+**Frequency:** Common
+**Tags:** `kafka`, `producer`, `async`, `callbacks`, `python`
+
+**Short Answer (2–3 lines):**
+`send()` / `produce()` is always asynchronous: it puts the record in a local buffer and returns at once. "Synchronous" means waiting for that record's acknowledgement (Java `send().get()`, Python `flush()` after each record). That's safe but slow. The usual pattern is async sends with a delivery callback, `poll(0)` in the loop, and `flush()` at shutdown.
+
+**Detailed Explanation:**
+| Pattern | Throughput | Error visibility | When |
+|---|---|---|---|
+| Fire-and-forget (no callback) | Highest | None, so errors are silent | Never in production |
+| Sync (`get()` / `flush()` per record) | Low: one round trip per record | Immediate | Rare control messages, tests |
+| Async with callback | High | Per record, slightly delayed | Default |
+| Async, `flush()` per batch of input | High | At batch boundaries | Batch jobs, such as a file to Kafka |
+
+**Python specifics (`confluent-kafka`)**
+- `produce()` raises `BufferError` when the local queue is full (`queue.buffering.max.messages` / `queue.buffering.max.kbytes`). Call `poll()` and try again.
+- Delivery callbacks run only inside `poll()` or `flush()`, so call `poll(0)` regularly.
+- `flush(timeout)` returns how many messages are still queued. A non-zero return means data was never confirmed.
+- Callbacks run on your thread, so keep them short.
+
+**Java specifics**
+- Callbacks run on the producer's I/O thread, so don't block in them.
+- `close()` waits for in-flight records. Call it on shutdown (`try-with-resources` or a shutdown hook).
+
+**Shutdown.** Kubernetes sends SIGTERM and waits `terminationGracePeriodSeconds`. Catch the signal, stop taking input, `flush()`, then exit. Otherwise records still in the buffer are lost.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16, Apache Kafka 4.3 (local single broker)
+import time
+from confluent_kafka import Producer
+
+conf = {"bootstrap.servers": "localhost:19092", "enable.idempotence": True}  # librdkafka default is False
+N = 2000
+failures = []
+
+def on_delivery(err, msg):
+    if err:
+        failures.append((msg.key(), err))
+
+# 1) "Synchronous": wait for each ack before sending the next record
+p = Producer(conf)
+t = time.time()
+for i in range(N):
+    p.produce("orders", key=str(i), value=b"{}", on_delivery=on_delivery)
+    p.flush()                       # blocks until this record is acked
+print(f"sync : {N / (time.time() - t):8.0f} msg/s")
+
+# 2) Asynchronous: keep sending, serve callbacks with poll(0), flush once at the end
+p = Producer(conf)
+t = time.time()
+for i in range(N):
+    while True:
+        try:
+            p.produce("orders", key=str(i), value=b"{}", on_delivery=on_delivery)
+            break
+        except BufferError:         # local queue full: let callbacks drain it
+            p.poll(0.1)
+    p.poll(0)                       # run delivery callbacks that are ready
+remaining = p.flush(30)
+print(f"async: {N / (time.time() - t):8.0f} msg/s, unflushed={remaining}, failures={len(failures)}")
+```
+```text
+sync :     1017 msg/s
+async:     3875 msg/s, unflushed=0, failures=0
+```
+Even on a local broker with sub-millisecond round trips, waiting per record cost most of the throughput. Over a real network, with milliseconds per round trip, the gap gets much wider.
+
+**Real-World Use Case:**
+A Lambda-style function produced events and returned without flushing. Some invocations lost their last records, because the runtime froze the process before the background thread sent them. Adding `flush(5)` before returning fixed it.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Thinking `produce()` returning means the record is stored.
+- Never calling `poll()` in Python, so callbacks never fire and the queue fills.
+- Calling `flush()` after every record in a high-volume path.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you guarantee nothing is lost on shutdown? — Handle SIGTERM, stop input, `flush()` with a timeout, and alert if the return value is non-zero.
+- Are callbacks called in order? — Per partition, yes, in send order.
+- Can one producer be shared across threads? — Yes; Java and librdkafka producers are thread-safe, and one per process is usually best.
+
+---
+
+### Q479. The consumer poll loop: what poll() does and why max.poll.interval.ms matters
+**ID:** KFK-11
+**Topic:** Kafka > Consumers
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `kafka`, `consumer`, `poll-loop`, `max-poll-interval`, `heartbeat`
+
+**Short Answer (2–3 lines):**
+A Kafka consumer is a loop. `poll()` fetches records the client has already prefetched from partition leaders, takes part in group membership, and fires rebalance callbacks. Heartbeats go out on a background thread, but if the application doesn't call `poll()` again within `max.poll.interval.ms` (5 minutes by default), the consumer is removed from the group. Its partitions go to other members, and its next commit fails.
+
+**Detailed Explanation:**
+**Two liveness checks**
+| Check | Setting (Java default) | Detects |
+|---|---|---|
+| Heartbeat | `session.timeout.ms` (45 s), `heartbeat.interval.ms` (3 s) | Dead process, network partition |
+| Poll interval | `max.poll.interval.ms` (5 min) | A live process stuck in processing |
+
+**What `poll()` does**
+- Returns up to `max.poll.records` (500) records in Java. librdkafka's `consume(num_messages=…)` and `poll()` read from a local prefetch queue.
+- Sends fetch requests in the background (see Q484 for fetch tuning).
+- Handles group joins and syncs, and calls `on_assign` / `on_revoke` listeners.
+- With auto-commit, commits offsets returned by the *previous* poll.
+
+**A sound loop**
+1. `subscribe()` with rebalance callbacks.
+2. `poll()`, process the batch, then mark or commit offsets (see Q480).
+3. Handle `msg.error()`. Some errors are informational, such as partition EOF.
+4. On shutdown, `close()`. It commits (when auto-commit is on) and leaves the group immediately, so others don't wait for a session timeout.
+
+**If processing is slow**
+- Lower `max.poll.records` so each batch finishes in time.
+- Raise `max.poll.interval.ms` if a single record can legitimately take minutes.
+- Hand work to a worker pool and `pause()` partitions while it catches up (see Q485).
+- Never block on an external call with no timeout.
+
+The Java `KafkaConsumer` is **not** thread-safe. Use one consumer per thread, and call `wakeup()` from another thread to break out of a long poll.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16, Apache Kafka 4.3
+# Shows what happens when processing takes longer than max.poll.interval.ms.
+import time
+from confluent_kafka import Consumer
+
+c = Consumer({
+    "bootstrap.servers": "localhost:19092",
+    "group.id": "slow-worker",
+    "auto.offset.reset": "earliest",
+    "enable.auto.commit": False,
+    "session.timeout.ms": 6000,      # heartbeats keep flowing in the background
+    "max.poll.interval.ms": 6000,    # but poll() must be called at least this often
+})
+c.subscribe(["clicks"])
+first = True
+deadline = time.time() + 20
+while time.time() < deadline:
+    msg = c.poll(1.0)
+    if msg is None:
+        continue
+    if msg.error():
+        print("poll() returned error:", msg.error().name(), "-", msg.error().str())
+        continue
+    if first:
+        print(f"got offset {msg.offset()} from partition {msg.partition()}; simulating 9 s of work")
+        time.sleep(9)                # longer than max.poll.interval.ms
+        first = False
+        try:
+            c.commit(message=msg, asynchronous=False)
+        except Exception as e:
+            print("commit failed:", e)
+c.close()
+```
+```text
+got offset 0 from partition 1; simulating 9 s of work
+commit failed: KafkaError{code=UNKNOWN_MEMBER_ID,val=25,str="Commit failed: Broker: Unknown member"}
+poll() returned error: _MAX_POLL_EXCEEDED - Application maximum poll interval (6000ms) exceeded by 395ms
+```
+The record was processed but its offset couldn't be committed, so another member would process it again.
+
+**Real-World Use Case:**
+A consumer enriched each event with an HTTP call that sometimes hung for minutes. The group rebalanced again and again, and the same batch was reprocessed in a loop. Adding a 2-second client timeout and lowering `max.poll.records` to 50 stopped the churn.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Raising `session.timeout.ms` to fix slow processing. Session timeout covers heartbeats, not processing time.
+- Sharing one Java `KafkaConsumer` across threads.
+- Forgetting `close()`, so every restart costs a full session timeout before partitions move.
+
+**Follow-up Questions Interviewers Ask:**
+- What does `CommitFailedException` mean? — The member was removed (usually by the poll interval) and its partitions now belong to someone else.
+- Does `poll(timeout)` wait the whole timeout? — No; it returns as soon as records are available, or after the timeout with none.
+- Where do rebalance callbacks run? — Inside `poll()` on the consumer's thread.
+
+---
+
+### Q480. Offset commit strategies: auto, sync, async and "store then commit"
+**ID:** KFK-12
+**Topic:** Kafka > Consumers
+**Level:** Intermediate
+**Frequency:** Very Common
+**Tags:** `kafka`, `consumer`, `offsets`, `commit`, `at-least-once`
+
+**Short Answer (2–3 lines):**
+Auto-commit commits, every 5 seconds, whatever `poll()` last returned. That can mark records as done before you've processed them. For at-least-once, commit only after processing. Use sync commits at batch boundaries and in the revoke callback, and async commits in the hot path. In Python, a clean pattern is `enable.auto.offset.store=false` with `store_offsets()` after each record, letting the background auto-commit send only what you stored.
+
+**Detailed Explanation:**
+Q68 introduced the before-vs-after rule. This question is about the mechanics.
+
+| Strategy | How | Latency cost | Risk |
+|---|---|---|---|
+| Auto-commit (Java) | `enable.auto.commit=true`, committed during `poll()` | None | With async hand-off, unprocessed records can be committed, so data is lost |
+| Sync per batch | `commitSync()` after processing a batch | One round trip per batch | Duplicates after a crash, up to one batch |
+| Async + final sync | `commitAsync()` in the loop, `commitSync()` on revoke and close | Low | A failed async commit isn't retried (an older one could overwrite a newer one) |
+| Store then auto-commit (librdkafka) | `enable.auto.offset.store=false`, `store_offsets(msg)` after processing | None | Same duplicate window as async |
+| External store | Offsets saved with the results in the sink's transaction | Depends on the sink | Most work, and gives exactly-once in effect (see Q493) |
+
+**Details that come up**
+- The committed value is the **next** offset to read: last processed + 1. `store_offsets(message=msg)` does the +1 for you.
+- Commit in `on_revoke` (classic eager protocol) or for revoked partitions only (cooperative). Otherwise the new owner reprocesses everything since the last commit.
+- Commits are per partition. A worker pool that finishes records out of order must commit only up to the lowest contiguous finished offset.
+- Committed offsets expire `offsets.retention.minutes` (7 days) after a group becomes empty. After that, `auto.offset.reset` decides where it starts (see Q481).
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16, Apache Kafka 4.3
+# At-least-once: process first, then mark the offset as done, then commit in batches.
+import os
+from confluent_kafka import Consumer, TopicPartition
+
+c = Consumer({
+    "bootstrap.servers": "localhost:19092",
+    "group.id": "ledger-writer",
+    "auto.offset.reset": "earliest",
+    "enable.auto.commit": True,         # background commit every auto.commit.interval.ms...
+    "enable.auto.offset.store": False,  # ...but only of offsets we explicitly stored
+    "auto.commit.interval.ms": 1000,
+})
+c.subscribe(["ledger-events"])          # 1 partition, 20 records txn-0..txn-19
+done = 0
+while done < 8:
+    msg = c.poll(2.0)
+    if msg is None or msg.error():
+        continue
+    # process(msg) -> write to the database here
+    c.store_offsets(message=msg)        # mark as processed (stores msg.offset() + 1)
+    done += 1
+    if done == 5:
+        c.commit(asynchronous=False)    # explicit sync commit of what has been stored
+        print("sync-committed through", msg.offset())
+committed = c.committed([TopicPartition("ledger-events", 0)], timeout=5)[0].offset
+print(f"processed {done}, last processed offset {msg.offset()}, committed offset {committed}")
+os._exit(0)                             # simulated crash: no close(), no final commit
+```
+```text
+sync-committed through 4
+processed 8, last processed offset 7, committed offset 5
+```
+A restarted consumer in the same group printed `resumes at offset 5 value txn-5`. Offsets 5–7 were processed twice, which is at-least-once by design, so the sink must tolerate duplicates.
+
+**Real-World Use Case:**
+A consumer pushed records onto an in-memory queue for worker threads, with Java auto-commit on. A deploy killed the pod while 2,000 records sat in the queue. Their offsets had already been committed, so they were never processed. Switching to "commit lowest completed offset per partition" removed the loss.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Using auto-commit with asynchronous processing.
+- Committing `msg.offset()` instead of `msg.offset() + 1` with low-level APIs.
+- Calling `commitSync()` after every record in a high-throughput consumer.
+- Never committing in the revoke callback.
+
+**Follow-up Questions Interviewers Ask:**
+- Why aren't failed async commits retried? — A retry could land after a newer commit and move the offset backwards; use a sequence check if you retry.
+- Can you commit offsets with metadata? — Yes; each commit can carry a short metadata string, such as a batch ID.
+- What happens to offsets of an idle group? — They're deleted after `offsets.retention.minutes` once the group is empty.
+
+---
+
+### Q481. auto.offset.reset: earliest, latest, none and by_duration
+**ID:** KFK-13
+**Topic:** Kafka > Consumers
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `kafka`, `consumer`, `auto-offset-reset`, `offsets`
+
+**Short Answer (2–3 lines):**
+`auto.offset.reset` applies only when a group has **no valid committed offset** for a partition: a brand-new group, expired offsets, or an offset that retention has already deleted. `latest` (the default) starts at the end, `earliest` at the oldest retained record, and `none` throws an error. Since Kafka 4.0 the Java client also accepts `by_duration:<ISO-8601>`, which starts at records from that long ago.
+
+**Detailed Explanation:**
+| Value | Starts at | Typical use |
+|---|---|---|
+| `latest` | Log end | Live dashboards and alerts, where history is irrelevant |
+| `earliest` | Log start | Pipelines that must see everything, such as loading a lake or rebuilding state |
+| `by_duration:PT1H` | Records with timestamp ≥ now − 1 h | A new consumer that only needs recent context |
+| `none` | Throws `NoOffsetForPartitionException` | Critical consumers where silently skipping or replaying is unacceptable |
+
+**When it fires**
+1. A new `group.id` that has never committed.
+2. The group was empty longer than `offsets.retention.minutes` (7 days by default), so its offsets were deleted.
+3. The committed offset is now below the log start, because retention deleted the data (`OFFSET_OUT_OF_RANGE`).
+4. New partitions were added and the group has no offset for them. With `latest`, records written before the first assignment are skipped.
+
+**It does not fire** when the group already has offsets. That's the most common confusion. Changing the setting from `latest` to `earliest` on an existing group does nothing, as the second run below shows. To move an existing group, reset its offsets (see Q482).
+
+**Client differences.** librdkafka spells the values `smallest`/`earliest`/`beginning` and `largest`/`latest`/`end`, and uses `error` instead of `none`. Its default is also `latest` (`largest`). `by_duration` is a Java-client feature. Product behaviour changes; checked October 2026.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Kafka 4.3.1 CLI. Topic "clicks" holds 30 events, one every 6 minutes over the last 3 hours.
+for r in latest earliest by_duration:PT1H; do
+  n=$(bin/kafka-console-consumer.sh --bootstrap-server localhost:19092 --topic clicks \
+        --group reset-demo-${r//[:]/-} --command-property auto.offset.reset=$r \
+        --timeout-ms 5000 2>/dev/null | wc -l)
+  echo "auto.offset.reset=$r -> $n records"
+done
+# Run the 'earliest' group again: it now has committed offsets, so the reset policy is ignored
+bin/kafka-console-consumer.sh --bootstrap-server localhost:19092 --topic clicks \
+  --group reset-demo-earliest --command-property auto.offset.reset=earliest --timeout-ms 5000 | wc -l
+```
+```text
+auto.offset.reset=latest -> 0 records
+auto.offset.reset=earliest -> 30 records
+auto.offset.reset=by_duration:PT1H -> 10 records
+0
+```
+
+**Real-World Use Case:**
+A new fraud-scoring service went live with the default `latest` on a topic that had seven days of history. It never scored events from before launch, and the backfill had to be run as a separate job. With `earliest`, or a one-off reset to a timestamp, the launch would have covered the history.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Expecting `earliest` to replay history for a group that has already committed.
+- Using `latest` for pipelines that must not miss data, especially when partitions might be added.
+- Not alerting when a consumer falls behind the retention boundary and silently jumps ahead.
+
+**Follow-up Questions Interviewers Ask:**
+- How would you detect an `OFFSET_OUT_OF_RANGE` reset? — Watch consumer logs or metrics for resets, and alert on lag approaching retention.
+- Can a consumer without a group use this? — Yes; with `assign()` and no stored offset it applies the same policy.
+- What's a safe choice for a critical sink? — `none`/`error`, so a human decides where to restart.
+
+---
+
+### Q482. Replaying data: seek, offsets-for-times and kafka-consumer-groups --reset-offsets
+**ID:** KFK-14
+**Topic:** Kafka > Consumers
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `kafka`, `consumer`, `replay`, `reset-offsets`, `seek`
+
+**Short Answer (2–3 lines):**
+To replay, move the group's committed offsets. Stop the consumers, run `kafka-consumer-groups.sh --reset-offsets` with `--dry-run` first, then `--execute`. Targets include `--to-datetime`, `--shift-by`, `--to-earliest` and `--to-offset`. Inside an application you can `seek()` a partition, or map a timestamp to an offset with `offsets_for_times()`.
+
+**Detailed Explanation:**
+**CLI reset options**
+| Option | Moves to |
+|---|---|
+| `--to-earliest` / `--to-latest` | Log start or end |
+| `--to-datetime 2026-10-17T12:00:00.000` | First offset with timestamp ≥ that time (UTC unless an offset is given) |
+| `--by-duration PT30M` | Now minus the duration |
+| `--shift-by -100` | Current offset ± N, per partition |
+| `--to-offset 1234` | That offset |
+| `--from-file plan.csv` | Per-partition values from a file |
+
+Scope it with `--topic t` (all partitions), `--topic t:0,2` (some partitions) or `--all-topics`.
+
+**Rules**
+- The group must be inactive (no members), or the tool refuses. Scale consumers to zero first.
+- `--dry-run` is the default if you pass neither flag. Always show the plan before `--execute`.
+- Timestamp-based targets use record timestamps (see Q496 on `CreateTime` vs `LogAppendTime`). Producers that set odd timestamps make datetime resets unreliable.
+
+**In-application seeking**
+- `consumer.offsets_for_times([TopicPartition(t, p, ts_ms)])` returns offsets, then `seek()` or `assign()` to them.
+- Seek inside `on_assign` to start every new assignment at a computed point.
+- Use a *separate* group ID for a one-off replay, so the production group's position isn't touched.
+
+**Is replay safe?** Only if downstream is idempotent: upserts keyed by business ID, or deduplication by event ID. Otherwise a replay double-counts.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Kafka 4.3.1 CLI; group "reset-demo-earliest" is stopped
+G=reset-demo-earliest
+bin/kafka-consumer-groups.sh --bootstrap-server localhost:19092 --group $G --topic clicks \
+  --reset-offsets --to-datetime "$(date -u -d '-30 min' +%Y-%m-%dT%H:%M:%S.000)" --dry-run
+bin/kafka-consumer-groups.sh --bootstrap-server localhost:19092 --group $G --topic clicks:0 \
+  --reset-offsets --shift-by -2 --execute
+```
+```text
+Warn: Partition 2 from topic clicks is empty. Falling back to latest known offset.
+
+GROUP               TOPIC           PARTITION  NEW-OFFSET
+reset-demo-earliest clicks          2          0
+reset-demo-earliest clicks          1          20
+reset-demo-earliest clicks          0          5
+
+GROUP               TOPIC           PARTITION  NEW-OFFSET
+reset-demo-earliest clicks          0          4
+```
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16 — replay the last 30 minutes in a throwaway group
+import time
+from confluent_kafka import Consumer, TopicPartition
+
+c = Consumer({"bootstrap.servers": "localhost:19092", "group.id": "clicks-replay-oct17",
+              "enable.auto.commit": False})
+since = int((time.time() - 30 * 60) * 1000)
+parts = [TopicPartition("clicks", p, since) for p in range(3)]
+starts = c.offsets_for_times(parts, timeout=10)   # offset -1 means "no record that new"
+c.assign([tp for tp in starts if tp.offset >= 0])
+```
+
+**Real-World Use Case:**
+A bug in an enrichment consumer wrote wrong currency conversions for two hours. The team deployed the fix and scaled the consumer to zero. They reset the group `--to-datetime` the start of the incident with a dry run reviewed in the incident channel, and scaled back up. Upserts keyed on `transaction_id` overwrote the bad rows.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Resetting offsets while consumers are running (the tool refuses).
+- Replaying into a non-idempotent sink.
+- Forgetting that `--to-datetime` is interpreted as UTC unless an offset is given.
+
+**Follow-up Questions Interviewers Ask:**
+- Can you reset offsets for one partition only? — Yes, `--topic name:partition`.
+- How do you delete a group's offsets? — `kafka-consumer-groups.sh --delete-offsets` or `--delete` for the whole group.
+- What if the data is already past retention? — It's gone from Kafka; replay from the lake or archive copy instead.
+
+---
+
+### Q483. How is consumer lag measured, and what does the output mean?
+**ID:** KFK-15
+**Topic:** Kafka > Consumers
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `kafka`, `consumer-lag`, `monitoring`, `cli`
+
+**Short Answer (2–3 lines):**
+Lag per partition is log-end offset minus the group's committed offset: how many records are written but not yet committed as processed. Total lag sums over partitions. Offset lag can mislead, so also track **time lag**, the age of the oldest unconsumed record, which says how stale downstream data is.
+
+**Detailed Explanation:**
+How to *diagnose* growing lag is covered in Q422 and on this site's lag page. This question is about reading the numbers correctly.
+
+**`kafka-consumer-groups.sh --describe` columns**
+| Column | Meaning |
+|---|---|
+| `CURRENT-OFFSET` | Committed offset (next to read), not the consumer's in-memory position |
+| `LOG-END-OFFSET` | Next offset to be written |
+| `LAG` | The difference |
+| `CONSUMER-ID`, `HOST` | The member that owns the partition; `-` means nobody does |
+
+`--state` shows the group state (`Stable`, `PreparingRebalance`, `Empty`) and assignor. `--members --verbose` shows which partitions each member holds.
+
+**Pitfalls**
+- **Commit cadence**: lag is measured at commits, so a healthy consumer committing every 5 s shows a saw-tooth pattern.
+- **Transactions**: control markers take offsets, so read-committed consumers can show a small lag that never reaches zero.
+- **Compacted topics**: offsets have gaps, so offset lag overstates the number of records left.
+- **Different traffic per partition**: 10,000 records of lag is seconds on a busy partition and hours on a quiet one. Time lag normalises this.
+
+**Tools.** The CLI, consumer metrics (`records-lag-max`), Burrow (status by sliding window), Kafka exporters for Prometheus, and the lag metrics managed services provide.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Kafka 4.3.1 CLI
+bin/kafka-consumer-groups.sh --bootstrap-server localhost:19092 --describe --group ledger-writer
+bin/kafka-consumer-groups.sh --bootstrap-server localhost:19092 --describe --group ledger-writer --state
+```
+```text
+Consumer group 'ledger-writer' has no active members.
+
+GROUP           TOPIC           PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG             CONSUMER-ID     HOST            CLIENT-ID
+ledger-writer   ledger-events   0          6               20              14              -               -               -
+
+GROUP           COORDINATOR (ID)          ASSIGNMENT-STRATEGY  STATE                #MEMBERS
+ledger-writer   localhost:19092  (1)      -                    Empty                0
+```
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16, Apache Kafka 4.3
+# Offset lag and time lag for one group, without joining the group.
+import time
+from confluent_kafka import Consumer, TopicPartition
+
+GROUP, TOPIC = "reset-demo-earliest", "clicks"
+probe = Consumer({"bootstrap.servers": "localhost:19092", "group.id": GROUP,
+                  "enable.auto.commit": False})        # never subscribe(), so no rebalance
+parts = [TopicPartition(TOPIC, p) for p in probe.list_topics(TOPIC).topics[TOPIC].partitions]
+now = time.time()
+for tp in probe.committed(parts, timeout=5):
+    low, high = probe.get_watermark_offsets(tp, timeout=5)
+    committed = tp.offset if tp.offset >= 0 else low
+    lag = high - committed
+    age = "-"
+    if lag > 0:                                       # timestamp of the oldest unconsumed record
+        probe.assign([TopicPartition(TOPIC, tp.partition, committed)])
+        m = probe.poll(5)
+        age = f"{now - m.timestamp()[1] / 1000:.0f}s"
+        probe.unassign()
+    print(f"p{tp.partition}: committed={committed} end={high} lag={lag} oldest_unconsumed_age={age}")
+probe.close()
+```
+```text
+p0: committed=5 end=6 lag=1 oldest_unconsumed_age=156s
+p1: committed=20 end=24 lag=4 oldest_unconsumed_age=1596s
+p2: committed=0 end=0 lag=0 oldest_unconsumed_age=-
+```
+Partition 1 has only 4 records of lag, but they are 26 minutes old. That's the number a freshness SLA cares about.
+
+**Real-World Use Case:**
+A team alerted on "lag > 50,000" for every topic. The alert fired constantly on a busy clickstream topic that was only seconds behind, and never on a low-volume billing topic that was hours behind. Switching to a time-lag SLO per consumer group fixed both problems.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Treating `CURRENT-OFFSET` as where the consumer actually is right now.
+- Alerting on a single global offset-lag threshold.
+- Expecting lag to reach exactly zero on transactional or compacted topics.
+
+**Follow-up Questions Interviewers Ask:**
+- Why does an `Empty` group still show lag? — Lag is computed from stored offsets, which remain after members leave until they expire.
+- What is `records-lag-max`? — A client-side metric: the largest lag across the partitions this consumer currently owns.
+- How would you alert on lag? — On time lag or lag growth rate per group, with thresholds tied to the freshness SLA.
+
+---
+
+### Q484. Consumer fetch tuning: fetch.min.bytes, fetch.max.wait.ms and partition fetch sizes
+**ID:** KFK-16
+**Topic:** Kafka > Consumers
+**Level:** Intermediate
+**Frequency:** Occasional
+**Tags:** `kafka`, `consumer`, `fetch`, `latency`, `throughput`
+
+**Short Answer (2–3 lines):**
+A fetch request waits on the broker until it has `fetch.min.bytes` of data or `fetch.max.wait.ms` passes. It returns at most `max.partition.fetch.bytes` per partition and `fetch.max.bytes` in total. Raise `fetch.min.bytes` for bulk sinks to get fewer, larger fetches. Keep it at 1 for low-latency consumers, because on quiet topics a high value turns into waiting.
+
+**Detailed Explanation:**
+| Setting (Java default) | Effect | Raise when | Lower when |
+|---|---|---|---|
+| `fetch.min.bytes` (1) | Broker holds the response until this much data is ready | Bulk sinks; you want to cut broker request load | Latency-sensitive consumers |
+| `fetch.max.wait.ms` (500) | Maximum the broker holds the request | Paired with a big `fetch.min.bytes` | You need a tight latency bound |
+| `max.partition.fetch.bytes` (1 MiB) | Per-partition cap per response | Large records; few partitions | Many partitions and limited memory |
+| `fetch.max.bytes` (50 MiB) | Per-response cap across partitions | Very high throughput | Memory pressure |
+| `max.poll.records` (500) | Records handed to the application per `poll()` | Cheap per-record work | Slow per-record work (see Q479) |
+
+**How they interact**
+- The fetcher works ahead of the application. Java buffers completed fetches. librdkafka prefetches into a queue bounded by `queued.max.messages.kbytes` (64 MiB per client by default), which is a common cause of memory bloat when there are many partitions.
+- One record bigger than `max.partition.fetch.bytes` is still returned, so the consumer can't get stuck. But memory must allow for it.
+- Cross-AZ costs: fetching from a follower in the same zone (`client.rack`, see Q492) changes where bytes come from, not how many.
+
+**Rule of thumb profiles**
+- *Lake sink* (S3/Iceberg writer): `fetch.min.bytes=1 MB`, `fetch.max.wait.ms=500`, larger `max.poll.records`.
+- *Alerting or fraud*: defaults or a lower `fetch.max.wait.ms`.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16, Apache Kafka 4.3
+# A low-traffic topic (one record every 100 ms): how fetch.min.bytes changes end-to-end latency.
+import statistics, threading, time
+from confluent_kafka import Consumer, Producer
+
+def measure(fetch_conf, n=30):
+    c = Consumer({"bootstrap.servers": "localhost:19092", "group.id": f"lat-{time.time()}",
+                  "auto.offset.reset": "latest", **fetch_conf})
+    c.subscribe(["trickle"])
+    while not c.assignment():
+        c.poll(0.2)
+    time.sleep(1)
+    def produce():
+        p = Producer({"bootstrap.servers": "localhost:19092", "linger.ms": 0})
+        for _ in range(n):
+            p.produce("trickle", value=str(time.time()).encode()); p.poll(0); time.sleep(0.1)
+        p.flush()
+    threading.Thread(target=produce).start()
+    lat = []
+    while len(lat) < n:
+        m = c.poll(2)
+        if m and not m.error():
+            lat.append((time.time() - float(m.value())) * 1000)
+    c.close()
+    return f"median {statistics.median(lat):6.1f} ms, max {max(lat):6.1f} ms"
+
+print("fetch.min.bytes=1 (default)            :", measure({}))
+print("fetch.min.bytes=1MB, fetch.wait.max=500 :", measure({"fetch.min.bytes": 1048576, "fetch.wait.max.ms": 500}))
+```
+```text
+fetch.min.bytes=1 (default)            : median    1.7 ms, max    7.6 ms
+fetch.min.bytes=1MB, fetch.wait.max=500 : median  267.4 ms, max  469.6 ms
+```
+On a quiet topic the 1 MB threshold is never reached, so every fetch waits for the timeout. On a busy topic the same settings would cost almost nothing and save many requests. (librdkafka names the wait setting `fetch.wait.max.ms`; Java calls it `fetch.max.wait.ms`.)
+
+**Real-World Use Case:**
+A team copied "throughput" consumer settings from a busy clickstream sink to a low-volume payments-alert consumer. Alerts arrived about half a second late on average. Restoring `fetch.min.bytes=1` for that consumer brought them back to milliseconds.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Applying one consumer profile to every workload.
+- Confusing `fetch.max.bytes` with `max.poll.records`: one limits network responses, the other what `poll()` hands you.
+- Ignoring prefetch memory when one process consumes thousands of partitions.
+
+**Follow-up Questions Interviewers Ask:**
+- Which metrics show fetch behaviour? — `fetch-rate`, `fetch-size-avg`, `fetch-latency-avg` and `records-per-request-avg` on the consumer.
+- Why might a consumer use lots of memory while idle? — Prefetch queues filled for many partitions; lower `queued.max.messages.kbytes` (librdkafka) or the fetch sizes.
+- Does the broker read from disk for every fetch? — Usually not; recent data is served from the page cache with zero-copy transfer.
+
+---
+
+### Q485. Processing faster than one thread per partition: worker pools and ordering
+**ID:** KFK-17
+**Topic:** Kafka > Consumers
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `kafka`, `consumer`, `concurrency`, `ordering`, `offsets`
+
+**Short Answer (2–3 lines):**
+Partitions cap how many group members can work in parallel. Within one consumer you can still fan records out to a worker pool. To keep per-key order, route each key to a fixed worker. Commit only the lowest offset per partition below which everything is finished. Use `pause()`/`resume()` for backpressure instead of letting queues grow without limit.
+
+**Detailed Explanation:**
+**Options, from simple to complex**
+| Approach | Ordering | Notes |
+|---|---|---|
+| More partitions + more consumers | Per key | Simplest, but changes key placement (see Q474) |
+| One consumer per thread, `N` threads in a process | Per partition | Same as scaling out; each thread has its own consumer |
+| Consumer + worker pool routed by key | Per key | Higher parallelism than partitions; needs offset tracking |
+| Consumer + unordered pool | None | Highest throughput; only for independent records |
+| Share groups (see Q488) | None | The broker does per-record dispatch and acknowledgement |
+| Libraries such as Confluent Parallel Consumer (Java) | Per key, per partition or none | Handle offset tracking and retries for you |
+
+**The offset problem.** Workers finish out of order. If offsets 10–12 are done but 9 isn't, committing 13 would lose 9 after a crash. Track finished offsets per partition and commit the contiguous high mark. This is what `advance()` does below.
+
+**Backpressure.** When the work queues are full, call `pause()` on the assigned partitions but **keep calling `poll()`**, so the member stays in the group (see Q479). `resume()` when the backlog drains.
+
+**Rebalances.** On revoke, either wait for in-flight work on those partitions and commit, or drop it and accept reprocessing. Records still queued for a revoked partition must not be committed later by the old owner.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16, Apache Kafka 4.3
+# One consumer, 8 worker threads. Per-key order is kept by routing each key to a fixed worker;
+# offsets are committed only up to the lowest offset that is finished with no gaps before it.
+import queue, threading, time, zlib
+from collections import defaultdict
+from confluent_kafka import Consumer, TopicPartition
+
+N_WORKERS, MAX_QUEUED = 8, 200
+queues = [queue.Queue() for _ in range(N_WORKERS)]
+done = defaultdict(set)          # partition -> finished offsets not yet committed
+lock = threading.Lock()
+last_by_key = {}
+
+def worker(q):
+    while True:
+        m = q.get()
+        if m is None:
+            return
+        key, val = m.key().decode(), int(m.value())
+        assert last_by_key.get(key, -1) < val, "per-key order violated"
+        last_by_key[key] = val
+        time.sleep(0.005)                        # pretend to call an API
+        with lock:
+            done[m.partition()].add(m.offset())
+
+threads = [threading.Thread(target=worker, args=(q,)) for q in queues]
+for t in threads: t.start()
+
+c = Consumer({"bootstrap.servers": "localhost:19092", "group.id": "parallel-demo-2",
+              "auto.offset.reset": "earliest", "enable.auto.commit": False})
+c.subscribe(["events6"])
+next_commit = {}                 # partition -> next offset we expect to commit from
+paused, handled, idle = False, 0, 0
+
+def advance():
+    """Move each partition's commit point over contiguous finished offsets."""
+    moved = []
+    with lock:
+        for p, nxt in next_commit.items():
+            while nxt in done[p]:
+                done[p].discard(nxt); nxt += 1
+            if nxt != next_commit[p]:
+                next_commit[p] = nxt
+                moved.append(TopicPartition("events6", p, nxt))
+    return moved
+
+while idle < 6:
+    m = c.poll(0.5)
+    if m is not None and not m.error():
+        idle = 0
+        next_commit.setdefault(m.partition(), m.offset())
+        queues[zlib.crc32(m.key()) % N_WORKERS].put(m)   # same key -> same worker
+        handled += 1
+    else:
+        idle += 1
+    backlog = sum(q.qsize() for q in queues)
+    if backlog > MAX_QUEUED and not paused:
+        c.pause(c.assignment()); paused = True           # keep polling, stop fetching
+    elif backlog < MAX_QUEUED // 2 and paused:
+        c.resume(c.assignment()); paused = False
+    to_commit = advance()
+    if to_commit:
+        c.commit(offsets=to_commit, asynchronous=True)
+
+for q in queues: q.put(None)
+for t in threads: t.join()
+advance()
+c.commit(offsets=[TopicPartition("events6", p, o) for p, o in next_commit.items()], asynchronous=False)
+print(f"handled {handled} records with {N_WORKERS} workers; committed:",
+      {p: o for p, o in sorted(next_commit.items())})
+c.close()
+```
+```text
+handled 600 records with 8 workers; committed: {0: 84, 1: 108, 2: 120, 3: 96, 4: 108, 5: 84}
+```
+The committed offsets equal each partition's log-end offset (`kafka-get-offsets.sh` printed `events6:0:84 … events6:5:84`), and the per-key order assertion never fired.
+
+**Real-World Use Case:**
+An enrichment consumer called a geocoding API taking about 50 ms per record. Twelve partitions limited the group to 12 concurrent calls. A key-routed pool of 64 workers in each of 3 pods raised throughput many times over without re-partitioning, and still applied each customer's updates in order.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Committing the highest finished offset instead of the contiguous one.
+- Sharing one Java `KafkaConsumer` between threads.
+- Unbounded in-memory queues, which turn a slow sink into an out-of-memory crash.
+- Forgetting that a rebalance can hand a partition to someone else while its records sit in your queue.
+
+**Follow-up Questions Interviewers Ask:**
+- Why route by key hash and not round-robin? — Round-robin lets two workers handle the same key at once, breaking order.
+- How do you handle a poison record in one worker? — Retry with limits, then send it to a DLQ and mark it finished so the commit point can advance (see Q500).
+- When is adding partitions better? — When work is CPU-bound and can scale across pods, and the topic's keys can tolerate a remap.
+
+---
+
+### Q486. Partition assignment strategies: range, round-robin, sticky and cooperative-sticky
+**ID:** KFK-18
+**Topic:** Kafka > Consumer Groups
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `kafka`, `consumer-groups`, `assignor`, `cooperative-rebalancing`
+
+**Short Answer (2–3 lines):**
+In the classic protocol, the group leader's assignor decides who gets which partitions. **Range** assigns per topic in contiguous blocks, which co-locates the same partition numbers across topics but can be uneven. **Round-robin** spreads everything evenly. **Sticky** is balanced and minimises movement. **Cooperative-sticky** does the same with incremental rebalancing, so members keep their unaffected partitions while the group changes.
+
+**Detailed Explanation:**
+| Assignor | Balance | Movement on change | Rebalance style | Notes |
+|---|---|---|---|---|
+| `RangeAssignor` | Can be skewed with many topics | High | Eager | Same partition numbers across co-partitioned topics go to one member |
+| `RoundRobinAssignor` | Even | High | Eager | Breaks cross-topic co-location |
+| `StickyAssignor` | Even | Minimal | Eager | Still stops everything during the rebalance |
+| `CooperativeStickyAssignor` | Even | Minimal | Incremental | Two-phase: revoke only what moves, then assign it |
+
+**Eager vs incremental.** With eager assignors every member revokes everything, then receives a new assignment. With cooperative, only partitions that change owner are revoked, in a first round, and assigned in a follow-up round. Consumers keep processing the rest.
+
+**Defaults.** Java's default `partition.assignment.strategy` is `[RangeAssignor, CooperativeStickyAssignor]`. That lets a rolling upgrade move a group to cooperative by removing Range in a second roll. librdkafka defaults to `range,roundrobin`, so Python groups are eager unless you opt in. All members must support a common strategy.
+
+**Migrating to cooperative (classic protocol).** Roll once with both `[cooperative-sticky, range]` listed, then roll again with only `cooperative-sticky`. Switching all at once with mixed members fails to agree on a protocol.
+
+**Where this is heading.** With the KIP-848 protocol the broker computes assignments (`uniform` or `range`) and every rebalance is incremental (see Q487). Client-side assignors then don't apply.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16, Apache Kafka 4.3 (classic group protocol)
+# Two consumers, two topics with 3 partitions each: compare assignment strategies.
+import time
+from confluent_kafka import Consumer
+from confluent_kafka.admin import AdminClient, NewTopic
+
+admin = AdminClient({"bootstrap.servers": "localhost:19092"})
+for f in admin.create_topics([NewTopic(t, 3) for t in ("ta", "tb")]).values():
+    try: f.result()
+    except Exception: pass               # already exists
+
+def run(strategy):
+    group = f"assign-{strategy}-{int(time.time())}"
+    cs = [Consumer({"bootstrap.servers": "localhost:19092", "group.id": group,
+                    "partition.assignment.strategy": strategy}) for _ in range(2)]
+    for c in cs:
+        c.subscribe(["ta", "tb"])
+    end = time.time() + 12
+    while time.time() < end:
+        for c in cs:
+            c.poll(0.2)
+    for i, c in enumerate(cs):
+        parts = sorted(f"{tp.topic}-{tp.partition}" for tp in c.assignment())
+        print(f"{strategy:18} consumer{i}: {len(parts)} -> {parts}")
+    for c in cs:
+        c.close()
+
+for s in ("range", "roundrobin", "cooperative-sticky"):
+    run(s)
+```
+```text
+range              consumer0: 2 -> ['ta-2', 'tb-2']
+range              consumer1: 4 -> ['ta-0', 'ta-1', 'tb-0', 'tb-1']
+roundrobin         consumer0: 3 -> ['ta-1', 'tb-0', 'tb-2']
+roundrobin         consumer1: 3 -> ['ta-0', 'ta-2', 'tb-1']
+cooperative-sticky consumer0: 3 -> ['ta-1', 'tb-0', 'tb-2']
+cooperative-sticky consumer1: 3 -> ['ta-0', 'ta-2', 'tb-1']
+```
+Range gave one member twice the work. The other two strategies balanced it 3/3.
+
+**Real-World Use Case:**
+A Python sink group of 20 pods read 15 topics with librdkafka's default range assignor. A few pods carried most partitions and lagged, and every deploy paused the whole group. Moving to `cooperative-sticky` balanced the load and made rolling deploys nearly invisible in lag graphs.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Assuming Python and Java consumers share the same default assignor.
+- Switching every member to cooperative in a single deploy.
+- Using round-robin where a downstream process needs `orders-3` and `payments-3` on the same member.
+
+**Follow-up Questions Interviewers Ask:**
+- What does "sticky" preserve? — Existing assignments, so local caches and state stay warm.
+- Does cooperative rebalancing make the rebalance shorter? — Not necessarily shorter, but far less disruptive, because unaffected partitions keep flowing.
+- What extra callback matters with cooperative? — `on_revoke` receives only the partitions being moved, so commit just those.
+
+---
+
+### Q487. The KIP-848 consumer group protocol: what changes with group.protocol=consumer?
+**ID:** KFK-19
+**Topic:** Kafka > Consumer Groups
+**Level:** Advanced
+**Frequency:** Common
+**Tags:** `kafka`, `kip-848`, `consumer-groups`, `rebalancing`, `kafka-4`
+
+**Short Answer (2–3 lines):**
+KIP-848 moves partition assignment from the client group leader to the broker's group coordinator. Members send periodic heartbeats with their subscriptions, and the coordinator reconciles each member towards a target assignment one member at a time. There's no group-wide join/sync barrier, so a slow member can't stall everyone, and every change is incremental. It's GA since Kafka 4.0, but clients still default to `group.protocol=classic`.
+
+**Detailed Explanation:**
+Q68 mentions KIP-848 in passing. The mechanics are worth knowing in detail.
+
+**Classic protocol**
+- JoinGroup and SyncGroup rounds. One member, the leader, runs the assignor and hands out the result.
+- Every member must rejoin before anyone gets an assignment, so one slow member stalls the whole group.
+- Session timeout and heartbeat interval are client settings.
+
+**Consumer protocol (KIP-848)**
+- A single `ConsumerGroupHeartbeat` API carries subscriptions, owned partitions and assignment updates.
+- The **broker** runs a server-side assignor: `group.consumer.assignors=uniform,range` (default `uniform`). Clients may pick one with `group.remote.assignor`.
+- Changes are reconciled per member: a partition is revoked from A, and only after A confirms is it assigned to C. No other member is touched.
+- Liveness is configured on the broker or per group: `group.consumer.session.timeout.ms` (45 s) and `group.consumer.heartbeat.interval.ms` (5 s). Clients that set `session.timeout.ms` get an error (shown below).
+- Regex subscriptions are evaluated on the broker.
+- Static membership still works through `group.instance.id`.
+
+**Migration.** An empty classic group converts automatically when the first new-protocol member joins. A live group can be rolled member by member: the group converts when the first new-protocol member joins, and the coordinator interoperates with the remaining classic members. This works only if the classic assignor embeds no custom metadata. Rack-aware assignment isn't fully supported yet. Clients: Java 4.0+, and librdkafka 2.12+ (GA). Check your client's release notes for gaps such as rack-aware assignment or specific callbacks.
+
+Kafka Streams has its own broker-side protocol (KIP-1071, `group.protocol=streams`), production-ready for its core feature set since 4.2. Product behaviour changes; checked October 2026.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16, Apache Kafka 4.3
+# Two members own a 6-partition topic; a third joins. Which partitions move?
+import sys, time
+from confluent_kafka import Consumer
+
+PROTOCOL = sys.argv[1]            # "classic-eager", "classic-cooperative" or "consumer"
+closing = False
+group = f"rb-{PROTOCOL}-{int(time.time())}"
+
+def make(name):
+    conf = {"bootstrap.servers": "localhost:19092", "group.id": group}
+    if PROTOCOL == "consumer":
+        conf["group.protocol"] = "consumer"            # KIP-848: broker computes assignments
+    elif PROTOCOL == "classic-cooperative":
+        conf["partition.assignment.strategy"] = "cooperative-sticky"
+    else:
+        conf["partition.assignment.strategy"] = "range"  # eager
+    c = Consumer(conf)
+    def log(verb):
+        def cb(consumer, parts):
+            if parts and not closing:     # skip empty incremental callbacks and shutdown noise
+                print(f"  {name} {verb} {sorted(p.partition for p in parts)}")
+        return cb
+    c.subscribe(["events6"], on_assign=log("assigned"), on_revoke=log("revoked "))
+    return c
+
+def spin(cs, secs):
+    end = time.time() + secs
+    while time.time() < end:
+        for c in cs:
+            c.poll(0.1)
+
+print(PROTOCOL)
+members = [make("A"), make("B")]
+spin(members, 15)
+print(" -- C joins --")
+members.append(make("C"))
+spin(members, 15)
+closing = True
+for c in members:
+    c.close()
+```
+Output (`python rebalance.py classic-eager`, then `classic-cooperative`, then `consumer`):
+```text
+classic-eager
+  A assigned [3, 4, 5]
+  B assigned [0, 1, 2]
+ -- C joins --
+  B revoked  [0, 1, 2]
+  A revoked  [3, 4, 5]
+  A assigned [4, 5]
+  B assigned [0, 1]
+  C assigned [2, 3]
+classic-cooperative
+  A assigned [1, 3, 5]
+  B assigned [0, 2, 4]
+ -- C joins --
+  A revoked  [1]
+  B revoked  [0]
+  C assigned [0, 1]
+consumer
+  A assigned [0, 1, 2, 3, 4, 5]
+  A revoked  [3, 4, 5]
+  B assigned [3, 4, 5]
+ -- C joins --
+  B revoked  [5]
+  C assigned [5]
+  A revoked  [2]
+  C assigned [2]
+```
+Eager stopped all six partitions to add one member. Both other protocols moved only two. Under KIP-848 each move was confirmed member by member. Inspecting a running new-protocol group:
+```text
+$ bin/kafka-consumer-groups.sh --bootstrap-server localhost:19092 --describe --group kip848-demo --state
+GROUP           COORDINATOR (ID)          ASSIGNMENT-STRATEGY  STATE                #MEMBERS
+kip848-demo     localhost:19092  (1)      uniform              Stable               1
+
+# Setting a client-side session timeout with the new protocol:
+KafkaError{code=_INVALID_ARG,val=-186,str="Failed to create consumer: `session.timeout.ms` is not supported for `group.protocol=consumer` or share consumer. It is defined broker side"}
+```
+
+**Real-World Use Case:**
+A group of 150 consumers on Kubernetes rebalanced for minutes during each rolling deploy under the classic protocol, because every pod restart forced a group-wide join. After the brokers reached 4.x and the clients switched to `group.protocol=consumer`, pod restarts moved only that pod's partitions, and lag during deploys flattened.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Assuming upgrading the brokers turns KIP-848 on; clients must opt in.
+- Keeping `partition.assignment.strategy` or `session.timeout.ms` in client configs after switching.
+- Calling KIP-848 just "cooperative sticky on the broker"; the barrier-free, per-member reconciliation is the real change.
+
+**Follow-up Questions Interviewers Ask:**
+- Where do you tune the session timeout now? — Broker defaults `group.consumer.session.timeout.ms`, or per group with `kafka-configs.sh --entity-type groups`.
+- Can classic and new members share a group? — Yes, during an online migration; the coordinator converts the group when possible.
+- Is the classic protocol going away? — The plan (KIP-1274) is that `KafkaConsumer` defaults to the new protocol in 5.0 and drops classic in 6.0, while brokers keep supporting classic clients.
+
+---
+
+### Q488. Share groups (Queues for Kafka): how do they differ from consumer groups?
+**ID:** KFK-20
+**Topic:** Kafka > Share Groups
+**Level:** Advanced
+**Frequency:** Occasional
+**Tags:** `kafka`, `share-groups`, `kip-932`, `queues`, `acknowledgement`
+
+**Short Answer (2–3 lines):**
+A share group (KIP-932, production-ready in Kafka 4.2) lets many consumers read the **same partition** together. Each record is acquired by one member for a time-limited lock and acknowledged on its own as ACCEPT, RELEASE (redeliver) or REJECT. Kafka counts deliveries per record. You get queue semantics without ordering and without the members ≤ partitions limit.
+
+**Detailed Explanation:**
+| | Consumer group | Share group |
+|---|---|---|
+| Unit of assignment | Whole partition to one member | Records within a partition, to any member |
+| Max useful members | Number of partitions | Not tied to partitions |
+| Ordering | Per partition | None guaranteed |
+| Progress tracking | One committed offset per partition | Per-record state: available, acquired, acknowledged, archived |
+| Retries | Application's job | RELEASE, or lock expiry, redelivers; `delivery_count` is tracked |
+| Poison records | DLQ pattern in app code (see Q500) | REJECT, or exceeding the delivery limit, archives the record |
+
+**How it works**
+- The **share-partition leader** (on the partition leader broker) tracks in-flight records between the share-partition start offset (SPSO) and end offset (SPEO). State is persisted in `__share_group_state`.
+- `group.share.record.lock.duration.ms` (30 s) is how long a member holds a record before it becomes available again.
+- `group.share.delivery.count.limit` (5) caps attempts. After that the record is archived and never delivered again (4.3 adds a per-group `share.delivery.count.limit`).
+- Where a new group starts is set per group with `share.auto.offset.reset` (default `latest`) via `kafka-configs.sh --entity-type groups`, not in client config.
+- Acknowledgement is implicit (accept the previous batch on the next poll) or explicit.
+
+**When to use**
+- Job or work queues where each item is independent: image processing, sending notifications, calling rate-limited APIs.
+- Spiky workloads that need more workers than partitions.
+
+**When not to**
+- Per-key ordering, stateful stream processing, or Kafka transactions across read and write (not supported).
+
+**Example / Code:**
+```bash
+# Runtime: Apache Kafka 4.3.1 CLI
+bin/kafka-topics.sh --bootstrap-server localhost:19092 --create --topic jobs --partitions 1
+seq 0 11 | sed 's/^/job-/' | bin/kafka-console-producer.sh --bootstrap-server localhost:19092 --topic jobs
+bin/kafka-configs.sh --bootstrap-server localhost:19092 --alter --entity-type groups \
+  --entity-name workers --add-config share.auto.offset.reset=earliest
+```
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16 (ShareConsumer), Apache Kafka 4.3 with share.version=1
+# Two share-group members read ONE partition. Bad jobs are rejected; a flaky one is released and retried.
+import time
+from confluent_kafka import ShareConsumer, AcknowledgeType
+
+def member(name):
+    c = ShareConsumer({"bootstrap.servers": "localhost:19092", "group.id": "workers",
+                       "share.acknowledgement.mode": "explicit"})
+    c.subscribe(["jobs"])
+    return name, c
+
+members = [member("w1"), member("w2")]
+seen, end = [], time.time() + 25
+while time.time() < end and len(seen) < 13:
+    for name, c in members:
+        for m in c.poll(0.5):
+            if m.error():
+                continue
+            job, n = m.value().decode(), m.delivery_count()
+            if job == "job-3":
+                ack = AcknowledgeType.REJECT          # poison: never redeliver
+            elif job == "job-5" and n == 1:
+                ack = AcknowledgeType.RELEASE         # transient failure: give it back
+            else:
+                ack = AcknowledgeType.ACCEPT
+            c.acknowledge(m, ack)
+            seen.append(job)
+            print(f"{name} offset={m.offset():2} {job:6} delivery_count={n} -> {ack.name}")
+        c.commit_async()
+for _, c in members:
+    c.close()
+```
+```text
+w2 offset= 0 job-0  delivery_count=1 -> ACCEPT
+w2 offset= 1 job-1  delivery_count=1 -> ACCEPT
+w2 offset= 2 job-2  delivery_count=1 -> ACCEPT
+w2 offset= 3 job-3  delivery_count=1 -> REJECT
+w2 offset= 4 job-4  delivery_count=1 -> ACCEPT
+w2 offset= 5 job-5  delivery_count=1 -> RELEASE
+w2 offset= 6 job-6  delivery_count=1 -> ACCEPT
+w2 offset= 7 job-7  delivery_count=1 -> ACCEPT
+w2 offset= 8 job-8  delivery_count=1 -> ACCEPT
+w2 offset= 9 job-9  delivery_count=1 -> ACCEPT
+w2 offset=10 job-10 delivery_count=1 -> ACCEPT
+w2 offset=11 job-11 delivery_count=1 -> ACCEPT
+w1 offset= 5 job-5  delivery_count=2 -> ACCEPT
+```
+Both members read the single partition. The released job went to the other member with `delivery_count=2`, and the rejected job was never redelivered. In a consumer group, w1 would have sat idle.
+
+**Real-World Use Case:**
+A document-OCR service had bursts of 50,000 jobs on a 12-partition topic. Each job took seconds, so the consumer group could use only 12 workers. Moving to a share group let the autoscaler run 200 workers against the same topic. Jobs that kept failing hit the delivery limit and were archived, rather than blocking a partition.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Promising ordering with share groups.
+- Setting `auto.offset.reset` on the share consumer instead of `share.auto.offset.reset` on the group.
+- Processing longer than the lock duration, so records get redelivered while still being worked on.
+- Forgetting that clusters with fewer than 3 brokers need `share.coordinator.state.topic.replication.factor` lowered.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you inspect a share group? — `kafka-share-groups.sh --describe --group workers` (start offset and lag) and `--members`.
+- Is delivery exactly-once? — No; it's at-least-once with per-record retries, so processing must be idempotent.
+- Which clients support it? — The Java `KafkaShareConsumer` is production-ready; librdkafka's share consumer (used by `confluent-kafka`'s `ShareConsumer`) is still marked Preview in its changelog, so check before relying on it.
+
+---
+
+### Q489. How replication works: leaders, followers, the ISR and the high watermark
+**ID:** KFK-21
+**Topic:** Kafka > Replication & Durability
+**Level:** Intermediate
+**Frequency:** Very Common
+**Tags:** `kafka`, `replication`, `isr`, `high-watermark`, `min-insync-replicas`
+
+**Short Answer (2–3 lines):**
+Each partition has one leader that takes all writes. Followers copy from it by sending fetch requests, just as consumers do. Followers that keep up within `replica.lag.time.max.ms` (30 s) form the in-sync replica set (ISR). The high watermark is the highest offset every ISR member has, and consumers only see records below it. Since Kafka 4.0 the high watermark also won't advance while the ISR is smaller than `min.insync.replicas`, whatever `acks` the producer used.
+
+**Detailed Explanation:**
+How `acks`, replication factor and `min.insync.replicas` combine into a durability choice is covered on this site's durability page. This question is about the mechanism underneath.
+
+**Follower fetching.** Followers send `Fetch` requests to the leader with their log-end offset. The leader learns how far each follower has got from these requests, and it returns its current high watermark (HW) in the response, so followers learn the HW too.
+
+**ISR membership.** A follower drops out of the ISR if it hasn't caught up to the leader's log end within `replica.lag.time.max.ms`. A cleanly stopped broker is removed straight away. The leader asks the KRaft controller to shrink or expand the ISR, and the change is recorded in the metadata log.
+
+**The high watermark**
+- HW = the minimum log-end offset across ISR members.
+- Consumers fetch only up to the HW, so they never see a record that could disappear in a leader failover.
+- "Strict min ISR" (KIP-966, Kafka 4.0+): if ISR size < `min.insync.replicas`, the HW stops. Even `acks=1` writes are stored on the leader but stay invisible until enough replicas catch up. The run below shows this.
+
+**`acks=all` + `min.insync.replicas=2` with replication factor 3**
+- 3 in sync: writes succeed.
+- 2 in sync: writes still succeed (you can lose one broker).
+- 1 in sync: `acks=all` producers get `NOT_ENOUGH_REPLICAS`, retry, and finally time out. The partition is effectively read-only for them.
+
+**Leader epochs.** Each leader change bumps an epoch. Followers use epoch boundaries to truncate divergent records after a failover, which replaced the older HW-based truncation and its edge cases.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Kafka 4.3.1 lab: 1 KRaft controller + 3 brokers (racks az-1..az-3) on one host; Python 3.11 + confluent-kafka 2.16
+# send.py <acks> <value> produces one record to "ledger" with delivery.timeout.ms=8000 and prints the outcome
+C=localhost:29091
+kafka-topics.sh --bootstrap-server $C --create --topic ledger --replica-assignment 1:2:3 --config min.insync.replicas=2
+python send.py all "deposit 100"
+./stop.sh 3; python send.py all "deposit 50"
+./stop.sh 2; python send.py all "withdraw 30"; python send.py 1 "withdraw 20"
+kafka-get-offsets.sh --bootstrap-server $C --topic ledger      # shows the high watermark
+./start.sh 2 3                                                  # bring the followers back
+```
+```text
+Topic: ledger	Partition: 0	Leader: 1	Replicas: 1,2,3	Isr: 1,2,3	Elr: 	LastKnownElr: 
+acks=all 'deposit 100': written at offset 0
+## stop broker 3
+Topic: ledger	Partition: 0	Leader: 1	Replicas: 1,2,3	Isr: 1,2	Elr: 	LastKnownElr: 
+acks=all 'deposit 50': written at offset 1
+  visible to consumers (high watermark): ledger:0:2
+## stop broker 2
+Topic: ledger	Partition: 0	Leader: 1	Replicas: 1,2,3	Isr: 1	Elr: 2	LastKnownElr: 
+acks=all 'withdraw 30': FAILED _MSG_TIMED_OUT
+acks=1   'withdraw 20': written at offset 2
+  visible to consumers (high watermark): ledger:0:2
+## restart brokers 2 and 3
+Topic: ledger	Partition: 0	Leader: 1	Replicas: 1,2,3	Isr: 1,2,3	Elr: 	LastKnownElr: 
+  visible to consumers (high watermark): ledger:0:3
+```
+With one replica in sync, the `acks=all` write was refused (retried until the 8-second budget ran out). The `acks=1` write was accepted, but stayed invisible (HW 2) until the followers rejoined and the HW moved to 3. Broker 2 also appeared in the ELR (see Q490).
+
+**Real-World Use Case:**
+During a zone outage, a team's dashboards showed producers "succeeding" with `acks=1` while consumers saw nothing new. That is strict min ISR at work: the data was safe on one broker but not yet committed. It became visible as soon as the zone returned. Producers using `acks=all` had failed loudly instead, which the runbook now treats as the expected signal.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Saying followers receive pushed data from the leader. They pull it.
+- Thinking `acks=1` data is readable immediately in every case.
+- Confusing a replica falling out of the ISR with a replica being removed from the assignment.
+- Setting `min.insync.replicas` equal to the replication factor, so any single broker restart blocks `acks=all` writes.
+
+**Follow-up Questions Interviewers Ask:**
+- What makes a follower fall out of the ISR? — Not catching up to the leader's log end within `replica.lag.time.max.ms`, usually from a slow disk, GC pauses or network trouble.
+- What is the log end offset vs the high watermark? — LEO is the next offset the replica will write; HW is the committed boundary that consumers may read up to.
+- Why does Kafka not need a majority of replicas, like Raft does? — The ISR is tracked by the controller, so any ISR member is safe to elect, and `min.insync.replicas` sets how many must confirm.
+
+---
+### Q490. Unclean leader election and Eligible Leader Replicas (ELR)
+**ID:** KFK-22
+**Topic:** Kafka > Replication & Durability
+**Level:** Advanced
+**Frequency:** Common
+**Tags:** `kafka`, `unclean-leader-election`, `elr`, `kip-966`, `data-loss`
+
+**Short Answer (2–3 lines):**
+Unclean leader election lets a replica that is *not* in sync become leader when no in-sync replica is available. That restores availability, but it truncates any acknowledged writes the new leader never had, so it is off by default (`unclean.leader.election.enable=false`). Kafka 4.x adds Eligible Leader Replicas (KIP-966, on by default for new clusters since 4.1). The controller remembers which out-of-ISR replicas are still safe, so a clean election is possible in more failure cases.
+
+**Detailed Explanation:**
+**The dilemma.** All ISR members are down. You can wait for one of them (stay unavailable, lose nothing) or elect whatever replica comes back first (available now, possibly losing acknowledged data). Kafka defaults to waiting.
+
+**How ELR helps.** With strict min ISR (see Q489), the high watermark can't advance while ISR < `min.insync.replicas`. So a replica that dropped out of the ISR *during* that period still has every committed record. The controller stores such replicas as the ELR. Election order is now:
+1. A live ISR member.
+2. An unfenced ELR member.
+3. The last known leader, if it comes back.
+4. Only if unclean election is enabled (or forced), any live replica.
+
+**Turning on unclean election.** Set the topic or broker config, then either wait for the controller's periodic unclean-election check (about 5 minutes) or force it now with `kafka-leader-election.sh --election-type UNCLEAN`. The 4.3 config docs point this out.
+
+**When people enable it**
+- Metrics, logs and other data where availability matters more than a few lost records.
+- As a manual, last-resort step during an outage, after a decision to accept loss. Set it back afterwards.
+
+**Never** leave it on for ledgers, orders, CDC or compacted state topics.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Kafka 4.3.1 lab: 1 KRaft controller + 3 brokers on one host; Python 3.11 + confluent-kafka 2.16
+source ../env.sh; C=localhost:29091,localhost:29092,localhost:29093
+desc(){ kafka-topics.sh --bootstrap-server $C --describe --topic $1 2>/dev/null | grep 'Partition:' | sed 's/^\s*//'; }
+offs(){ echo "  end offset: $(kafka-get-offsets.sh --bootstrap-server $C --topic $1 2>/dev/null)"; }
+down(){ bash ../cluster/stop.sh $1 >/dev/null; }
+up(){ bash ../cluster/start.sh $@ >/dev/null; sleep 6; }
+T=$1; MODE=$2                       # MODE = elr | unclean
+kafka-topics.sh --bootstrap-server $C --create --topic $T --replica-assignment 1:2:3 --config min.insync.replicas=2 >/dev/null
+python send.py all "r0" $T
+down 3; python send.py all "r1 (written while broker 3 was down)" $T
+down 2; down 1; echo "## brokers 3, 2, 1 stopped in that order"; desc $T
+up 3; echo "## broker 3 back (it missed r1)"; desc $T
+if [ "$MODE" = elr ]; then
+  up 2; echo "## broker 2 back (it is in the ELR)"; desc $T; offs $T
+else
+  kafka-configs.sh --bootstrap-server $C --alter --entity-type topics --entity-name $T --add-config unclean.leader.election.enable=true >/dev/null
+  echo "## unclean.leader.election.enable=true, then trigger the election now"
+  kafka-leader-election.sh --bootstrap-server $C --election-type UNCLEAN --topic $T --partition 0 2>&1 | grep -v WARN
+  sleep 3; desc $T; offs $T
+  up 1 2; desc $T; offs $T
+fi
+up 1 2 2>/dev/null
+```
+Run 1, `bash elr_exp.sh acct elr` (wait for the ELR member):
+```text
+acks=all 'r0': written at offset 0
+acks=all 'r1 (written while broker 3 was down)': written at offset 1
+## brokers 3, 2, 1 stopped in that order
+## broker 3 back (it missed r1)
+Topic: acct	Partition: 0	Leader: none	Replicas: 1,2,3	Isr: 	Elr: 1,2	LastKnownElr: 1
+## broker 2 back (it is in the ELR)
+Topic: acct	Partition: 0	Leader: 2	Replicas: 1,2,3	Isr: 2,3	Elr: 	LastKnownElr: 
+  end offset: acct:0:2
+```
+Run 2, `bash elr_exp.sh acct5 unclean` (force an unclean election instead):
+```text
+## broker 3 back (it missed r1)
+Topic: acct5	Partition: 0	Leader: none	Replicas: 1,2,3	Isr: 	Elr: 1,2	LastKnownElr: 1
+## unclean.leader.election.enable=true, then trigger the election now
+Successfully completed leader election (UNCLEAN) for partitions acct5-0
+Topic: acct5	Partition: 0	Leader: 3	Replicas: 1,2,3	Isr: 3	Elr: 	LastKnownElr: 
+Topic: acct5	Partition: 0	Leader: 3	Replicas: 1,2,3	Isr: 1,2,3	Elr: 	LastKnownElr: 
+  end offset: acct5:0:1
+```
+Broker 3 alone wasn't eligible, so the partition stayed offline rather than lose data. Waiting for broker 2 (an ELR member) gave a clean leader with both records. Forcing an unclean election made broker 3 leader at once. When brokers 1 and 2 rejoined they truncated to its log: the acknowledged `r1` was gone for good (end offset 1 instead of 2).
+
+**Real-World Use Case:**
+A logging cluster lost two of three brokers in a rack failure. For the `app-logs` topics, the on-call engineer forced unclean elections to restore ingestion within minutes, accepting a small gap. For `payments` they waited about twenty minutes for an in-sync broker to come back, which kept every acknowledged write.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Enabling unclean election cluster-wide "to improve availability".
+- Expecting a dynamic config change to elect a leader instantly; it waits for the periodic check unless you trigger it.
+- Not knowing that the truncated records are gone even after the old replicas return.
+- Confusing the ELR with the ISR. ELR members are safe to elect but are not receiving writes as in-sync followers.
+
+**Follow-up Questions Interviewers Ask:**
+- How does `min.insync.replicas` relate to ELR? — ELR relies on strict min ISR: because the HW freezes below min ISR, replicas that left the ISR in that window still hold all committed data.
+- Where do you see ELR state? — `kafka-topics.sh --describe` shows `Elr` and `LastKnownElr`; the DescribeTopicPartitions API returns it.
+- What changes for broker-level `min.insync.replicas` once ELR is on? — It moves to the cluster level; the broker-level value is removed and can't be altered.
+
+---
+### Q491. What happens when a broker fails, and how does leadership recover?
+**ID:** KFK-23
+**Topic:** Kafka > Replication & Durability
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `kafka`, `failover`, `leader-election`, `under-replicated-partitions`
+
+**Short Answer (2–3 lines):**
+The controller notices the broker has stopped heartbeating and fences it. For every partition it led, a new leader is picked from the remaining ISR, and clients find the new leaders through metadata refresh and retry. The partitions run under-replicated until the broker returns and catches up. Leadership then moves back to the "preferred" replica, automatically or with `kafka-leader-election.sh`.
+
+**Detailed Explanation:**
+**Timeline of a hard crash**
+1. Brokers heartbeat to the active controller. After `broker.session.timeout.ms` (9 s by default) with no heartbeat, the controller fences the broker.
+2. For each partition the broker led, the controller elects a new leader from the ISR (or the ELR, see Q490) and writes the change to the metadata log.
+3. Brokers apply the change. Producers and consumers get `NOT_LEADER_OR_FOLLOWER`, refresh metadata and retry, which is invisible to the application with default retries.
+4. The failed broker is also removed from the ISR of partitions it followed. Those partitions are now **under-replicated**.
+5. When it restarts, the broker truncates any divergent tail (using leader epochs), catches up and rejoins the ISR.
+6. **Preferred leader** = first replica in the assignment list. With `auto.leader.rebalance.enable=true` (the default) the controller moves leadership back to preferred replicas on a timer, every `leader.imbalance.check.interval.seconds` (300 s). The old `leader.imbalance.per.broker.percentage` threshold isn't in the 4.3 broker config list. You can force it at once with `kafka-leader-election.sh --election-type PREFERRED`.
+
+**Controlled shutdown** (SIGTERM) is gentler: the broker asks the controller to move its leaderships away first, so clients see almost no errors. Always do rolling restarts this way, one broker at a time, waiting for zero under-replicated partitions between brokers.
+
+**What a client notices**
+- `acks=all` with `min.insync.replicas=2` and RF 3: one broker down, writes keep succeeding.
+- A latency spike for a few seconds while leadership moves.
+- Consumers keep reading from new leaders. Groups don't rebalance unless consumer processes themselves failed.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Kafka 4.3.1 lab: 1 KRaft controller + 3 brokers on one host
+source ../env.sh; C=localhost:29091,localhost:29092,localhost:29093
+leaders(){ kafka-topics.sh --bootstrap-server $C --describe --topic orders4 2>/dev/null | awk '/Partition:/ {printf "p%s:L%s(isr %s) ", $4, $6, $10} END {print ""}'; }
+kafka-topics.sh --bootstrap-server $C --create --topic orders4 --partitions 6 --replication-factor 3 --config min.insync.replicas=2 >/dev/null
+sleep 2; echo "start           : $(leaders)"
+bash ../cluster/stop.sh 1 -9 >/dev/null                       # hard crash, no controlled shutdown
+sleep 12; echo "broker 1 killed : $(leaders)"
+kafka-topics.sh --bootstrap-server $C --describe --under-replicated-partitions 2>/dev/null | grep -c Partition: | sed "s/^/under-replicated partitions (all topics): /"
+bash ../cluster/start.sh 1 >/dev/null; sleep 10   # restart broker 1
+# preferred.json: {"partitions":[{"topic":"orders4","partition":2},{"topic":"orders4","partition":4}]}
+echo "broker 1 back   : $(leaders)"
+kafka-leader-election.sh --bootstrap-server $C --election-type PREFERRED --path-to-json-file preferred.json
+echo "after preferred : $(leaders)"
+```
+```text
+start           : p0:L2(isr 2,3,1) p1:L3(isr 3,1,2) p2:L1(isr 1,2,3) p3:L2(isr 2,1,3) p4:L1(isr 1,3,2) p5:L3(isr 3,2,1)
+broker 1 killed : p0:L2(isr 2,3) p1:L3(isr 3,2) p2:L2(isr 2,3) p3:L2(isr 2,3) p4:L3(isr 3,2) p5:L3(isr 3,2)
+under-replicated partitions (all topics): 13
+broker 1 back   : p0:L2(isr 1,2,3) p1:L3(isr 1,2,3) p2:L2(isr 1,2,3) p3:L2(isr 1,2,3) p4:L3(isr 1,2,3) p5:L3(isr 1,2,3)
+Successfully completed leader election (PREFERRED) for partitions orders4-4, orders4-2
+after preferred : p0:L2(isr 1,2,3) p1:L3(isr 1,2,3) p2:L1(isr 1,2,3) p3:L2(isr 1,2,3) p4:L1(isr 1,2,3) p5:L3(isr 1,2,3)
+```
+Killing broker 1 moved its two leaderships (p2, p4) to broker 2 and broker 3 within seconds, and every partition dropped to two in-sync replicas. After the restart, broker 1 rejoined every ISR but led nothing. Within the run the automatic rebalance (5-minute timer) hadn't fired yet, so a preferred election moved p2 and p4 back.
+
+**Real-World Use Case:**
+During a rolling OS patch, an engineer restarted two brokers within a minute. Several partitions dropped to one in-sync replica and `acks=all` producers stalled. The runbook now waits for `UnderReplicatedPartitions == 0` (and preferred leaders restored) before touching the next broker.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Thinking a consumer group rebalances when a broker fails.
+- Restarting the next broker while partitions are still under-replicated.
+- Forgetting preferred leader election, which leaves one broker leading most partitions after a restart.
+- Using `kill -9` for routine restarts instead of a controlled shutdown.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you find affected partitions? — `kafka-topics.sh --describe --under-replicated-partitions`, `--under-min-isr-partitions` and `--unavailable-partitions`.
+- What if the failed broker's disk is lost? — Replace it with the same `node.id` and empty disks; it re-replicates everything from leaders (throttle it).
+- How long does failover take? — Detection (session timeout) plus a fast metadata update; with KRaft, usually seconds.
+
+---
+
+### Q492. Rack awareness and fetching from the closest replica
+**ID:** KFK-24
+**Topic:** Kafka > Replication & Durability
+**Level:** Advanced
+**Frequency:** Occasional
+**Tags:** `kafka`, `rack-awareness`, `follower-fetching`, `multi-az`, `cost`
+
+**Short Answer (2–3 lines):**
+Setting `broker.rack` to the availability zone makes Kafka spread each partition's replicas across zones, so losing one zone loses at most one copy. With `replica.selector.class=RackAwareReplicaSelector` on brokers and `client.rack` on consumers (KIP-392), consumers read from a replica in their own zone instead of the leader. That cuts cross-zone traffic, which is often a large part of a cloud Kafka bill.
+
+**Detailed Explanation:**
+**Replica placement.** With `broker.rack` set, topic creation and reassignment tools place replicas in different racks where possible. Three zones with RF 3 put one replica per zone. Combine with `min.insync.replicas=2`, and a whole zone can fail without losing acknowledged writes or `acks=all` availability.
+
+**Where the cross-zone bytes come from (RF 3, three zones, producer in one zone)**
+- Producer → leader: about two-thirds of produce traffic crosses zones on average (the leader is in another zone two times in three).
+- Leader → two followers: always cross-zone, so 2× the produce volume.
+- Leader → consumers: about two-thirds cross-zone per consumer group, unless consumers fetch from a same-zone follower.
+
+Replication is unavoidable for durability. Consumer traffic is the part you can remove, and with many consumer groups it's often the biggest.
+
+**Follower fetching set-up**
+```properties
+# broker
+broker.rack=use1-az1
+replica.selector.class=org.apache.kafka.common.replica.RackAwareReplicaSelector
+# consumer
+client.rack=use1-az1
+```
+The leader still serves the first fetch and redirects the consumer to a preferred read replica in its rack.
+
+**Trade-offs**
+- Slightly higher end-to-end latency: followers only expose data up to the high watermark they've learned, which trails the leader a little.
+- If the follower falls out of the ISR, the consumer is sent back to the leader.
+- Producers can't do this; writes always go to the leader. Some managed services offer zone-aware routing for producers in their own ways.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16; Kafka 4.3.1 lab: brokers 1-3 with broker.rack=az-1..az-3 and
+#   replica.selector.class=org.apache.kafka.common.replica.RackAwareReplicaSelector
+# Topic created first with: kafka-topics.sh --create --topic rack-demo --replica-assignment 1:2:3
+# (one partition, replicas 1,2,3, so broker 1 in az-1 is the leader)
+import logging, re, time
+from confluent_kafka import Consumer, Producer
+
+BOOT = "localhost:29091,localhost:29092,localhost:29093"
+p = Producer({"bootstrap.servers": BOOT})
+for i in range(100):
+    p.produce("rack-demo", value=f"event-{i}")
+p.flush()
+
+def fetched_from(client_rack):
+    lines = []
+    class Grab(logging.Handler):
+        def emit(self, record):
+            lines.append(record.getMessage())
+    log = logging.getLogger(f"rk-{client_rack}"); log.addHandler(Grab()); log.setLevel(logging.DEBUG)
+    c = Consumer({"bootstrap.servers": BOOT, "group.id": f"rack-{client_rack}-{time.time()}",
+                  "auto.offset.reset": "earliest", "client.rack": client_rack, "debug": "fetch"},
+                 logger=log)
+    c.subscribe(["rack-demo"])
+    got, end = 0, time.time() + 20
+    while got < 100 and time.time() < end:
+        m = c.poll(0.5)
+        if m and not m.error():
+            got += 1
+    c.close()
+    # librdkafka logs each fetch as "...localhost:2909N/N: Fetch topic rack-demo [0] at offset ..."
+    brokers = sorted({int(b) for b in re.findall(r"localhost:2909\d/(\d+): Fetch topic rack-demo", "\n".join(lines))})
+    return got, brokers
+
+for rack in ("az-1", "az-3"):
+    got, brokers = fetched_from(rack)
+    print(f"client.rack={rack}: consumed {got} records, fetch requests went to broker(s) {brokers}")
+```
+```text
+client.rack=az-1: consumed 100 records, fetch requests went to broker(s) [1]
+client.rack=az-3: consumed 100 records, fetch requests went to broker(s) [1, 3]
+```
+A consumer in the leader's zone fetched only from broker 1. A consumer in `az-3` made its first fetch from the leader, was told to use the `az-3` replica, and fetched from broker 3 after that.
+
+**Real-World Use Case:**
+A platform with a dozen consumer groups on a 3-zone cluster found that cross-zone transfer cost more than the brokers themselves. Enabling follower fetching and setting `client.rack` from the Kubernetes node's zone label removed most consumer-side cross-zone traffic, with only a small latency increase.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Setting `broker.rack` but not `replica.selector.class`, then expecting consumers to fetch locally.
+- Hard-coding `client.rack` in images instead of reading the zone at start-up.
+- Assuming rack awareness also balances leaders across zones; leadership still follows the preferred replica.
+
+**Follow-up Questions Interviewers Ask:**
+- Does rack awareness help when a partition has RF 2 across three zones? — Partly: each copy is in a different zone, but losing one zone leaves a single copy.
+- Is there a producer-side equivalent? — Not in open-source Kafka; producers always write to the leader.
+- How do you verify follower fetching? — Client debug logs or broker fetch metrics per replica show fetches arriving at followers.
+
+---
+### Q493. Exactly-once from Kafka into an external database
+**ID:** KFK-25
+**Topic:** Kafka > Delivery Semantics & Transactions
+**Level:** Advanced
+**Frequency:** Common
+**Tags:** `kafka`, `exactly-once`, `sink`, `idempotency`, `offsets`
+
+**Short Answer (2–3 lines):**
+Kafka transactions stop at Kafka's edge, so a database sink can't join them. You get an exactly-once *effect* in one of two ways. Make writes idempotent (upsert on a business key or event ID), so replays do no harm. Or store the consumed offsets in the same database transaction as the results, and on start-up seek to the offsets kept in the database.
+
+**Detailed Explanation:**
+What EOS means inside Kafka (idempotent producer, transactions, `read_committed`) is covered in Q70 and on this site's exactly-once page. The real-world problem is the hop *out* of Kafka.
+
+**Why "commit after write" isn't enough.** Write row, then commit offset: a crash between the two replays the row (a duplicate). Commit offset, then write: a crash loses the row. No order of two separate systems is atomic.
+
+**Pattern 1: idempotent sink (most common)**
+- `MERGE`/`UPSERT` keyed by a natural or event ID. Replaying the same event produces the same row.
+- Version or sequence guards: `UPDATE … WHERE incoming_seq > current_seq`. This also protects against out-of-order replays.
+- Deduplication table of processed `event_id`s with a TTL, for append-only facts.
+- Offsets stay in Kafka with ordinary at-least-once commits.
+
+**Pattern 2: transactional offsets in the sink**
+- One database transaction holds the result rows and an `(topic, partition, next_offset)` row.
+- On assignment (`on_assign`) read the stored offsets and `seek`. Kafka's committed offsets are only for monitoring.
+- Works with any transactional store: Postgres, MySQL, or Delta and Iceberg commits, which is how Spark and Flink sinks do it.
+
+**Pattern 3: two-phase commit**
+- Flink's `TwoPhaseCommitSinkFunction` style: pre-commit on checkpoint, commit on checkpoint completion. It needs a sink that supports prepared transactions or idempotent finalisation.
+
+**Aggregations** (`amount = amount + x`) are not naturally idempotent. That makes Pattern 2 or a dedup key essential: the demo below counts events, which would double-count under plain at-least-once.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11 (sqlite3 stdlib), confluent-kafka 2.16, Apache Kafka 4.3
+# Exactly-once *effect* into an external database: results and offsets commit in ONE db transaction,
+# and on (re)assignment the consumer seeks to the offsets stored in the database, not Kafka's.
+import sqlite3, sys
+from confluent_kafka import Consumer, TopicPartition
+
+db = sqlite3.connect("ledger.db")
+db.execute("CREATE TABLE IF NOT EXISTS balances (account TEXT PRIMARY KEY, amount INT)")
+db.execute("CREATE TABLE IF NOT EXISTS kafka_offsets (topic TEXT, part INT, next_offset INT, PRIMARY KEY (topic, part))")
+db.commit()
+
+def on_assign(consumer, partitions):
+    for tp in partitions:
+        row = db.execute("SELECT next_offset FROM kafka_offsets WHERE topic=? AND part=?",
+                         (tp.topic, tp.partition)).fetchone()
+        tp.offset = row[0] if row else 0          # resume from the DB, the source of truth
+    consumer.assign(partitions)
+
+crash_after = int(sys.argv[1]) if len(sys.argv) > 1 else 10**9
+c = Consumer({"bootstrap.servers": "localhost:19092", "group.id": "balance-sink",
+              "enable.auto.commit": False, "isolation.level": "read_committed",
+              "session.timeout.ms": 6000})
+c.subscribe(["ledger-events"], on_assign=on_assign)
+n, idle = 0, 0
+while idle < 5:
+    m = c.poll(1.0)
+    if m is None or m.error():
+        idle += 1 if c.assignment() else 0   # only count idle polls once we own partitions
+        continue
+    idle = 0
+    with db:                                      # one atomic transaction
+        db.execute("INSERT INTO balances VALUES ('acc-1', 1) "
+                   "ON CONFLICT(account) DO UPDATE SET amount = amount + 1")
+        db.execute("INSERT OR REPLACE INTO kafka_offsets VALUES (?, ?, ?)",
+                   (m.topic(), m.partition(), m.offset() + 1))
+    n += 1
+    if n == crash_after:
+        print(f"crashing after {n} records"); import os; os._exit(1)
+print("processed", n, "->", db.execute("SELECT amount FROM balances").fetchone()[0],
+      "events counted; stored offset", db.execute("SELECT next_offset FROM kafka_offsets").fetchone()[0])
+c.close()
+```
+Run once with `7` (crash after seven records), then twice with no argument, against the 20-record `ledger-events` topic:
+```text
+crashing after 7 records
+processed 13 -> 20 events counted; stored offset 20
+processed 0 -> 20 events counted; stored offset 20
+```
+The restart resumed at offset 7 from the database, not from Kafka's committed offset (which this consumer never writes). The count is exactly 20 despite the crash and a third run.
+
+**Real-World Use Case:**
+A billing team summed usage events into Postgres with at-least-once commits. After every consumer restart, invoices were slightly inflated. They moved the `kafka_offsets` table into the same transaction as the usage aggregates and seeked on assignment. Restarts and rebalances then stopped changing totals.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Claiming `enable.idempotence` or Kafka transactions make a database sink exactly-once.
+- Storing offsets in the database but still letting the consumer start from Kafka's committed offsets.
+- Using `INSERT` without a unique key and hoping for no duplicates.
+- Forgetting that rebalances can move a partition to a member that hasn't read the DB offsets.
+
+**Follow-up Questions Interviewers Ask:**
+- How does the Kafka Connect JDBC sink handle this? — With `insert.mode=upsert` and primary keys from the record key, which is Pattern 1.
+- What about S3 or a lake? — Use deterministic file names per offset range, or table-format commits that record offsets in their metadata.
+- Is idempotency enough for side effects like sending emails? — Only with a dedup store keyed by event ID, checked before sending.
+
+---
+
+### Q494. Write a transactional consume-transform-produce loop
+**ID:** KFK-26
+**Topic:** Kafka > Delivery Semantics & Transactions
+**Level:** Advanced
+**Frequency:** Common
+**Tags:** `kafka`, `transactions`, `exactly-once`, `read-committed`, `python`
+
+**Short Answer (2–3 lines):**
+Call `init_transactions()` once, with a stable `transactional.id`. Then, for each batch: `begin_transaction()`, produce the outputs, `send_offsets_to_transaction()` with the consumer's positions and group metadata, and `commit_transaction()`. On a failure that can be aborted, call `abort_transaction()` and rewind the consumer. Downstream consumers must use `read_committed`, or they will see aborted records.
+
+**Detailed Explanation:**
+Q70 explains what transactions are. This question is about writing the loop correctly.
+
+**The pieces**
+| Step | Why |
+|---|---|
+| `transactional.id` | Identity that survives restarts; `init_transactions()` bumps the epoch and fences zombies |
+| `isolation.level=read_committed` on the input consumer | Don't process another app's aborted data |
+| `enable.auto.commit=false` | Offsets are committed *inside* the transaction, not separately |
+| `send_offsets_to_transaction(positions, group_metadata)` | Ties input progress to output records atomically |
+| `commit_transaction()` | Writes commit markers to every output partition and `__consumer_offsets` |
+
+**Error handling**
+- *Abortable* errors (your own exception, a timeout in the transaction): `abort_transaction()`, then seek back to the first offset of the batch. Otherwise the consumer's in-memory position has already moved past it.
+- *Fatal* errors (`ProducerFenced`, `InvalidProducerEpoch`): another instance owns the `transactional.id`. Close and exit; don't retry.
+- `transaction.timeout.ms` (60 s by default) must cover a batch. The coordinator aborts transactions left open longer, and long transactions hold back the last stable offset for every `read_committed` reader.
+
+**`transactional.id` strategy.** Since KIP-447 (Kafka 2.5+), fencing also uses the consumer group generation. One stable ID per application instance is enough; you no longer need one per input partition.
+
+**Kafka 4.0+ (KIP-890, `transaction.version=2`)**: the broker verifies that each write belongs to an ongoing transaction, and the epoch is bumped on every transaction. This closes "hanging transaction" gaps. Clients get it automatically once the feature is finalised (this lab cluster shows `transaction.version` at level 2).
+
+**Cost.** Each commit adds round trips and a marker record per partition, so batch several hundred records or a few hundred milliseconds per transaction.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16, Apache Kafka 4.3 (transaction.version=2)
+# Consume-transform-produce with Kafka transactions: output records and input offsets commit atomically.
+from confluent_kafka import Consumer, Producer, TopicPartition
+
+consumer = Consumer({"bootstrap.servers": "localhost:19092", "group.id": "enricher",
+                     "auto.offset.reset": "earliest", "enable.auto.commit": False,
+                     "isolation.level": "read_committed"})
+producer = Producer({"bootstrap.servers": "localhost:19092",
+                     "transactional.id": "enricher-tx-0",    # stable per instance/partition set
+                     "transaction.timeout.ms": 60000})
+producer.init_transactions()          # fences any older producer with the same transactional.id
+consumer.subscribe(["tx-in"])
+
+batch_no, idle, failed_once = 0, 0, False
+while idle < 5:
+    msgs = consumer.consume(num_messages=3, timeout=1.0)
+    msgs = [m for m in msgs if not m.error()]
+    if not msgs:
+        idle += 1 if consumer.assignment() else 0; continue
+    idle, batch_no = 0, batch_no + 1
+    producer.begin_transaction()
+    try:
+        for m in msgs:
+            producer.produce("tx-out", key=m.value(), value=m.value().upper())
+        if batch_no == 2 and not failed_once:
+            failed_once = True
+            producer.flush()          # records reach the broker, then we fail before commit
+            raise RuntimeError("simulated failure mid-batch")
+        producer.send_offsets_to_transaction(consumer.position(consumer.assignment()),
+                                             consumer.consumer_group_metadata())
+        producer.commit_transaction()
+        print(f"batch {batch_no}: committed {[m.value().decode() for m in msgs]}")
+    except RuntimeError as e:
+        producer.abort_transaction()
+        print(f"batch {batch_no}: aborted ({e}); rewinding")
+        first = msgs[0]               # rewind to the first record of the failed batch
+        consumer.seek(TopicPartition(first.topic(), first.partition(), first.offset()))
+consumer.close()
+```
+Input: `order-1` … `order-9` on `tx-in`. Output, then both isolation levels reading `tx-out`:
+```text
+batch 1: committed ['order-1', 'order-2', 'order-3']
+batch 2: aborted (simulated failure mid-batch); rewinding
+batch 3: committed ['order-4', 'order-5', 'order-6']
+batch 4: committed ['order-7', 'order-8', 'order-9']
+== read_uncommitted
+ORDER-1 ORDER-2 ORDER-3 ORDER-4 ORDER-5 ORDER-6 ORDER-4 ORDER-5 ORDER-6 ORDER-7 ORDER-8 ORDER-9 
+== read_committed
+ORDER-1 ORDER-2 ORDER-3 ORDER-4 ORDER-5 ORDER-6 ORDER-7 ORDER-8 ORDER-9 
+```
+The aborted batch reached the log (flushed before the failure), so a `read_uncommitted` reader saw `ORDER-4..6` twice. A `read_committed` reader saw each exactly once. `kafka-get-offsets.sh` reported an end offset of 16: 12 data records plus 4 transaction markers, which is why offsets on transactional topics have gaps.
+
+**Real-World Use Case:**
+A currency-normalisation service read `payments.raw` and wrote `payments.normalised`. Under at-least-once, every redeploy produced a few duplicate payments, which downstream reconciliation flagged. Moving to this loop with `read_committed` consumers downstream removed the duplicates. The team batched 500 records per transaction to keep throughput.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Committing offsets with `consumer.commit()` as well as inside the transaction.
+- Not seeking back after an abort, which silently skips the failed batch.
+- Leaving downstream consumers on Java's default `read_uncommitted` (librdkafka defaults to `read_committed`).
+- Generating a random `transactional.id` per start, which disables zombie fencing.
+
+**Follow-up Questions Interviewers Ask:**
+- What does the transaction coordinator store? — Transaction state per `transactional.id` in `__transaction_state`, including the partitions involved.
+- Why do `read_committed` consumers sometimes stall? — An open transaction holds the last stable offset back until it commits, aborts or times out.
+- Does this work across clusters? — No; a transaction is scoped to one cluster.
+
+---
+### Q495. How Kafka stores a partition on disk: segments, indexes and deletion
+**ID:** KFK-27
+**Topic:** Kafka > Storage & Retention
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `kafka`, `segments`, `storage`, `retention`, `indexes`
+
+**Short Answer (2–3 lines):**
+A partition is a directory of **segments**. Each segment is a `.log` file of record batches, plus an `.index` (offset to file position) and a `.timeindex` (timestamp to offset), named after the segment's first offset. Writes go only to the newest, active segment. Retention and compaction work on whole closed segments, so data is deleted a segment at a time, never record by record.
+
+**Detailed Explanation:**
+**Files in `<log.dirs>/<topic>-<partition>/`**
+| File | Purpose |
+|---|---|
+| `00000000000000006666.log` | Record batches starting at offset 6666 |
+| `.index` | Sparse map offset → byte position, one entry per `index.interval.bytes` (4 KiB) |
+| `.timeindex` | Sparse map timestamp → offset, used by `offsets_for_times` and time-based resets |
+| `.snapshot` | Producer-state snapshot, used for idempotence and transactions after restart |
+| `leader-epoch-checkpoint` | Epoch → start offset, used for truncation after failover |
+| `partition.metadata` | Topic ID |
+
+**Rolling.** The active segment closes ("rolls") when it reaches `segment.bytes` (1 GiB) or `segment.ms` (7 days) old, or when its index fills up. The output below shows the index pre-allocated at 10 MB for the active segment and trimmed when the segment rolls.
+
+**Why segments matter in interviews**
+- **Retention lags.** A segment is deleted only when it's closed *and* wholly past `retention.ms` (judged by its largest timestamp), or when deleting it would still leave the partition at or above `retention.bytes`. On a low-traffic topic with 1 GiB segments, a "7-day" topic can keep months of data, because the active segment never rolls by size. Lower `segment.ms` for those topics.
+- **Retention is checked periodically**, every `log.retention.check.interval.ms` (5 minutes), and files are removed after `file.delete.delay.ms`.
+- **Compaction never touches the active segment** (see Q71).
+- **Reads are cheap**: a fetch binary-searches the sparse index, then streams bytes straight from the page cache to the socket (zero-copy).
+- **Many partitions mean many open files and mapped indexes** per broker, which is one reason partition counts have practical limits (see the partition-count page).
+
+**Example / Code:**
+```bash
+# Runtime: Apache Kafka 4.3.1, single broker; topic created with --config segment.bytes=1048576
+bin/kafka-producer-perf-test.sh --bootstrap-server localhost:19092 --topic segdemo \
+  --num-records 20000 --throughput -1 --payload-file payload.jsonl --command-property linger.ms=10
+ls -l data/segdemo-0/ | awk '{print $5, $9}'
+bin/kafka-dump-log.sh --files data/segdemo-0/00000000000000000000.log | head -4
+bin/kafka-dump-log.sh --files data/segdemo-0/00000000000000000000.index | head -4
+```
+```text
+504 00000000000000000000.index
+1041493 00000000000000000000.log
+468 00000000000000000000.timeindex
+504 00000000000000006666.index
+1041737 00000000000000006666.log
+56 00000000000000006666.snapshot
+276 00000000000000006666.timeindex
+10485760 00000000000000013334.index
+1041434 00000000000000013334.log
+56 00000000000000013334.snapshot
+10485756 00000000000000013334.timeindex
+8 leader-epoch-checkpoint
+43 partition.metadata
+Dumping data/segdemo-0/00000000000000000000.log
+Log starting offset: 0
+baseOffset: 0 lastOffset: 103 count: 104 baseSequence: 0 lastSequence: 103 producerId: 1002 producerEpoch: 0 partitionLeaderEpoch: 0 isTransactional: false isControl: false deleteHorizonMs: OptionalLong.empty position: 0 CreateTime: 1792262973044 size: 16267 ...
+Dumping data/segdemo-0/00000000000000000000.index
+offset: 207 position: 16267
+offset: 311 position: 32536
+offset: 415 position: 48828
+```
+Each line of the dump is a *batch* (104 records here, with the idempotent producer's ID and sequence numbers). Setting `retention.bytes=2200000` on the 3.1 MB partition deleted nothing, because removing the oldest 1.04 MB segment would have taken the partition below the limit. Kafka only deletes a segment if the partition is still at least `retention.bytes` after the deletion. With `retention.bytes=2000000`, the next retention check (about four minutes later) logged `Incremented log start offset to 6666 due to segment deletion`, and `kafka-get-offsets.sh --time earliest` moved from `segdemo:0:0` to `segdemo:0:6666`.
+
+**Real-World Use Case:**
+A compliance team required that `audit-events` keep no more than 30 days. The topic had `retention.ms` set correctly, but it received only a few MB a day, so its single 1 GiB segment never rolled and nothing was ever deleted. Setting `segment.ms=86400000` (one day) made deletion happen on schedule.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Believing retention deletes individual records the moment they expire.
+- Forgetting that the active segment is never deleted or compacted.
+- Setting tiny `segment.bytes` cluster-wide, which creates huge numbers of files.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you delete data before retention would? — `kafka-delete-records.sh` moves the log start offset forward; whole segments below it are then removed.
+- What does `kafka-dump-log.sh --print-data-log` add? — The record keys and values, which is useful when debugging a poison message.
+- What happens on unclean shutdown? — The broker recovers segments after the last checkpoint and rebuilds indexes, which can make start-up slow on large logs.
+
+---
+
+### Q496. Record timestamps: CreateTime vs LogAppendTime, and how they affect retention and replay
+**ID:** KFK-28
+**Topic:** Kafka > Storage & Retention
+**Level:** Intermediate
+**Frequency:** Occasional
+**Tags:** `kafka`, `timestamps`, `retention`, `event-time`, `configuration`
+
+**Short Answer (2–3 lines):**
+Every record carries a timestamp. With `message.timestamp.type=CreateTime` (the default) it's whatever the producer set. With `LogAppendTime` the broker overwrites it with its own clock. Time-based retention, `offsets_for_times`, `--to-datetime` resets and stream windows all use this value. A wrong producer clock or replayed historical data can make records expire early, or get rejected by the broker.
+
+**Detailed Explanation:**
+| | `CreateTime` | `LogAppendTime` |
+|---|---|---|
+| Who sets it | Producer (default: send time; can be the event time) | Broker at append |
+| Meaning | Event time, if the producer sets it carefully | Ingestion time |
+| Validation | Rejected if more than `message.timestamp.after.max.ms` (1 h) in the future or more than `message.timestamp.before.max.ms` (unlimited by default) in the past | None; validation settings are ignored |
+| Good for | Stream processing on event time | Retention and replay by arrival time, audit |
+
+**How timestamps reach retention.** A segment is eligible for time-based deletion when its **largest** timestamp is older than `retention.ms`. So:
+- Backfilling year-old events with `CreateTime` makes their segments eligible almost as soon as they roll. They may vanish within minutes.
+- One record with a far-future timestamp would keep its segment alive. That's one reason Kafka 4.0 changed the default `message.timestamp.after.max.ms` from unlimited to 1 hour (KIP-1030). The before/after settings themselves arrived in 3.6 (KIP-937).
+
+**Batch-level rejection.** Timestamp validation happens per batch. If one record in a batch is out of range, the whole batch fails with `INVALID_TIMESTAMP`, including valid records that happened to share it. The first run of the demo below batched both test records together, and both were rejected.
+
+**Stream processing.** Kafka Streams and Flink extract event time from the record timestamp by default (see Q508 and Q29). If producers use `LogAppendTime`, windows reflect arrival time, not when things happened. Pick deliberately, and carry the business event time in the payload as well.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Kafka 4.3.1 CLI
+bin/kafka-topics.sh --bootstrap-server localhost:19092 --create --topic ts-create --partitions 1
+bin/kafka-topics.sh --bootstrap-server localhost:19092 --create --topic ts-append --partitions 1 \
+  --config message.timestamp.type=LogAppendTime
+```
+```python
+# Runtime: Python 3.11, confluent-kafka 2.16, Apache Kafka 4.3
+import time
+from datetime import datetime, timezone
+from confluent_kafka import Producer, Consumer, TIMESTAMP_CREATE_TIME
+
+now = int(time.time() * 1000)
+cases = {"3 days old": now - 3 * 86400_000, "2 hours in future": now + 2 * 3600_000}
+p = Producer({"bootstrap.servers": "localhost:19092"})
+for topic in ("ts-create", "ts-append"):
+    for label, ts in cases.items():
+        def cb(err, msg, label=label, topic=topic):
+            print(f"{topic:9} {label:17} -> " + (err.name() if err else f"stored at offset {msg.offset()}"))
+        p.produce(topic, value=label, timestamp=ts, on_delivery=cb)
+        p.flush()      # one record per batch: a bad timestamp fails the WHOLE batch it is in
+
+c = Consumer({"bootstrap.servers": "localhost:19092", "group.id": f"ts-{now}", "auto.offset.reset": "earliest"})
+c.subscribe(["ts-create", "ts-append"])
+got = 0
+while got < 3:
+    m = c.poll(5)
+    if m is None or m.error():
+        continue
+    got += 1
+    kind, ts = m.timestamp()
+    kind = "CreateTime" if kind == TIMESTAMP_CREATE_TIME else "LogAppendTime"
+    print(f"read {m.topic():9} {m.value().decode():17} {kind:13} {datetime.fromtimestamp(ts / 1000, timezone.utc):%Y-%m-%d %H:%M}")
+c.close()
+```
+```text
+ts-create 3 days old        -> stored at offset 0
+ts-create 2 hours in future -> INVALID_TIMESTAMP
+ts-append 3 days old        -> stored at offset 0
+ts-append 2 hours in future -> stored at offset 1
+read ts-create 3 days old        CreateTime    2026-10-14 18:59
+read ts-append 3 days old        LogAppendTime 2026-10-17 18:59
+read ts-append 2 hours in future LogAppendTime 2026-10-17 18:59
+```
+(Run at 2026-10-17 18:59 UTC.) The `CreateTime` topic kept the producer's timestamp and rejected the future one. The `LogAppendTime` topic accepted both and replaced their timestamps with the append time.
+
+**Real-World Use Case:**
+A team replayed six months of orders from an archive into a 7-day topic, keeping the original event times as `CreateTime`. Downstream consumers started late and found most of the data already gone, because whole segments were past retention as soon as they rolled. Replaying into a topic with longer retention fixed it. `LogAppendTime` would have too, at the cost of losing event time in the record timestamp.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Assuming retention is measured from when the broker received the record.
+- Backfilling historical events into a short-retention `CreateTime` topic.
+- Not knowing that a single bad timestamp fails its whole batch.
+
+**Follow-up Questions Interviewers Ask:**
+- Can a consumer tell which type a record has? — Yes; the timestamp type is returned with each record (`msg.timestamp()` in Python).
+- What happens to timestamps when MirrorMaker 2 copies data? — It keeps the source timestamps, so the target topic's timestamp type and limits matter.
+- How do you find the offset for 09:00 yesterday? — `offsets_for_times`, which uses the time index (see Q482).
+
+---
+
+### Q497. Tiered storage: how it works and what it changes operationally
+**ID:** KFK-29
+**Topic:** Kafka > Storage & Retention
+**Level:** Advanced
+**Frequency:** Common
+**Tags:** `kafka`, `tiered-storage`, `kip-405`, `object-storage`, `retention`
+
+**Short Answer (2–3 lines):**
+Tiered storage (KIP-405, production-ready since Kafka 3.9) copies closed segments to remote storage such as S3, GCS or HDFS. It deletes them locally after a short `local.retention.ms`, while `retention.ms` still sets total retention. Brokers then hold mainly the hot tail on disk, so long retention is cheap and broker recovery or rebalancing moves far less data. Reads of old offsets are fetched from remote storage transparently.
+
+**Detailed Explanation:**
+**Architecture**
+- **RemoteStorageManager (RSM)**: a plugin that copies segments and indexes to and from the remote store. Apache Kafka ships the interface and no production implementation, so you use a vendor or open-source plugin.
+- **RemoteLogMetadataManager (RLMM)**: tracks which segments are remote. The default `TopicBasedRemoteLogMetadataManager` uses the internal `__remote_log_metadata` topic.
+- The leader's remote log manager uploads closed segments (checked every `remote.log.manager.task.interval.ms`, 30 s). Followers don't upload.
+
+**Two retention clocks**
+| Setting | Meaning |
+|---|---|
+| `retention.ms` / `retention.bytes` | Total retention, local plus remote |
+| `local.retention.ms` / `local.retention.bytes` | How long segments stay on broker disk; `-2` (default) means "same as total" |
+
+**What gets better**
+- Disk sizing depends on hot data only, so brokers become smaller and cheaper.
+- Adding or replacing a broker copies only the local tail. In 4.3, `follower.fetch.last.tiered.offset.enable` lets new followers skip data already in remote storage.
+- Long replays (Kappa-style reprocessing, see Q28) no longer need giant disks.
+
+**Limits and trade-offs**
+- **No compacted topics.**
+- Historical reads have object-store latency, and backfill throughput depends on the RSM, its caches and the fetch thread pools.
+- The metadata topic is critical. 4.3 adds `remote.log.metadata.topic.min.isr` (2 by default).
+- Turning it off needs care: `remote.log.copy.disable` and `remote.log.delete.on.disable` control how a topic leaves tiered storage.
+- Data in the bucket is in Kafka's segment format, not Parquet. It isn't a lake table. For analytics, still land data into Iceberg or Delta.
+
+**Example / Code:**
+```properties
+# Runtime: Apache Kafka 4.3 broker + a RemoteStorageManager plugin (Kafka ships none; plugin class shown is a placeholder)
+# --- broker (server.properties) ---
+remote.log.storage.system.enable=true
+remote.log.storage.manager.class.name=com.example.tiered.S3RemoteStorageManager
+remote.log.storage.manager.class.path=/opt/kafka/plugins/tiered/*
+remote.log.metadata.manager.listener.name=PLAINTEXT
+```
+```bash
+# Runtime: Apache Kafka 4.3.1 CLI — per-topic switch: 1 day on local disk, 1 year in total
+bin/kafka-topics.sh --bootstrap-server localhost:9092 --create --topic clickstream \
+  --partitions 48 --replication-factor 3 \
+  --config remote.storage.enable=true \
+  --config local.retention.ms=86400000 \
+  --config retention.ms=31536000000
+```
+These commands were checked against the 4.3 topic and broker config reference. They weren't run in the lab, because there is no RSM plugin there to upload to.
+
+**Real-World Use Case:**
+A clickstream cluster kept 7 days on large local disks, and replacing a failed broker took many hours of re-replication. With tiered storage, 1 day local and 90 days total, disks shrank, broker replacement finished in a fraction of the time, and the analytics team could replay a month of events straight from Kafka.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Expecting tiered storage to work on compacted changelog topics.
+- Treating the remote bucket as a queryable data lake.
+- Setting `local.retention.ms` so low that ordinary consumer lag pushes reads into remote storage.
+- Assuming Apache Kafka includes an S3 plugin out of the box.
+
+**Follow-up Questions Interviewers Ask:**
+- What happens to consumers reading old offsets? — The broker fetches from remote storage transparently; the client doesn't change.
+- Which metrics matter? — Remote copy and fetch lag and errors, and the size of data waiting to upload.
+- How is it different from archiving to S3 with a Connect sink? — Tiered storage keeps data readable *as Kafka* by offset; a sink produces lake files for other engines.
+
+---
+### Q498. Kafka Connect architecture: workers, connectors, tasks and internal topics
+**ID:** KFK-30
+**Topic:** Kafka > Kafka Connect
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `kafka-connect`, `source`, `sink`, `distributed-mode`, `rest-api`
+
+**Short Answer (2–3 lines):**
+Kafka Connect is a framework for moving data between Kafka and other systems through configuration, not code. **Source** connectors write external data into Kafka, and **sink** connectors write Kafka data out. A cluster of **workers** runs **connectors**, which split their work into **tasks**. In distributed mode, workers share state through three internal topics (configs, offsets, status), and you manage everything through a REST API.
+
+**Detailed Explanation:**
+**Pieces**
+| Concept | What it is |
+|---|---|
+| Worker | A JVM process running the Connect runtime. Workers with the same `group.id` form a cluster |
+| Connector | A configured instance of a plugin, such as a JDBC sink for one database |
+| Task | A unit of parallel work. A sink's tasks act like consumers in a group; a source's tasks split tables, files or shards |
+| Converter | Turns Connect's internal data into bytes and back (see Q499) |
+| Transform (SMT) | A light, per-record change applied between connector and converter |
+| Plugin path | Where connector JARs are loaded from, each in its own isolated classloader |
+
+**Standalone vs distributed**
+- *Standalone*: one process, with offsets in a local file. Good for development or a single edge agent.
+- *Distributed*: any number of workers. Connector configs live in `config.storage.topic`, source offsets in `offset.storage.topic`, and state in `status.storage.topic`. Tasks rebalance across workers when one fails (incremental cooperative rebalancing, with `scheduled.rebalance.max.delay.ms` of 5 minutes before a lost worker's tasks are reassigned).
+
+**Offsets**
+- Sink connectors use normal consumer group offsets (`connect-<connector-name>`).
+- Source connectors store their own "source offsets" (a file position, a WAL LSN, a row timestamp) in the offsets topic. Since Kafka 3.6 (KIP-875) you can read and reset them through the REST API (`GET/PATCH/DELETE /connectors/{name}/offsets`).
+
+**When not to use Connect.** For complex business logic, use stream processing (Kafka Streams or Flink) and let Connect do only the I/O.
+
+**Example / Code:**
+```properties
+bootstrap.servers=localhost:19092
+group.id=connect-lab
+listeners=http://localhost:18083
+config.storage.topic=connect-lab-configs
+offset.storage.topic=connect-lab-offsets
+status.storage.topic=connect-lab-status
+config.storage.replication.factor=1
+offset.storage.replication.factor=1
+status.storage.replication.factor=1
+key.converter=org.apache.kafka.connect.storage.StringConverter
+value.converter=org.apache.kafka.connect.json.JsonConverter
+value.converter.schemas.enable=false
+plugin.path=/opt/kafka/libs/connect-file-4.3.1.jar
+exactly.once.source.support=enabled
+```
+```bash
+# Runtime: Apache Kafka 4.3.1 — start one distributed worker, then use the REST API
+bin/connect-distributed.sh worker.properties &
+curl -s localhost:18083/
+curl -s localhost:18083/connector-plugins | python3 -m json.tool | grep class
+curl -s localhost:18083/connectors/access-source/status
+curl -s localhost:18083/connectors/access-source/offsets
+```
+```text
+{"version":"4.3.1","commit":"26b251a451ce941d","kafka_cluster_id":"k823IPTOTlqVLpX-4sSHCg"}
+        "class": "org.apache.kafka.connect.file.FileStreamSinkConnector",
+        "class": "org.apache.kafka.connect.file.FileStreamSourceConnector",
+        "class": "org.apache.kafka.connect.mirror.MirrorCheckpointConnector",
+        "class": "org.apache.kafka.connect.mirror.MirrorHeartbeatConnector",
+        "class": "org.apache.kafka.connect.mirror.MirrorSourceConnector",
+{"name":"access-source","connector":{"state":"RUNNING","worker_id":"localhost:18083","version":"4.3.1"},"tasks":[{"id":0,"state":"RUNNING","worker_id":"localhost:18083","version":"4.3.1"}],"type":"source"}
+{"offsets":[{"partition":{"filename":"/var/log/web/access.log"},"offset":{"position":47}}]}
+```
+The file connectors ship with Kafka but have not been on the default classpath since 3.2, which is why `plugin.path` points at `connect-file-4.3.1.jar`. (Lab paths are shortened here.)
+
+**Real-World Use Case:**
+A team ran a Postgres CDC source and an S3 sink on a three-worker Connect cluster on Kubernetes, managed by an operator. When one worker's node was drained, its tasks moved to the other two workers. Source offsets in the offsets topic let the CDC task resume from the same log position.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Running production pipelines in standalone mode.
+- Creating Connect's internal topics with replication factor 1, or letting the offsets topic be deleted by retention (it must be compacted).
+- Putting many unrelated teams' connectors on one shared worker cluster with no isolation.
+- Setting `tasks.max` higher than the source can actually split into, and expecting more parallelism.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you restart only failed tasks? — `POST /connectors/{name}/restart?includeTasks=true&onlyFailed=true`.
+- Where do sink connectors keep their position? — In the consumer group `connect-<name>`, visible with `kafka-consumer-groups.sh`.
+- How do you keep secrets out of connector configs? — Config providers, such as `${file:/secrets/db.properties:password}` or vault-backed providers.
+
+---
+
+### Q499. Converters vs SMTs vs serializers in Kafka Connect
+**ID:** KFK-31
+**Topic:** Kafka > Kafka Connect
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `kafka-connect`, `converters`, `smt`, `json`, `avro`
+
+**Short Answer (2–3 lines):**
+Connectors work with Connect's internal record model (schema plus struct). **Converters** turn that model into bytes on the way into Kafka and back on the way out: JSON, Avro, Protobuf, String, ByteArray. **Single Message Transforms (SMTs)** change one record at a time: rename, mask, route, insert a field. Both are set by configuration. Converters must match how the topic was actually written, or the sink fails to deserialise.
+
+**Detailed Explanation:**
+**Order on a source connector:** connector → SMTs → converter → producer → Kafka. On a sink it's the reverse: Kafka → consumer → converter → SMTs → connector.
+
+**Common converters**
+| Converter | Notes |
+|---|---|
+| `JsonConverter` | `schemas.enable=true` embeds a schema in every message (bulky); `false` gives plain JSON with no types |
+| `AvroConverter` / `ProtobufConverter` / `JsonSchemaConverter` | Need a Schema Registry; compact and typed (see Q504) |
+| `StringConverter` / `ByteArrayConverter` | Pass-through; good for keys or opaque payloads |
+
+Set them per worker (`key.converter`, `value.converter`) and override per connector. Key and value converters can differ: a String key with an Avro value is common.
+
+**Useful built-in SMTs** (Apache Kafka): `InsertField`, `ReplaceField` (include, exclude, rename), `MaskField`, `Cast`, `ExtractField`, `HoistField`, `ValueToKey`, `TimestampRouter`, `RegexRouter`, `Filter` with predicates, `HeaderFrom`, `InsertHeader`, `DropHeaders`, `TimestampConverter`, `Flatten`. Debezium adds `ExtractNewRecordState` and the outbox router (see Q503).
+
+**When not to use SMTs.** SMTs are stateless and per record. Joins, aggregations, lookups and anything needing state belong in Kafka Streams or Flink. Long SMT chains are hard to test and to version.
+
+**Predicates** let an SMT apply conditionally, for example only to tombstones or to topics matching a pattern.
+
+**Example / Code:**
+Source connector: wrap each log line, add a field, then route to a daily topic.
+```json
+{
+  "connector.class": "org.apache.kafka.connect.file.FileStreamSourceConnector",
+  "tasks.max": "1",
+  "file": "/var/log/web/access.log",
+  "topic": "web-access",
+  "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+  "value.converter.schemas.enable": "false",
+  "transforms": "wrap,addSource,route",
+  "transforms.wrap.type": "org.apache.kafka.connect.transforms.HoistField$Value",
+  "transforms.wrap.field": "line",
+  "transforms.addSource.type": "org.apache.kafka.connect.transforms.InsertField$Value",
+  "transforms.addSource.static.field": "source_host",
+  "transforms.addSource.static.value": "web-01",
+  "transforms.route.type": "org.apache.kafka.connect.transforms.TimestampRouter",
+  "transforms.route.topic.format": "${topic}-${timestamp}",
+  "transforms.route.timestamp.format": "yyyyMMdd"
+}
+```
+```text
+$ bin/kafka-console-consumer.sh --bootstrap-server localhost:19092 --topic web-access-20261017 --from-beginning
+{"line":"GET /home 200","source_host":"web-01"}
+{"line":"GET /cart 200","source_host":"web-01"}
+{"line":"POST /checkout 500","source_host":"web-01"}
+```
+`TimestampRouter` renamed `web-access` to `web-access-20261017`. `HoistField` turned the raw string into a struct, so `InsertField` had a struct to add `source_host` to. The two would fail the other way round.
+
+**Real-World Use Case:**
+A sink team received Avro from upstream but configured the sink with `JsonConverter`. Every record failed with "Converting byte[] to Kafka Connect data failed". Switching the sink's `value.converter` to `AvroConverter` with the registry URL fixed it, and a `MaskField` SMT redacted PII before the data reached the warehouse.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Mixing up converters (Connect) with serializers (plain producers and consumers).
+- Leaving `schemas.enable=true` on, then wondering why every JSON message has a schema envelope.
+- Building business logic as a chain of ten SMTs.
+- Ordering SMTs wrongly (they run in the listed order).
+
+**Follow-up Questions Interviewers Ask:**
+- How do you route only some records through an SMT? — Use `predicates`, such as `TopicNameMatches` or `RecordIsTombstone`, with `transforms.<name>.predicate`.
+- Where is the record key set for a JDBC source? — Use `ValueToKey` then `ExtractField$Key` to build the key from columns.
+- Can you write your own SMT? — Yes, implement `Transformation<R>` and add the JAR to the plugin path.
+
+---
+
+### Q500. Error handling in Kafka Connect: errors.tolerance and dead letter queues
+**ID:** KFK-32
+**Topic:** Kafka > Kafka Connect
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `kafka-connect`, `dlq`, `error-handling`, `poison-messages`
+
+**Short Answer (2–3 lines):**
+By default (`errors.tolerance=none`) one bad record fails the task, and the pipeline stops until someone acts. With `errors.tolerance=all`, failures in conversion or transforms are skipped. For **sink** connectors you can send those records to a dead letter queue topic, with headers describing the error. Connect's DLQ covers converter and SMT failures; errors inside the connector's own `put()` (such as a database constraint) are handled by the connector or fail the task.
+
+**Detailed Explanation:**
+Handling poison messages in general is on this site's poison-messages page and in Q39. This question covers Connect's built-in features.
+
+**Settings (per connector)**
+| Setting | Default | Meaning |
+|---|---|---|
+| `errors.tolerance` | `none` | `all` skips bad records instead of failing |
+| `errors.retry.timeout` | `0` | How long to retry retriable failures; `-1` retries forever |
+| `errors.retry.delay.max.ms` | 60000 | Backoff cap between retries |
+| `errors.log.enable`, `errors.log.include.messages` | `false` | Log failures, optionally with the record content |
+| `errors.deadletterqueue.topic.name` | (none) | Sink only: where failed records go |
+| `errors.deadletterqueue.context.headers.enable` | `false` | Adds `__connect.errors.*` headers: topic, partition, offset, stage, exception |
+| `errors.deadletterqueue.topic.replication.factor` | 3 | Lower it for small labs |
+
+**What the DLQ catches.** Failures in the key/value/header **converter** and in **transforms**. Since KIP-610, a sink connector may also report records with the `ErrantRecordReporter`, so a JDBC sink can route a row that hits a constraint violation. Whether it does depends on the connector.
+
+**Sources have no DLQ.** A source connector produces records; if conversion fails, `errors.tolerance=all` skips and logs them.
+
+**Operating a DLQ**
+- Alert on DLQ growth. A DLQ nobody reads is silent data loss.
+- Keep the original bytes (Connect writes the raw record) so a fixed pipeline can replay it.
+- Replay with a small consumer or a second connector after fixing the cause.
+
+**Example / Code:**
+```json
+{
+  "connector.class": "org.apache.kafka.connect.file.FileStreamSinkConnector",
+  "tasks.max": "1",
+  "topics": "customers",
+  "file": "/data/out/customers.out",
+  "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+  "value.converter.schemas.enable": "false",
+  "transforms": "mask,drop",
+  "transforms.mask.type": "org.apache.kafka.connect.transforms.MaskField$Value",
+  "transforms.mask.fields": "email",
+  "transforms.drop.type": "org.apache.kafka.connect.transforms.ReplaceField$Value",
+  "transforms.drop.exclude": "internal_note",
+  "errors.tolerance": "all",
+  "errors.retry.timeout": "0",
+  "errors.log.enable": "true",
+  "errors.deadletterqueue.topic.name": "dlq.customers-sink",
+  "errors.deadletterqueue.topic.replication.factor": "1",
+  "errors.deadletterqueue.context.headers.enable": "true"
+}
+```
+```bash
+# Runtime: Apache Kafka 4.3.1 — two good records and one that is not JSON
+printf '%s\n' '{"id":1,"name":"Asha","email":"asha@example.com","internal_note":"vip"}' 'not-json{' \
+  '{"id":2,"name":"Ben","email":"ben@example.com","internal_note":"-"}' \
+  | bin/kafka-console-producer.sh --bootstrap-server localhost:19092 --topic customers
+curl -s -X PUT -H 'Content-Type: application/json' --data @customers-sink.json \
+  localhost:18083/connectors/customers-sink/config
+cat /data/out/customers.out
+bin/kafka-console-consumer.sh --bootstrap-server localhost:19092 --topic dlq.customers-sink \
+  --from-beginning --formatter-property print.headers=true
+```
+```text
+{name=Asha, email=, id=1}
+{name=Ben, email=, id=2}
+__connect.errors.topic:customers
+__connect.errors.partition:0
+__connect.errors.offset:1
+__connect.errors.connector.name:customers-sink
+__connect.errors.stage:VALUE_CONVERTER
+__connect.errors.class.name:org.apache.kafka.connect.json.JsonConverter
+__connect.errors.exception.class.name:org.apache.kafka.connect.errors.DataException
+__connect.errors.exception.message:Converting byte[] to Kafka Connect data failed due to serialization error: 
+	not-json{
+```
+(Header output reformatted one per line.) The task stayed `RUNNING`, the good records were written with `email` masked and `internal_note` dropped, and the poison record landed in the DLQ with its source offset.
+
+**Real-World Use Case:**
+An S3 sink stopped for a weekend because one producer briefly sent malformed JSON, and `errors.tolerance` was at its default. After the incident, sinks used `errors.tolerance=all` with a DLQ and a lag alert on it. The next malformed burst went to the DLQ, was fixed and replayed within the hour, and the main flow never stopped.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Setting `errors.tolerance=all` without a DLQ or logging, which silently drops data.
+- Expecting a DLQ on a source connector.
+- Assuming every sink-side failure (like a database outage) goes to the DLQ; retriable errors are retried, and connector-level errors may fail the task.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you build retry topics with delays for plain consumers? — Route failures to `retry-5m` / `retry-1h` topics consumed with a delay, then to a final DLQ (or use share groups' delivery count, see Q488).
+- Which header tells you where the failure happened? — `__connect.errors.stage` (for example `VALUE_CONVERTER`, `TRANSFORMATION`, `TASK_PUT`).
+- How do you replay a DLQ? — Fix the cause, then consume the DLQ and re-produce the original bytes to the source topic or straight to the sink.
+
+---
+
+### Q501. Exactly-once source connectors and what "exactly-once" means for sinks
+**ID:** KFK-33
+**Topic:** Kafka > Kafka Connect
+**Level:** Advanced
+**Frequency:** Occasional
+**Tags:** `kafka-connect`, `exactly-once`, `kip-618`, `transactions`, `source-connectors`
+
+**Short Answer (2–3 lines):**
+Since Kafka 3.3 (KIP-618), distributed workers with `exactly.once.source.support=enabled` run each source task with a transactional producer. The records and the task's source offsets commit in the same Kafka transaction, so a crash can't cause duplicates or gaps in Kafka. Sinks don't use Kafka transactions. They are exactly-once only if the connector writes idempotently or stores offsets in the target atomically (see Q493).
+
+**Detailed Explanation:**
+**Without EOS (the default, `exactly.once.source.support=disabled`).** A source task produces records and, separately, flushes source offsets every `offset.flush.interval.ms` (60 s). A crash between the two replays everything since the last flush, so you get duplicates.
+
+**With EOS**
+- Turn it on cluster-wide in two rolls: `preparing`, then `enabled`. All workers must be 3.3 or newer and in distributed mode.
+- Each task gets a transactional ID like `<group.id>-<connector>-<task>`, as the lab output below shows. The leader also uses a transactional producer to write configs, which fences zombie workers.
+- `transaction.boundary` (per connector): `poll` (default, one transaction per poll batch), `interval` (time-based), or `connector` (the connector defines its own boundaries).
+- `exactly.once.support=required` makes connector creation fail if the plugin can't support EOS. The default `requested` is best-effort.
+- Downstream consumers need `isolation.level=read_committed` (the default in librdkafka, but not in Java).
+- ACLs: the worker principal needs transactional ID and idempotent-write permissions.
+
+**What the connector must do.** It must report precise source offsets and be able to resume from them. Debezium supports this for several databases; check each connector's documentation.
+
+**Sinks**
+- The Kafka side is just consumer offsets.
+- Exactly-once into the target needs idempotent upserts (JDBC `insert.mode=upsert`), deterministic object names (S3 sinks name files by partition and start offset), or atomic offset storage in the target.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Kafka 4.3.1 — worker started with exactly.once.source.support=enabled (see Q498's worker.properties)
+bin/kafka-transactions.sh --bootstrap-server localhost:19092 list
+```
+```text
+TransactionalId            	Coordinator	ProducerId	TransactionState	
+connect-cluster-connect-lab	1          	2000      	CompleteCommit  	
+connect-lab-access-source-0	1          	2001      	CompleteCommit  	
+enricher-tx-0              	1          	1001      	CompleteCommit  	
+```
+`connect-cluster-connect-lab` is the worker leader's config producer, and `connect-lab-access-source-0` is task 0 of the `access-source` connector, which commits a transaction per poll. (`enricher-tx-0` is the Python app from Q494.)
+```json
+{
+  "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+  "exactly.once.support": "required",
+  "transaction.boundary": "poll"
+}
+```
+
+**Real-World Use Case:**
+A CDC pipeline into a ledger topic produced a few duplicate change events after each Connect worker crash, and downstream balance calculations needed de-duplication. After enabling exactly-once source support (in two rolling steps) and setting `read_committed` on consumers, worker crashes no longer produced duplicates in the topic.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Thinking enabling EOS on the worker makes sink connectors exactly-once.
+- Enabling it in one step on a mixed-version cluster.
+- Forgetting `read_committed` downstream, so consumers still see aborted records.
+- Missing ACLs for transactional IDs, which shows up as tasks failing at start-up.
+
+**Follow-up Questions Interviewers Ask:**
+- Does EOS cost throughput? — Some: commit markers and coordinator round trips per transaction; `interval` boundaries can batch more.
+- Where are source offsets stored with EOS? — Still in the offsets topic (or a per-connector `offsets.storage.topic`), written inside the task's transaction.
+- What if the source system itself replays? — EOS covers Connect's own crash window, not a source that re-emits data; downstream idempotency still helps.
+
+---
+### Q502. Debezium snapshots, incremental snapshots and replication-slot risks
+**ID:** KFK-34
+**Topic:** Kafka > CDC with Debezium
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `debezium`, `cdc`, `snapshots`, `postgres`, `replication-slot`
+
+**Short Answer (2–3 lines):**
+On first start, Debezium usually takes a **snapshot**: it reads existing rows as `op=r` events, then switches to streaming changes from the transaction log. **Incremental snapshots**, triggered by a signal, re-read tables in chunks *while* streaming continues, so you can backfill or add a table without stopping. The operational risk is the source side: an inactive or lagging Postgres replication slot keeps WAL on the database until the disk fills.
+
+**Detailed Explanation:**
+The end-to-end CDC design is covered in Q50 and on the Debezium page. This question is about running it.
+
+**`snapshot.mode` (Postgres connector, Debezium 3.x)**
+| Mode | Behaviour |
+|---|---|
+| `initial` (default) | Snapshot if no offsets exist, then stream |
+| `initial_only` | Snapshot, then stop |
+| `no_data` | Skip existing rows; stream from now (formerly `never`) |
+| `when_needed` | Snapshot again if stored offsets are no longer available in the log |
+| `always` | Snapshot on every start |
+| `configuration_based` / `custom` | Fine-grained or pluggable control |
+
+**Incremental snapshots** (a watermark-based design)
+- Configure a signalling table (`signal.data.collection`) or a Kafka signal topic.
+- Insert an `execute-snapshot` signal. Debezium reads the table in primary-key chunks (`incremental.snapshot.chunk.size`, 1024) and interleaves them with live changes, so a row being updated isn't overwritten by a stale snapshot read.
+- Events carry `op=r` with `source.snapshot="incremental"`.
+- Use them to add a table to `table.include.list`, to repair a downstream sink, or to backfill after a long outage.
+
+**Replication slot hazards (Postgres)**
+- The slot keeps WAL until Debezium confirms it. A stopped connector means WAL grows without limit.
+- Even an *active* slot can lag when the captured tables are quiet but the database is busy. Set `heartbeat.interval.ms` (default 0, off), and possibly a `heartbeat.action.query`, so offsets advance.
+- Guard rails: monitor `pg_replication_slots` lag, set Postgres `max_slot_wal_keep_size`, and drop slots of retired connectors.
+- On failover to a replica, the slot must exist there (Postgres 17+ failover slots, or recreate it and re-snapshot).
+
+**Example / Code:**
+```json
+{
+  "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+  "database.hostname": "localhost",
+  "database.port": "5498",
+  "database.user": "postgres",
+  "database.password": "postgres",
+  "database.dbname": "shop",
+  "topic.prefix": "shop",
+  "plugin.name": "pgoutput",
+  "slot.name": "shop_cdc",
+  "publication.autocreate.mode": "filtered",
+  "table.include.list": "public.customers",
+  "snapshot.mode": "initial",
+  "signal.data.collection": "public.debezium_signal",
+  "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+  "key.converter.schemas.enable": "false",
+  "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+  "value.converter.schemas.enable": "false",
+  "tasks.max": "1"
+}
+```
+```bash
+# Runtime: PostgreSQL 16 (wal_level=logical), Debezium 3.7.0.Final on Kafka Connect 4.3.1
+psql -h localhost -p 5498 -U postgres -d shop -c "SELECT slot_name, plugin, active,
+  pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn)) AS lag_behind
+  FROM pg_replication_slots;"
+# Trigger an incremental snapshot of one table while streaming continues
+psql -h localhost -p 5498 -U postgres -d shop -c "INSERT INTO debezium_signal VALUES ('adhoc-1',
+  'execute-snapshot', '{\"data-collections\": [\"public.customers\"], \"type\": \"incremental\"}');"
+```
+```text
+ slot_name |  plugin  | active | lag_behind 
+-----------+----------+--------+------------
+ shop_cdc  | pgoutput | t      | 273 kB
+(1 row)
+
+INSERT 0 1
+```
+Events on `shop.public.customers`, summarised (initial snapshot, live changes, then the incremental snapshot):
+```text
+key={"id":1}  op=r snapshot=first lsn=26362464 before=null after={"id": 1, "name": "Asha", "tier": "gold"}
+key={"id":2}  op=r snapshot=last  lsn=26362464 before=null after={"id": 2, "name": "Ben", "tier": "silver"}
+key={"id":3}  op=c snapshot=false lsn=26362504 before=null after={"id": 3, "name": "Chen", "tier": "bronze"}
+key={"id":1}  op=u snapshot=false lsn=26362640 before={"id": 1, "name": "Asha", "tier": "gold"} after={"id": 1, "name": "Asha", "tier": "platinum"}
+key={"id":2}  op=d snapshot=false lsn=26362744 before={"id": 2, "name": "Ben", "tier": "silver"} after=null
+key={"id":1}  op=r snapshot=incremental after={"id": 1, "name": "Asha", "tier": "platinum"}
+key={"id":3}  op=r snapshot=incremental after={"id": 3, "name": "Chen", "tier": "bronze"}
+```
+The slot showed 273 kB of lag although active, because nothing in the captured table had changed recently. That is what heartbeats are for.
+
+**Real-World Use Case:**
+A team paused a Debezium connector over a long weekend during a migration. The Postgres primary's disk filled with retained WAL and the database stopped accepting writes. They now alert on slot lag, set `max_slot_wal_keep_size`, and enable heartbeats on every CDC connector.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Deleting a connector but leaving its replication slot behind.
+- Using `snapshot.mode=always` on big tables, which re-reads them on every restart.
+- Re-snapshotting a huge table by resetting offsets, when an incremental snapshot would avoid downtime.
+- Not knowing that tables without a primary key complicate incremental snapshots (you need a surrogate key via `message.key.columns`).
+
+**Follow-up Questions Interviewers Ask:**
+- How do you add a new table to a running connector? — Add it to `table.include.list`, then send an incremental snapshot signal for it.
+- What is `REPLICA IDENTITY FULL` for? — It makes Postgres log the full old row, so `before` is populated for updates and deletes.
+- How do downstream consumers tell snapshot rows from live inserts? — `op=r` versus `op=c`, and `source.snapshot`.
+
+---
+
+### Q503. Debezium change events: the envelope, tombstones and flattening with ExtractNewRecordState
+**ID:** KFK-35
+**Topic:** Kafka > CDC with Debezium
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `debezium`, `cdc`, `smt`, `tombstones`, `compaction`
+
+**Short Answer (2–3 lines):**
+Each Debezium event carries `before`, `after`, `op` (c, u, d, r), `source` metadata (LSN, transaction ID, timestamp, table) and `ts_ms`, keyed by the primary key. A delete is sent as a `d` event followed by a **tombstone** (null value), so compacted topics can drop the key. Most sinks want just the row, which the `ExtractNewRecordState` SMT produces, optionally adding `__op` and a `__deleted` flag.
+
+**Detailed Explanation:**
+**Envelope fields**
+| Field | Meaning |
+|---|---|
+| `before` | Row before the change (nulls unless `REPLICA IDENTITY FULL` or the key-only default) |
+| `after` | Row after the change (null for deletes) |
+| `op` | `c` create, `u` update, `d` delete, `r` snapshot read, `t` truncate, `m` message |
+| `source` | Connector, database, schema, table, `lsn`, `txId`, `snapshot`, source timestamp |
+| `ts_ms` / `ts_us` | When Debezium processed the event |
+
+**Keys and ordering.** The record key is the primary key, so all changes to one row go to one partition in order (see Q69). Downstream "latest wins" logic should compare `source.lsn` (or a similar position), not arrival order (see Q50).
+
+**Deletes**
+- `d` event: the consumer learns *what* was deleted.
+- Tombstone: lets log compaction remove the key (see Q71). Controlled by `tombstones.on.delete` (default `true`).
+
+**Flattening with `ExtractNewRecordState`**
+- Emits only `after`, which is what JDBC, Elasticsearch or lake sinks expect.
+- `add.fields=op,source.ts_ms` copies metadata in as `__op` and `__source_ts_ms`.
+- `delete.tombstone.handling.mode`: `tombstone` (keep tombstones), `drop`, `rewrite` (a delete becomes the last known row with `__deleted=true`), `rewrite-with-tombstone`, or `delete-to-tombstone` (the delete becomes just a tombstone).
+
+**Outbox pattern.** For domain events (not raw table changes), services write to an `outbox` table in the same transaction as their state change, and Debezium's `EventRouter` SMT routes each row to a topic. This avoids dual writes and keeps internal table schemas private.
+
+**Example / Code:**
+```json
+{
+  "topic.prefix": "shopflat",
+  "slot.name": "shop_flat",
+  "publication.name": "shop_flat_pub",
+  "transforms": "unwrap",
+  "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
+  "transforms.unwrap.add.fields": "op,source.ts_ms",
+  "transforms.unwrap.delete.tombstone.handling.mode": "rewrite"
+}
+```
+(Added to the connector config shown in Q502.) After `UPDATE customers SET tier='gold' WHERE id=3; DELETE FROM customers WHERE id=1;`:
+```text
+{"id":3}	{"id":3,"name":"Chen","tier":"bronze","__deleted":"false","__op":"r","__source_ts_ms":1792264243073}
+{"id":1}	{"id":1,"name":"Asha","tier":"platinum","__deleted":"false","__op":"r","__source_ts_ms":1792264243073}
+{"id":3}	{"id":3,"name":"Chen","tier":"gold","__deleted":"false","__op":"u","__source_ts_ms":1792264247678}
+{"id":1}	{"id":1,"name":"Asha","tier":"platinum","__deleted":"true","__op":"d","__source_ts_ms":1792264247678}
+```
+Compare the raw envelope in Q502, where the delete was a `d` event (`after=null`) followed by a `null` tombstone for key `{"id":2}`.
+
+**Real-World Use Case:**
+A team loaded CDC into a warehouse with a JDBC sink that couldn't parse the nested envelope. Adding `ExtractNewRecordState` with `rewrite` let a dbt model treat `__deleted='true'` as a soft delete, with `__source_ts_ms` for ordering, which fed the SCD logic in Q51.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Dropping tombstones on a compacted CDC topic, so deleted keys live forever.
+- Ordering updates by Kafka timestamp instead of the source LSN.
+- Exposing raw table CDC as a public contract instead of an outbox topic.
+- Forgetting that `before` is mostly empty without `REPLICA IDENTITY FULL`.
+
+**Follow-up Questions Interviewers Ask:**
+- What does `op=t` mean? — A truncate event (Postgres), emitted only if enabled; many sinks can't apply it.
+- How do you get schema changes downstream? — Use Avro or Protobuf with a Schema Registry (see Q504); Debezium registers new schema versions as columns change.
+- Can you capture only some columns? — Yes, `column.include.list` or `column.exclude.list`, and `column.mask.*` options for PII.
+
+---
+
+### Q504. Schema Registry under the hood: wire format, schema IDs and subject naming strategies
+**ID:** KFK-36
+**Topic:** Kafka > Schema Registry
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `schema-registry`, `avro`, `wire-format`, `subjects`, `serializers`
+
+**Short Answer (2–3 lines):**
+A registry-aware serializer registers (or looks up) the schema under a **subject** and gets a global **schema ID**. It then writes `magic byte 0` + `4-byte schema ID` + the encoded body; Protobuf adds message indexes. Consumers read the ID, fetch and cache the schema, and decode. The subject naming strategy decides what a "subject" is: per topic (default), per record type, or per topic plus record type. That in turn decides where compatibility rules apply.
+
+**Detailed Explanation:**
+Compatibility modes and safe evolution are covered in Q72 and on this site's schema-evolution page. This question is about the mechanics.
+
+**Flow**
+1. The producer's serializer derives the subject, for example `orders-value`.
+2. With `auto.register.schemas=true` it registers the schema if it's new. The registry checks compatibility against earlier versions of that subject and returns the ID.
+3. Each record carries only the 5-byte header plus the body, not the schema.
+4. The consumer's deserializer fetches the schema by ID once, caches it, and decodes. With Avro it can also resolve to a *reader* schema (`specific.avro.reader` or a generated class).
+
+**Subject naming strategies**
+| Strategy | Subject | Use when |
+|---|---|---|
+| `TopicNameStrategy` (default) | `<topic>-key`, `<topic>-value` | One event type per topic |
+| `RecordNameStrategy` | `<fully.qualified.RecordName>` | Same type in many topics, evolving together |
+| `TopicRecordNameStrategy` | `<topic>-<RecordName>` | Several event types in one topic (to keep per-entity ordering) |
+
+**Production settings**
+- Set `auto.register.schemas=false` in production producers and register schemas from CI. Use `use.latest.version=true` or explicit IDs, so a stray build can't register a schema nobody reviewed.
+- Use schema references (Avro, Protobuf, JSON Schema) for shared types such as `Money`, instead of copying them into every schema.
+- Registries can enforce rules at registration time: data contracts with metadata and validation rules in Confluent's registry, and similar features elsewhere.
+
+Some managed services (AWS Glue Schema Registry, Azure Schema Registry) use their own header formats. Clients must use the matching serializer.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, fastavro 1.12 (no registry needed: this builds and parses the wire format by hand)
+# Confluent Schema Registry framing: [magic byte 0][4-byte big-endian schema ID][Avro binary body]
+import io, struct
+from fastavro import parse_schema, schemaless_writer, schemaless_reader
+
+order_v1 = parse_schema({
+    "type": "record", "name": "OrderPlaced", "namespace": "shop.orders",
+    "fields": [{"name": "order_id", "type": "string"},
+               {"name": "amount_cents", "type": "long"}]})
+
+def encode(schema_id, schema, record):
+    buf = io.BytesIO()
+    buf.write(struct.pack(">bI", 0, schema_id))   # what the serializer prepends
+    schemaless_writer(buf, schema, record)
+    return buf.getvalue()
+
+def decode(payload, registry):
+    magic, schema_id = struct.unpack(">bI", payload[:5])
+    assert magic == 0, "not Schema Registry framed"
+    return schema_id, schemaless_reader(io.BytesIO(payload[5:]), registry[schema_id])
+
+msg = encode(42, order_v1, {"order_id": "o-1001", "amount_cents": 2599})
+print("bytes:", msg.hex(" "))
+print("size :", len(msg), "bytes vs JSON", len('{"order_id": "o-1001", "amount_cents": 2599}'))
+print("decoded:", decode(msg, {42: order_v1}))
+
+# A v2 reader schema with a new optional field can still read v1 bytes (backward compatible)
+order_v2 = parse_schema({**order_v1, "fields": order_v1["fields"] + [
+    {"name": "coupon", "type": ["null", "string"], "default": None}]})
+body = io.BytesIO(msg[5:])
+print("read with v2:", schemaless_reader(body, order_v1, order_v2))
+```
+```text
+bytes: 00 00 00 00 2a 0c 6f 2d 31 30 30 31 ce 28
+size : 14 bytes vs JSON 44
+decoded: (42, {'order_id': 'o-1001', 'amount_cents': 2599})
+read with v2: {'order_id': 'o-1001', 'amount_cents': 2599, 'coupon': None}
+```
+Byte 0 is the magic byte and bytes 1–4 are schema ID 42 (`00 00 00 2a`). The rest is Avro: a zig-zag length prefix for the string, then the zig-zag varint for 2599. With the real client, `confluent_kafka.schema_registry.avro.AvroSerializer` writes exactly this framing after talking to the registry. This demo builds it by hand, so it runs without a registry server.
+
+**Real-World Use Case:**
+A team put `OrderPlaced`, `OrderShipped` and `OrderCancelled` into one `orders` topic to keep per-order ordering. With the default `TopicNameStrategy`, the second event type failed registration as "incompatible". Switching producers and consumers to `TopicRecordNameStrategy` gave each type its own subject and compatibility history.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Thinking the schema travels with every message.
+- Leaving `auto.register.schemas=true` in production.
+- Mixing event types in one topic with `TopicNameStrategy`.
+- Consumers using plain JSON or String deserializers on registry-framed data, which shows up as five garbage bytes at the start.
+
+**Follow-up Questions Interviewers Ask:**
+- What if the registry is down? — Clients with cached IDs keep working; new schemas or IDs can't be registered or fetched until it recovers.
+- Are schema IDs per subject? — No; IDs are global in the registry, while versions are per subject.
+- How do Kafka Connect and Debezium use it? — Through `AvroConverter` / `ProtobufConverter` with `schema.registry.url` (see Q499).
+
+---
+
+### Q505. Avro vs Protobuf vs JSON Schema for Kafka events
+**ID:** KFK-37
+**Topic:** Kafka > Schema Registry
+**Level:** Beginner
+**Frequency:** Common
+**Tags:** `avro`, `protobuf`, `json-schema`, `serialization`, `schema-evolution`
+
+**Short Answer (2–3 lines):**
+All three can be enforced with a Schema Registry. **Avro** is compact, needs the writer's schema to decode, and has the most mature evolution rules in data tooling (Connect, Spark, Flink, lakes). **Protobuf** is compact, uses field numbers for evolution, and suits teams that already use gRPC. **JSON Schema** keeps human-readable JSON, at the cost of size and looser typing. Choose by ecosystem and evolution needs rather than raw speed.
+
+**Detailed Explanation:**
+| | Avro | Protobuf | JSON Schema |
+|---|---|---|---|
+| Encoding | Binary, no field tags (schema needed) | Binary with field numbers | Text JSON |
+| Size | Smallest typically | Small | Largest |
+| Evolution rule | Add or remove fields *with defaults*; resolution by field name | Never reuse field numbers; new fields optional by default (proto3) | Depends on `additionalProperties` and open or closed content models |
+| Nullability | Explicit unions `["null", "string"]` | proto3 defaults and `optional`, which can hide "unset vs zero" | `type: ["string", "null"]` |
+| Code generation | Optional (generic records work) | Usually required | Optional |
+| Data platform support | Strongest (Connect, Debezium, Spark `from_avro`, Flink) | Good and growing | Good, but types are weaker (numbers, dates) |
+| Human-readable on the wire | No | No | Yes |
+
+**Guidance**
+- *Data platform / CDC / lake*: Avro is the usual default, with logical types for decimals and timestamps.
+- *Service-to-service events in a gRPC shop*: Protobuf, so teams share one IDL.
+- *Low-volume integrations, or teams new to schemas*: JSON Schema. It's better than schemaless JSON, but enforce `additionalProperties: false` (or the reverse) on purpose, because it changes what counts as compatible.
+
+**Pitfalls to mention**
+- Avro `decimal` and timestamp logical types must be handled the same way by every reader.
+- In proto3 a missing field and a zero value look identical unless the field is marked `optional`.
+- Plain JSON without a schema makes "schema drift" the consumer's problem (see Q407).
+
+**Example / Code:**
+```text
+# Schema definitions, not executable: the same event in each format
+# Avro (orders-value, registered as AVRO)
+{"type": "record", "name": "OrderPlaced", "namespace": "shop.orders",
+ "fields": [{"name": "order_id", "type": "string"},
+            {"name": "amount", "type": {"type": "bytes", "logicalType": "decimal", "precision": 12, "scale": 2}},
+            {"name": "coupon", "type": ["null", "string"], "default": null}]}
+
+# Protobuf (registered as PROTOBUF)
+syntax = "proto3";
+package shop.orders;
+message OrderPlaced {
+  string order_id = 1;
+  int64 amount_cents = 2;
+  optional string coupon = 3;   // never reuse 3 after deleting it; mark it `reserved 3;`
+}
+
+# JSON Schema (registered as JSON)
+{"$schema": "https://json-schema.org/draft/2020-12/schema", "title": "OrderPlaced", "type": "object",
+ "properties": {"order_id": {"type": "string"}, "amount": {"type": "number"},
+                "coupon": {"type": ["string", "null"]}},
+ "required": ["order_id", "amount"], "additionalProperties": false}
+```
+For size: the Q504 demo encoded a two-field order in 14 bytes as framed Avro, against 44 bytes as JSON.
+
+**Real-World Use Case:**
+A company with gRPC microservices wanted Protobuf events, while the data team wanted Avro for lakehouse ingestion. They chose Protobuf with a Schema Registry and used the `ProtobufConverter` in Connect sinks. Both sides kept their tooling, and there was one source of truth for each event.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Choosing on benchmark speed alone.
+- Reusing a deleted Protobuf field number.
+- Adding an Avro field without a default and breaking backward compatibility.
+- Representing money as floating-point in any format.
+
+**Follow-up Questions Interviewers Ask:**
+- Can one topic mix formats? — Technically yes with different subjects, but don't; consumers would need every deserializer.
+- What does Avro schema resolution do? — It maps writer fields to reader fields by name, filling defaults and ignoring unknown fields.
+- Is JSON Schema compatibility the same as Avro's? — No; it depends heavily on open versus closed content models.
+
+---
+
+### Q506. KStream vs KTable vs GlobalKTable in Kafka Streams
+**ID:** KFK-38
+**Topic:** Kafka > Kafka Streams
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `kafka-streams`, `kstream`, `ktable`, `globalktable`, `stream-table-duality`
+
+**Short Answer (2–3 lines):**
+A **KStream** treats every record as an independent event (an insert). A **KTable** treats records as updates to the latest value per key (an upsert, with null meaning delete), backed by a local state store. A **GlobalKTable** is a KTable fully copied to every instance, so it can be joined on any field without co-partitioning. The same topic can be read either way; that's the stream-table duality.
+
+**Detailed Explanation:**
+| | KStream | KTable | GlobalKTable |
+|---|---|---|---|
+| Semantics | Event log | Changelog: latest per key | Changelog, fully replicated |
+| A new record for key K | Another event | Replaces K's value | Replaces K's value |
+| Null value | A record with null value | Deletes K (tombstone) | Deletes K |
+| Partitioned? | Yes | Yes, each instance holds its own partitions | No, every instance holds all of it |
+| Join requirements | Co-partitioned with the other side | Co-partitioned | Any key extractor; no co-partitioning |
+| Typical source | Clicks, payments, sensor readings | Customer profile, account balance (a compacted topic) | Small reference data: currencies, product catalogue |
+
+**Converting**
+- `stream.groupByKey().aggregate(…)` or `.count()` gives a KTable. Aggregating a stream gives a table.
+- `table.toStream()` gives the change stream of the table.
+
+**Why aggregations over a KTable "retract".** When a table row changes, Streams subtracts the old value from the old group and adds the new one, so a count by tier stays correct as users change tiers. The demo shows this.
+
+**Choosing GlobalKTable.** It's small, read-mostly data that every instance needs. The cost is that every instance stores and restores the whole topic, and GlobalKTable joins aren't time-synchronised: lookups use whatever is loaded.
+
+**Example / Code:**
+```java
+// Runtime: Java 21, Apache Kafka Streams 4.3.1 + kafka-streams-test-utils (TopologyTestDriver, no broker)
+// Run: java -cp "kafka_2.13-4.3.1/libs/*" StreamVsTable.java
+import java.util.Properties;
+import org.apache.kafka.common.serialization.*;
+import org.apache.kafka.streams.*;
+import org.apache.kafka.streams.kstream.*;
+
+public class StreamVsTable {
+    public static void main(String[] args) {
+        StreamsBuilder b = new StreamsBuilder();
+        // Same input topic, read two ways
+        KStream<String, String> events = b.stream("tier-changes", Consumed.with(Serdes.String(), Serdes.String()));
+        events.groupByKey().count()                                          // every record is an event
+              .toStream().to("change-counts", Produced.with(Serdes.String(), Serdes.Long()));
+        KTable<String, String> current = b.table("tier-changes-compacted",
+              Consumed.with(Serdes.String(), Serdes.String()), Materialized.as("current-tier"));
+        current.groupBy((user, tier) -> KeyValue.pair(tier, user),         // re-key by tier: updates retract
+                       Grouped.with(Serdes.String(), Serdes.String()))
+               .count().toStream().to("users-per-tier", Produced.with(Serdes.String(), Serdes.Long()));
+
+        Properties p = new Properties();
+        p.put(StreamsConfig.APPLICATION_ID_CONFIG, "stream-vs-table");
+        p.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "dummy:9092");
+        p.put(StreamsConfig.STATESTORE_CACHE_MAX_BYTES_CONFIG, 0);        // show every update
+        p.put(StreamsConfig.DEFAULT_KEY_SERDE_CLASS_CONFIG, Serdes.StringSerde.class);
+        p.put(StreamsConfig.DEFAULT_VALUE_SERDE_CLASS_CONFIG, Serdes.StringSerde.class);
+        try (TopologyTestDriver d = new TopologyTestDriver(b.build(), p)) {
+            var in1 = d.createInputTopic("tier-changes", new StringSerializer(), new StringSerializer());
+            var in2 = d.createInputTopic("tier-changes-compacted", new StringSerializer(), new StringSerializer());
+            String[][] changes = {{"asha", "silver"}, {"ben", "silver"}, {"asha", "gold"}, {"asha", "platinum"}};
+            for (String[] c : changes) { in1.pipeInput(c[0], c[1]); in2.pipeInput(c[0], c[1]); }
+
+            System.out.println("KStream count per user : " + d.createOutputTopic("change-counts",
+                new StringDeserializer(), new LongDeserializer()).readKeyValuesToMap());
+            System.out.println("KTable current tier    : asha=" + d.<String, String>getKeyValueStore("current-tier").get("asha")
+                + ", ben=" + d.<String, String>getKeyValueStore("current-tier").get("ben"));
+            System.out.println("KTable users per tier  : " + d.createOutputTopic("users-per-tier",
+                new StringDeserializer(), new LongDeserializer()).readKeyValuesToList());
+        }
+    }
+}
+```
+```text
+KStream count per user : {asha=3, ben=1}
+KTable current tier    : asha=platinum, ben=silver
+KTable users per tier  : [KeyValue(silver, 1), KeyValue(silver, 2), KeyValue(silver, 1), KeyValue(gold, 1), KeyValue(gold, 0), KeyValue(platinum, 1)]
+```
+The stream counted three *events* for asha, while the table kept only her latest tier. When asha moved from silver to gold, the per-tier count emitted `silver → 1` (retracting her) and `gold → 1`, and then `gold → 0` when she moved on to platinum. Running a `.java` file directly needs only the Kafka `libs/` directory on the classpath (`java -cp "libs/*" StreamVsTable.java`).
+
+**Real-World Use Case:**
+A fraud service read `card-transactions` as a KStream and `card-status` (a compacted topic) as a KTable. It joined each transaction to the card's current status, and used a GlobalKTable of merchant categories looked up by `merchant_id` from the transaction value, with no repartition needed.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Reading an event topic as a KTable and losing all but the last event per key.
+- Using a GlobalKTable for a huge, fast-changing dataset.
+- Forgetting that KTable source topics should be compacted.
+
+**Follow-up Questions Interviewers Ask:**
+- What is the record cache? — A write buffer in front of state stores (`statestore.cache.max.bytes`) that de-duplicates updates before they go downstream and to the changelog.
+- How is a KTable restored after a crash? — From its changelog or source topic into the local store.
+- What does `toStream()` emit for a delete? — A record with a null value for that key.
+
+---
+
+### Q507. Joins in Kafka Streams: stream-table, stream-stream and co-partitioning
+**ID:** KFK-39
+**Topic:** Kafka > Kafka Streams
+**Level:** Advanced
+**Frequency:** Common
+**Tags:** `kafka-streams`, `joins`, `co-partitioning`, `windows`, `foreign-key-join`
+
+**Short Answer (2–3 lines):**
+A **stream-table** join enriches each event with the table's value for its key *at that moment*; it isn't windowed, and later table updates don't re-trigger it. A **stream-stream** join must be windowed (`JoinWindows`), because both sides are unbounded, and it buffers each side in window stores. Both sides of a KStream/KTable join must be **co-partitioned**: same key, same partition count, same partitioner. Otherwise Streams repartitions, or the join fails.
+
+**Detailed Explanation:**
+| Join | Window | Triggered by | Result |
+|---|---|---|---|
+| KStream–KTable | No | Stream records only | Event plus the table value at that time (`leftJoin` keeps unmatched events with null) |
+| KStream–GlobalKTable | No | Stream records | Lookup by any extracted key; no co-partitioning |
+| KStream–KStream | `JoinWindows` (time difference + grace) | Either side | One result per matching pair in the window (can be many) |
+| KTable–KTable | No | Either side | Continuously updated joined table |
+| KTable–KTable foreign-key join | No | Either side | Joins on a field in the left value (since 2.4) |
+
+**Co-partitioning**
+- Same partition count on both topics, and the same partitioner. A Python producer on CRC32 breaks it silently (see Q472).
+- If you change the key with `selectKey` or `map` before a join, Streams inserts a **repartition topic** automatically, at the cost of an extra network hop.
+- Streams checks partition counts at start-up and throws `TopologyException` on a mismatch.
+
+**Time semantics**
+- Stream-stream joins match on record timestamps within the window. Late records are accepted within grace.
+- Stream-table joins use the table's state as of processing. A table update that arrives slightly *after* an event isn't seen. You can make table updates wait by setting a versioned store with a grace period, so the join looks up the version valid at the event's timestamp (KIP-914, versioned stores).
+
+**Example / Code:**
+```java
+// Runtime: Java 21, Apache Kafka Streams 4.3.1 + kafka-streams-test-utils (TopologyTestDriver, no broker)
+import java.time.*;
+import java.util.Properties;
+import org.apache.kafka.common.serialization.*;
+import org.apache.kafka.streams.*;
+import org.apache.kafka.streams.kstream.*;
+
+public class Joins {
+    public static void main(String[] args) {
+        var s = Serdes.String();
+        StreamsBuilder b = new StreamsBuilder();
+        KStream<String, String> orders = b.stream("orders", Consumed.with(s, s));        // key = customer_id
+        KTable<String, String> customers = b.table("customers", Consumed.with(s, s));     // key = customer_id
+        KStream<String, String> payments = b.stream("payments", Consumed.with(s, s));     // key = customer_id
+
+        // 1) stream-table join: enrich each order with the customer's tier AS OF the order's arrival
+        orders.leftJoin(customers, (order, tier) -> order + " tier=" + tier, Joined.with(s, s, s))
+              .to("orders-enriched", Produced.with(s, s));
+
+        // 2) stream-stream join: an order and a payment for the same key within 10 minutes
+        orders.join(payments, (order, pay) -> order + " paid " + pay,
+                    JoinWindows.ofTimeDifferenceAndGrace(Duration.ofMinutes(10), Duration.ofMinutes(1)),
+                    StreamJoined.with(s, s, s))
+              .to("orders-paid", Produced.with(s, s));
+
+        Properties p = new Properties();
+        p.put(StreamsConfig.APPLICATION_ID_CONFIG, "joins-demo");
+        p.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "dummy:9092");
+        try (TopologyTestDriver d = new TopologyTestDriver(b.build(), p)) {
+            var ser = new StringSerializer();
+            var o = d.createInputTopic("orders", ser, ser);
+            var c = d.createInputTopic("customers", ser, ser);
+            var pay = d.createInputTopic("payments", ser, ser);
+            Instant t0 = Instant.parse("2026-10-17T09:00:00Z");
+            c.pipeInput("cust-1", "silver", t0);
+            o.pipeInput("cust-1", "order-A", t0.plusSeconds(60));
+            c.pipeInput("cust-1", "gold", t0.plusSeconds(120));          // tier changes after order-A
+            o.pipeInput("cust-1", "order-B", t0.plusSeconds(180));
+            o.pipeInput("cust-9", "order-C", t0.plusSeconds(200));       // unknown customer
+            pay.pipeInput("cust-1", "pay-1", t0.plusSeconds(300));       // within 10 min of A and B
+            pay.pipeInput("cust-9", "pay-9", t0.plusSeconds(200 + 1200)); // 20 min after order-C: no match
+
+            var de = new StringDeserializer();
+            System.out.println("stream-table : " + d.createOutputTopic("orders-enriched", de, de).readValuesToList());
+            System.out.println("stream-stream: " + d.createOutputTopic("orders-paid", de, de).readValuesToList());
+        }
+    }
+}
+```
+```text
+stream-table : [order-A tier=silver, order-B tier=gold, order-C tier=null]
+stream-stream: [order-A paid pay-1, order-B paid pay-1]
+```
+`order-A` kept the tier it had when it arrived (silver), even though the customer later became gold. The stream-stream join paired `pay-1` with both orders in its 10-minute window, a reminder that windowed joins can fan out. `pay-9` arrived 20 minutes after `order-C`, so it found no match.
+
+**Real-World Use Case:**
+An attribution pipeline joined `ad-clicks` with `purchases` within 30 minutes. The purchases topic had 12 partitions and the clicks topic 24, so the application failed to start. They created a 24-partition re-keyed copy of purchases (with `repartition()`) and kept the window and grace explicit, so late mobile events still matched.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Expecting a stream-table join to update earlier results when the table changes.
+- Joining topics with different partition counts or different partitioners.
+- Huge join windows that make window stores and changelogs enormous.
+- Forgetting that a stream-stream join can emit several results per record.
+
+**Follow-up Questions Interviewers Ask:**
+- When would you pick a foreign-key join? — Joining orders (key `order_id`) to customers (key `customer_id`) as tables, with no manual re-keying.
+- What sets the join's state size? — Window size plus grace times the input rate, on both sides.
+- How do you avoid repartitioning? — Produce with the join key already set, and keep partition counts and partitioners aligned.
+
+---
+
+### Q508. Windowing in Kafka Streams: tumbling, hopping, sliding, session windows and grace
+**ID:** KFK-40
+**Topic:** Kafka > Kafka Streams
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `kafka-streams`, `windows`, `grace-period`, `late-data`, `suppress`
+
+**Short Answer (2–3 lines):**
+Windowed aggregations group records by event time into **tumbling** (fixed, non-overlapping), **hopping** (fixed, overlapping), **sliding** (defined by the time difference between records) or **session** windows (activity separated by an inactivity gap). A **grace period** keeps a window open for late records after its end. Records later than that are dropped. By default Streams emits a running update per record; `suppress(untilWindowCloses)` emits one final result per window.
+
+**Detailed Explanation:**
+| Window | API | Example question |
+|---|---|---|
+| Tumbling | `TimeWindows.ofSizeAndGrace(5 min, 2 min)` | Orders per 5 minutes |
+| Hopping | `TimeWindows…advanceBy(1 min)` | 5-minute moving count updated every minute |
+| Sliding | `SlidingWindows.ofTimeDifferenceAndGrace(…)` | Any 10 minutes containing 3 failed logins |
+| Session | `SessionWindows.ofInactivityGapAndGrace(30 min, …)` | User sessions (see Q132 for the SQL version) |
+
+**Stream time.** Streams tracks the highest timestamp seen per partition. A window closes when stream time passes `window end + grace`, not when wall-clock time does. A quiet partition never advances stream time, so its last windows don't close until new data arrives. That's a classic surprise in tests and at low volume.
+
+**Grace.** Kafka 3.0 deprecated the old implicit 24-hour grace. You now choose with `ofSizeAndGrace` or `ofSizeWithNoGrace`. Larger grace means more late data accepted, but more state and later final results.
+
+**Emission**
+- Default: an update downstream for every input (reduced by the record cache).
+- `suppress(Suppressed.untilWindowCloses(…))`: one result per window, which suits alerts and sinks that can't take updates. The buffer must fit in memory, or set a bound with a policy.
+- Kafka 3.3+ also has `emitStrategy(EmitStrategy.onWindowClose())` on windowed aggregations.
+
+**Late records** past grace are dropped and counted in the `dropped-records-total` metric. Alert on it.
+
+**Example / Code:**
+```java
+// Runtime: Java 21, Apache Kafka Streams 4.3.1 + kafka-streams-test-utils (TopologyTestDriver, no broker)
+import java.time.*;
+import java.util.Properties;
+import org.apache.kafka.common.serialization.*;
+import org.apache.kafka.streams.*;
+import org.apache.kafka.streams.kstream.*;
+
+public class Windows {
+    public static void main(String[] args) {
+        var s = Serdes.String();
+        StreamsBuilder b = new StreamsBuilder();
+        b.stream("clicks", Consumed.with(s, s))                                    // key = page
+         .groupByKey()
+         .windowedBy(TimeWindows.ofSizeAndGrace(Duration.ofMinutes(5), Duration.ofMinutes(2)))
+         .count()
+         .suppress(Suppressed.untilWindowCloses(Suppressed.BufferConfig.unbounded()))  // one final result per window
+         .toStream((w, n) -> w.key() + "@" + w.window().startTime().toString().substring(11, 16))
+         .to("clicks-per-5min", Produced.with(s, Serdes.Long()));
+
+        Properties p = new Properties();
+        p.put(StreamsConfig.APPLICATION_ID_CONFIG, "windows-demo");
+        p.put(StreamsConfig.BOOTSTRAP_SERVERS_CONFIG, "dummy:9092");
+        try (TopologyTestDriver d = new TopologyTestDriver(b.build(), p)) {
+            var in = d.createInputTopic("clicks", new StringSerializer(), new StringSerializer());
+            var out = d.createOutputTopic("clicks-per-5min", new StringDeserializer(), new LongDeserializer());
+            Instant t = Instant.parse("2026-10-17T09:00:00Z");
+            String[][] events = {          // {event-time offset in seconds, label}
+                {"30", "on time"}, {"200", "on time"}, {"290", "on time"},
+                {"330", "next window"},
+                {"280", "late but within grace (stream time 09:05:30)"},
+                {"430", "advances stream time to 09:07:10 -> 09:00 window closes"},
+                {"100", "too late: 09:00 window already closed"},
+                {"900", "advances stream time, closes 09:05 window"}};
+            for (String[] e : events) {
+                in.pipeInput("/home", e[1], t.plusSeconds(Long.parseLong(e[0])));
+                System.out.printf("event at %s (%s) -> emitted %s%n",
+                    t.plusSeconds(Long.parseLong(e[0])).toString().substring(11, 19), e[1], out.readKeyValuesToList());
+            }
+            System.out.println("dropped late records: " + d.metrics().entrySet().stream()
+                .filter(m -> m.getKey().name().equals("dropped-records-total"))
+                .mapToDouble(m -> (Double) m.getValue().metricValue()).sum());
+        }
+    }
+}
+```
+```text
+event at 09:00:30 (on time) -> emitted []
+event at 09:03:20 (on time) -> emitted []
+event at 09:04:50 (on time) -> emitted []
+event at 09:05:30 (next window) -> emitted []
+event at 09:04:40 (late but within grace (stream time 09:05:30)) -> emitted []
+event at 09:07:10 (advances stream time to 09:07:10 -> 09:00 window closes) -> emitted [KeyValue(/home@09:00, 4)]
+event at 09:01:40 (too late: 09:00 window already closed) -> emitted []
+event at 09:15:00 (advances stream time, closes 09:05 window) -> emitted [KeyValue(/home@09:05, 2)]
+dropped late records: 1.0
+```
+The 09:00 window counted four records, including the late 09:04:40 one that arrived within grace. It was emitted only once stream time passed 09:07 (end plus 2 minutes of grace). The 09:01:40 record came after that and was dropped.
+
+**Real-World Use Case:**
+A ride-hailing team computed per-zone demand in 1-minute tumbling windows with 30 seconds of grace. Phones with bad connectivity sent events up to several minutes late, which were dropped. They raised grace for that stream to 5 minutes for the "final" table, and kept a separate fast, un-suppressed stream for live dashboards.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Expecting windows to close on wall-clock time.
+- Using `suppress` with an unbounded buffer on high-cardinality keys.
+- Not handling dropped late records, which fails silently.
+- Mixing up hopping windows (fixed grid) and sliding windows (record-driven).
+
+**Follow-up Questions Interviewers Ask:**
+- How do you get event time from the payload? — Implement a `TimestampExtractor` and set it per source or via `default.timestamp.extractor`.
+- What does the window store retain? — Windows for `window size + grace`, or longer with `Materialized.withRetention`.
+- How do Spark and Flink compare? — Both use watermarks for the same idea (see Q290).
+
+---
+
+## Section 11: Apache Airflow
+
+### Q509. How does a Python file become a DAG in Airflow 3? Explain parsing and the DAG processor
+**ID:** AF-01
+**Topic:** Airflow > DAG Parsing
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `airflow`, `dag-processor`, `parsing`, `serialization`
+
+**Short Answer (2–3 lines):**
+The DAG processor finds Python files in each DAG bundle and runs them. Every DAG object a file creates is serialised to JSON and saved in the metadata database. The scheduler and the API server then read only that serialised copy and never import your file. Workers load the file again only when they run a task.
+
+**Detailed Explanation:**
+Parsing is a loop, and it never stops:
+
+1. **Discover.** Every `[dag_processor] refresh_interval` (300 s by default) the processor lists the files in each configured bundle. It skips paths matched by `.airflowignore`, which uses glob syntax by default in 3.x (regexp was the 2.x default). In safe mode it only parses files whose text contains both "airflow" and "dag".
+2. **Execute.** Child processes (`parsing_processes`, default 2) import each file. A file is re-parsed at most every `min_file_process_interval` (30 s). Each import is cut off after `dagbag_import_timeout` (30 s).
+3. **Serialise.** Each DAG found is written to the `serialized_dag` table. If the structure changed, a new DAG version is recorded too (see Q548). Errors are saved as import errors and shown in the UI.
+4. **Schedule.** The scheduler builds runs and task instances from the serialised DAG. Workers re-import the file at run time to get the real Python callables.
+
+| Component | Imports your file? |
+|---|---|
+| DAG processor | Yes, every few seconds |
+| Scheduler | No (reads serialised JSON) |
+| API server / UI | No |
+| Worker | Yes, once per task try |
+
+In Airflow 3 the DAG processor is its own required component, started with `airflow dag-processor` (see Q41). Because your file runs on every parse, anything at module level, such as API calls or `Variable.get`, runs again and again (see Q558).
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+# Layout: dags/orders_daily.py (valid) and dags/broken_dag.py (two tasks named "a")
+import time
+from airflow.dag_processing.dagbag import DagBag
+
+start = time.perf_counter()
+bag = DagBag(dag_folder="dags")   # 3.x DagBag no longer takes include_examples
+print(f"parsed in {time.perf_counter() - start:.2f}s")
+print("dags:", sorted(bag.dag_ids))
+for path, err in bag.import_errors.items():
+    print("import error:", path.split("/")[-1], "->", err.strip().splitlines()[-1])
+```
+```text
+parsed in 0.02s
+dags: ['orders_daily']
+import error: broken_dag.py -> airflow.sdk.exceptions.DuplicateTaskIdFound: Task id 'a' has already been added to the Dag
+```
+
+**Real-World Use Case:**
+A team merged a DAG that called a REST API at module level to build its task list. The DAG processor ran that call about every 30 seconds, all day, and the vendor started rate-limiting the account. Parse times also climbed past the timeout, and the DAG kept vanishing from the UI. They moved the call inside a task and used dynamic task mapping, and parse time fell below one second.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Thinking the scheduler imports DAG files in Airflow 3. It reads serialised DAGs; the DAG processor does the parsing.
+- Thinking a file is parsed once at deploy time. Parsing is continuous.
+- Hiding a broken DAG with `.airflowignore` instead of fixing the import error.
+
+**Follow-up Questions Interviewers Ask:**
+- Where do you see parse errors? — The UI's import-errors banner, `airflow dags list-import-errors`, and the DAG processor logs.
+- How do you see slow files? — Run `airflow dags report` or watch the `dag_processing.last_duration` metric, which is tagged per file.
+- Can one file define many DAGs? — Yes. Every DAG object the file creates is registered (see Q521).
+
+---
+
+### Q510. TaskFlow API vs classic operators: what does `@task` actually do?
+**ID:** AF-02
+**Topic:** Airflow > TaskFlow API
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `airflow`, `taskflow`, `airflow-sdk`, `xcom`
+
+**Short Answer (2–3 lines):**
+`@task` wraps a Python function in an operator. Calling the function inside a DAG creates a task and returns an `XComArg` placeholder, not a value. When you pass that placeholder to another task, Airflow adds the dependency and pulls the XCom at run time. Classic operators are still the best tool for ready-made integrations, and the two styles mix freely.
+
+**Detailed Explanation:**
+In Airflow 3 the authoring imports live in `airflow.sdk`: `dag`, `task`, `DAG`, `TaskGroup`, `Asset`, `Variable`, `BaseOperator` and others. Old paths such as `airflow.decorators` are deprecated.
+
+What `@task` gives you:
+- **Implicit dependencies.** `load(transform(extract()))` builds `extract >> transform >> load`.
+- **Implicit XCom.** The return value is pushed as `return_value`. Arguments that are `XComArg`s are resolved before the function runs.
+- **Typed, testable functions.** The business logic is plain Python, and `.function` gives you the raw callable for unit tests (see Q551).
+- **Variants.** `@task.bash`, `@task.branch`, `@task.short_circuit`, `@task.sensor`, `@task.virtualenv`, `@task.docker`, `@task.kubernetes`. Each one wraps the matching operator.
+
+How the two styles talk to each other:
+| From | To | How |
+|---|---|---|
+| Classic operator | TaskFlow | Pass `op.output` (an `XComArg`) |
+| TaskFlow | Classic | Pass the `XComArg` into a templated field, or use `ti.xcom_pull` in Jinja |
+| Either | Either | `>>` / `<<` work on operators and on `XComArg`s |
+
+Calling a decorated function does not run it. Inside the DAG body, `double(3)` only adds a task to the DAG. The body runs at parse time; task code runs on a worker.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 (apache-airflow-providers-standard)
+from datetime import datetime
+from airflow.sdk import dag, task
+from airflow.providers.standard.operators.bash import BashOperator
+from airflow.providers.standard.operators.python import PythonOperator
+
+
+def _count_rows(**context):
+    # classic style: return value is pushed to XCom as "return_value"
+    return 3
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False)
+def mixed_styles():
+    count = PythonOperator(task_id="count_rows", python_callable=_count_rows)
+
+    @task
+    def double(n: int) -> int:          # TaskFlow: args are pulled from XCom for you
+        return n * 2
+
+    notify = BashOperator(
+        task_id="notify",
+        bash_command="echo doubled={{ ti.xcom_pull(task_ids='double') }}",
+    )
+
+    doubled = double(count.output)       # .output is an XComArg for the classic task
+    doubled >> notify                     # XComArg works with >> as well
+
+
+dag_obj = mixed_styles()
+
+if __name__ == "__main__":
+    print(dag_obj.test().state)
+```
+```text
+... Done. Returned value was: 3
+... Done. Returned value was: 6
+... Running command: ['/usr/bin/bash', '-c', 'echo doubled=6']
+success
+```
+
+**Real-World Use Case:**
+A team kept `SQLExecuteQueryOperator` from the provider for its warehouse statements. It wrote the custom business rules, such as parsing vendor files and computing reconciliation totals, as `@task` functions. The rule code got pytest coverage, while the integration code was the tested provider version.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Expecting `result = extract()` to hold real data inside the DAG body.
+- Returning a large DataFrame from `@task`. Return values become XComs (see Q43, Q536).
+- Wrapping `PythonOperator` around a provider hook when a provider operator already exists.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you get the context in a TaskFlow task? — Add `**context` or named arguments such as `ti` and `data_interval_start`, or call `get_current_context()`.
+- How do you return several XComs? — Use `@task(multiple_outputs=True)` with a dict, or a `TypedDict` return annotation (see Q536).
+
+---
+
+### Q511. Operators, hooks and providers: how do they fit together?
+**ID:** AF-03
+**Topic:** Airflow > Operators and Hooks
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `airflow`, `operators`, `hooks`, `providers`
+
+**Short Answer (2–3 lines):**
+A hook knows *how* to talk to an external system. It reads an Airflow connection and returns an authenticated client. An operator defines *what* one task does, and usually calls a hook inside `execute()`. Providers are separately versioned pip packages that ship hooks, operators, sensors, triggers and connection types for a system such as AWS or Snowflake.
+
+**Detailed Explanation:**
+| Layer | Responsibility | Example |
+|---|---|---|
+| Connection | Credentials and endpoint, stored outside code | `snowflake_default` |
+| Hook | Turns a connection into a client; reusable | `S3Hook`, `PostgresHook` |
+| Operator | A unit of work with parameters, templated fields and retries | `S3CopyObjectOperator` |
+| Sensor / Trigger | Waits for a condition (see Q534, Q533) | `S3KeySensor` |
+| Provider | Package that bundles all of the above | `apache-airflow-providers-amazon` |
+
+Key points:
+- Even "core" operators sit in providers in Airflow 3. `BashOperator`, `PythonOperator` and `EmptyOperator` live in `apache-airflow-providers-standard`, so import them from `airflow.providers.standard...`.
+- Providers are released on their own schedule. Pin them in a constraints file, so an upgrade happens on purpose and a rebuild does not change them silently.
+- A custom operator subclasses `BaseOperator` and implements `execute(context)`. Use `template_fields` to choose which attributes Jinja renders. The constructor runs at parse time, so keep it cheap and do I/O only in `execute`.
+- Write a hook when several operators or tasks need the same client logic. Write an operator when a team repeats the same task shape. A plain `@task` that calls the hook is often enough.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+import json
+import os
+from datetime import datetime, timezone
+from airflow.sdk import BaseHook, BaseOperator, dag
+
+# A connection defined as an environment variable (JSON form); in production it
+# would live in a secrets backend. The conn_id is the part after AIRFLOW_CONN_.
+os.environ["AIRFLOW_CONN_INVENTORY_API"] = json.dumps(
+    {"conn_type": "http", "host": "inventory.internal", "login": "svc", "password": "s3cret",
+     "extra": {"page_size": 500}}
+)
+
+
+class InventoryHook(BaseHook):
+    """Hook: knows HOW to talk to the system. Reusable by many operators."""
+
+    def __init__(self, conn_id: str = "inventory_api"):
+        super().__init__()
+        self.conn_id = conn_id
+
+    def get_client_config(self) -> dict:
+        conn = self.get_connection(self.conn_id)
+        return {"base_url": f"https://{conn.host}", "user": conn.login,
+                "page_size": conn.extra_dejson.get("page_size", 100)}
+
+
+class InventorySnapshotOperator(BaseOperator):
+    """Operator: WHAT one task does, using the hook."""
+
+    template_fields = ("snapshot_date",)
+
+    def __init__(self, snapshot_date: str, conn_id: str = "inventory_api", **kwargs):
+        super().__init__(**kwargs)
+        self.snapshot_date = snapshot_date
+        self.conn_id = conn_id
+
+    def execute(self, context):
+        cfg = InventoryHook(self.conn_id).get_client_config()
+        print(f"GET {cfg['base_url']}/snapshot?date={self.snapshot_date} "
+              f"as {cfg['user']} page_size={cfg['page_size']}")
+        return {"date": self.snapshot_date, "rows": 1200}
+
+
+@dag(schedule="@daily", start_date=datetime(2026, 1, 1), catchup=False)
+def inventory_snapshot():
+    InventorySnapshotOperator(task_id="snapshot", snapshot_date="{{ ds }}")
+
+
+dag_obj = inventory_snapshot()
+
+if __name__ == "__main__":
+    print(dag_obj.test(logical_date=datetime(2026, 3, 1, tzinfo=timezone.utc)).state)
+```
+```text
+GET https://inventory.internal/snapshot?date=2026-03-01 as svc page_size=500
+success
+```
+
+**Real-World Use Case:**
+A platform team wrapped its internal data-catalogue API in a hook. It added two operators on top: register a table, and wait for an approval (built as a deferrable operator). It shipped them as an internal provider package with its own version. Dozens of teams used the same code, and a credential rotation only meant changing one connection.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Opening network connections in an operator's `__init__`, which runs at every parse.
+- Hard-coding credentials in the operator instead of using a `conn_id`.
+- Saying "Airflow processes the data". Hooks and operators usually tell another system to do the work.
+
+**Follow-up Questions Interviewers Ask:**
+- What is `template_fields`? — The list of attributes Jinja renders before `execute()` (see Q522).
+- How do you find a provider's version and hooks? — Run `airflow providers list`, `airflow providers hooks`, or check the provider's docs and changelog.
+
+---
+
+### Q512. Connections and Variables: how should DAGs get credentials and configuration?
+**ID:** AF-04
+**Topic:** Airflow > Connections and Variables
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `airflow`, `connections`, `variables`, `configuration`
+
+**Short Answer (2–3 lines):**
+A Connection stores how to reach a system: type, host, login, password, port and JSON extras. Code looks it up by `conn_id`. A Variable is a key/value setting. Both can come from a secrets backend, environment variables (`AIRFLOW_CONN_*`, `AIRFLOW_VAR_*`) or the metadata DB. Read them inside tasks or templates, never in top-level DAG code.
+
+**Detailed Explanation:**
+Lookup order: the secrets backend first, if one is configured (see Q549), then environment variables, then the metadata database. Each environment gets its own values under the same IDs, so one DAG file works in dev, staging and prod.
+
+Ways to read them:
+| Where | Syntax | When it runs |
+|---|---|---|
+| Task code | `Variable.get("k", deserialize_json=True, default=...)` | Task run time |
+| Hook | `self.get_connection(conn_id)` | Task run time |
+| Jinja | `{{ var.value.k }}`, `{{ var.json.k.field }}`, `{{ conn.my_id.host }}` | Rendered just before `execute` |
+| Module top level | `Variable.get(...)` outside a task | **Every parse**: avoid |
+
+In Airflow 3, task code can no longer query the metadata DB. `Variable.get` and `get_connection` in a task go through the Task Execution API (see Q547), or through a secrets backend configured for workers.
+
+Good practice:
+- Keep secrets in a secrets backend and plain settings in Variables or code. Don't store one huge JSON Variable that every DAG reads.
+- Values of connection passwords and of Variables whose names contain words like `password`, `secret` or `token` are masked in task logs. Treat masking as a safety net, not a design.
+- Use one `conn_id` naming convention across environments, for example `warehouse` everywhere, with different values.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+# In real deployments these come from a secrets backend or the UI; env vars keep the demo self-contained.
+import os
+from datetime import datetime
+from airflow.sdk import Variable, dag, task
+from airflow.providers.standard.operators.bash import BashOperator
+
+os.environ["AIRFLOW_VAR_EXPORT_CONFIG"] = '{"region": "eu-west-1", "batch_size": 5000}'
+os.environ["AIRFLOW_CONN_WAREHOUSE"] = "postgres://etl_user:pa55word@wh.internal:5432/analytics"
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False)
+def config_demo():
+    @task
+    def read_config():
+        # Read inside the task (at run time), never at module top level.
+        cfg = Variable.get("export_config", deserialize_json=True)
+        missing = Variable.get("not_set_yet", default="fallback")
+        print("batch_size:", cfg["batch_size"], "| missing:", missing)
+
+    show = BashOperator(
+        task_id="templated",
+        bash_command=(
+            "echo region={{ var.json.export_config.region }} "
+            "host={{ conn.warehouse.host }} schema={{ conn.warehouse.schema }}"
+        ),
+    )
+    read_config() >> show
+
+
+dag_obj = config_demo()
+
+if __name__ == "__main__":
+    print(dag_obj.test().state)
+```
+```text
+batch_size: 5000 | missing: fallback
+... region=eu-west-1 host=wh.internal schema=analytics
+success
+```
+
+**Real-World Use Case:**
+An analytics platform ran dev, staging and prod from the same Git branch. Each environment's secrets backend held a `warehouse` connection pointing at its own database. A DAG promoted to prod needed no code changes, and nobody had to copy credentials into the UI.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Calling `Variable.get` at module level. That is a lookup on every parse, for every file.
+- Putting passwords in Variables or DAG code instead of connections or a secrets backend.
+- Editing connections in the UI when they actually come from a secrets backend. The UI shows only DB-stored values.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you write a connection as an env var? — As a URI (`postgres://user:pw@host:5432/db`) or as JSON in `AIRFLOW_CONN_<ID>`.
+- Can a task change a Variable? — Yes, `Variable.set`, but shared mutable state between runs is a smell. Prefer XCom, assets or the 3.3 task state store.
+
+---
+
+### Q513. How do you declare task dependencies, and what do `chain` and `cross_downstream` do?
+**ID:** AF-05
+**Topic:** Airflow > Task Dependencies
+**Level:** Beginner
+**Frequency:** Common
+**Tags:** `airflow`, `dependencies`, `chain`, `dag-structure`
+
+**Short Answer (2–3 lines):**
+Use `a >> b` (or `b << a`), or pass TaskFlow outputs into other tasks so the edges are implied. `chain()` links a sequence; when it gets two lists of the same length, it pairs them element by element. `cross_downstream()` connects every task in one list to every task in another. `Label` only names an edge in the UI.
+
+**Detailed Explanation:**
+| Pattern | Code | Edges |
+|---|---|---|
+| Linear | `a >> b >> c` | a→b, b→c |
+| Fan-out / fan-in | `a >> [b, c] >> d` | a→b, a→c, b→d, c→d |
+| Pairwise | `chain(a, [b1, b2], [c1, c2])` | a→b1, a→b2, b1→c1, b2→c2 |
+| All-to-all | `cross_downstream([b1, b2], [c1, c2])` | 4 edges |
+| Linear between lists | `chain_linear([a, b], [c, d])` | Each task in a list links to every task in the next list |
+
+Rules interviewers check:
+- `[b, c] >> [d, e]` is a `TypeError`, because Python cannot shift a list by a list. Use `cross_downstream` or `chain_linear`.
+- Dependencies only order tasks. Whether a downstream task runs depends on its **trigger rule** (see Q514).
+- Dependencies cannot cross DAGs. For that, use assets, `TriggerDagRunOperator` or `ExternalTaskSensor` (see Q532).
+- A cycle is caught at parse time and becomes an import error.
+- `setup` and `teardown` tasks add a special kind of relationship (see Q518).
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.sdk import DAG, Label, chain, cross_downstream
+from airflow.providers.standard.operators.empty import EmptyOperator
+
+with DAG("deps_demo", schedule=None, start_date=datetime(2026, 1, 1), catchup=False) as dag:
+    start, end = EmptyOperator(task_id="start"), EmptyOperator(task_id="end")
+    extract = [EmptyOperator(task_id=f"extract_{s}") for s in ("crm", "erp")]
+    clean = [EmptyOperator(task_id=f"clean_{s}") for s in ("crm", "erp")]
+    checks = [EmptyOperator(task_id=f"check_{c}") for c in ("rows", "nulls")]
+    publish = EmptyOperator(task_id="publish")
+
+    # chain() with equal-length lists pairs them element-wise: extract_crm >> clean_crm, ...
+    chain(start, extract, clean)
+    # cross_downstream: every clean task feeds every check task (2 x 2 edges)
+    cross_downstream(clean, checks)
+    # >> with a list fans in; Label only annotates the edge in the UI
+    checks >> Label("all checks passed") >> publish >> end
+
+if __name__ == "__main__":
+    for t in sorted(dag.tasks, key=lambda t: t.task_id):
+        print(f"{t.task_id:12} -> {sorted(t.downstream_task_ids)}")
+```
+```text
+check_nulls  -> ['publish']
+check_rows   -> ['publish']
+clean_crm    -> ['check_nulls', 'check_rows']
+clean_erp    -> ['check_nulls', 'check_rows']
+end          -> []
+extract_crm  -> ['clean_crm']
+extract_erp  -> ['clean_erp']
+publish      -> ['end']
+start        -> ['extract_crm', 'extract_erp']
+```
+
+**Real-World Use Case:**
+A finance pipeline pulled data from two source systems in parallel, cleaned each one, and ran a shared set of quality checks on both. `chain` kept each source's extract and clean tasks paired, and `cross_downstream` made every check wait for every cleaned source. Printing `downstream_task_ids` in a unit test then locked the structure in place.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Writing `[a, b] >> [c, d]` and being surprised by the error.
+- Expecting `chain(a, [b1, b2], [c1, c2, c3])` to work. Adjacent lists must be the same length.
+- Adding edges "just in case". Every extra edge serialises work that could run in parallel.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you test the structure? — Load the DAG and assert on `task.downstream_task_ids` or `dag.task_dict` (see Q550).
+- Do the edges between TaskFlow calls also pass data? — Yes. Passing an output both adds the edge and moves the XCom value. A bare `>>` only orders the tasks.
+
+---
+
+### Q514. What are trigger rules, and which ones do you actually use?
+**ID:** AF-06
+**Topic:** Airflow > Trigger Rules
+**Level:** Intermediate
+**Frequency:** Very Common
+**Tags:** `airflow`, `trigger-rules`, `dependencies`, `failure-handling`
+
+**Short Answer (2–3 lines):**
+A trigger rule decides when a task may run, based on the states of its direct upstream tasks. The default is `all_success`. The everyday alternatives are `all_done` for cleanup, `one_failed` for alerting, and `none_failed_min_one_success` for joining after a branch. A trigger rule only looks at direct parents, not at the whole DAG.
+
+**Detailed Explanation:**
+The rules in Airflow 3.3's `TriggerRule` enum:
+
+| Rule | Runs when direct upstreams… | Typical use |
+|---|---|---|
+| `all_success` (default) | all succeeded | Normal flow |
+| `all_failed` | all failed or upstream_failed | Fallback path |
+| `all_done` | all finished, in any state | Cleanup, audit row |
+| `all_done_min_one_success` | all finished and at least one succeeded (3.1+) | Partial-tolerance join |
+| `all_done_setup_success` | all done and a setup succeeded | Used by teardowns (see Q518) |
+| `one_success` / `one_failed` / `one_done` | as soon as one does so | Race, early alert |
+| `none_failed` | none failed (skips are fine) | Join after optional work |
+| `none_failed_min_one_success` | none failed and at least one succeeded | **Join after a branch** (see Q515) |
+| `none_skipped` | none were skipped | Rare |
+| `all_skipped` | all were skipped | "Nothing happened" handling |
+| `always` | no condition | Use with care |
+
+Two behaviours interviewers probe:
+- **Propagation.** Under `all_success`, a failure upstream marks the child `upstream_failed`, and a skip marks it `skipped`. Each state cascades down until some task's rule accepts it.
+- **DAG run state comes from the leaf tasks.** If the only leaf is an `all_done` cleanup task that succeeds, the run can be marked *success* even though real work failed. Either keep a work task as a leaf or make the cleanup a teardown, because teardowns are ignored when the run's state is worked out.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.sdk import TriggerRule, dag, task
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False)
+def trigger_rules_demo():
+    @task
+    def load_eu():
+        return "ok"
+
+    @task
+    def load_us():
+        raise ValueError("source file missing")
+
+    @task  # default all_success: will not run because load_us failed
+    def build_report():
+        print("report built")
+
+    @task(trigger_rule=TriggerRule.ALL_DONE)  # runs whatever happened upstream
+    def cleanup_tmp():
+        print("temp files removed")
+
+    @task(trigger_rule=TriggerRule.ONE_FAILED)  # runs as soon as any upstream fails
+    def page_on_call():
+        print("paging on-call")
+
+    loads = [load_eu(), load_us()]
+    loads >> build_report()
+    loads >> cleanup_tmp()
+    loads >> page_on_call()
+
+
+dag_obj = trigger_rules_demo()
+
+if __name__ == "__main__":
+    run = dag_obj.test()
+    for ti in sorted(run.get_task_instances(), key=lambda t: t.task_id):
+        print(f"{ti.task_id:14} {ti.state}")
+    print("dag run:", run.state)
+```
+```text
+temp files removed
+paging on-call
+build_report   upstream_failed
+cleanup_tmp    success
+load_eu        success
+load_us        failed
+page_on_call   success
+dag run: failed
+```
+
+**Real-World Use Case:**
+A nightly job ended in a single `all_done` task that dropped staging tables. For weeks the runs showed green while the load step was failing, because that cleanup task was the only leaf and it succeeded. The team turned the cleanup into a teardown and added a `one_failed` alert task. After that, the failures showed up the same night.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Leaving the join after a branch on the default rule, so it is always skipped.
+- Using `always` or `all_done` on tasks that need correct upstream data.
+- Assuming a trigger rule can look at tasks that are not direct parents.
+
+**Follow-up Questions Interviewers Ask:**
+- What is the difference between `none_failed` and `none_failed_min_one_success`? — The second also requires at least one success, so it won't run when every upstream was skipped.
+- How do you alert on failure without a task? — Use `on_failure_callback` or a notifier (see Q542).
+
+---
+
+### Q515. How does branching work in Airflow, and why is the join task often skipped?
+**ID:** AF-07
+**Topic:** Airflow > Branching
+**Level:** Intermediate
+**Frequency:** Very Common
+**Tags:** `airflow`, `branching`, `trigger-rules`, `taskflow`
+
+**Short Answer (2–3 lines):**
+A branch task (`@task.branch` or `BranchPythonOperator`) returns the task_id, or list of task_ids, to follow. Airflow skips its other direct downstream tasks. The skip then spreads: a join task on the default `all_success` rule sees a skipped parent and is skipped too. Give the join `none_failed_min_one_success`.
+
+**Detailed Explanation:**
+How it works:
+1. The branch callable runs and returns `"a"`, `["a", "b"]`, or `None`/`[]`. Returning nothing skips every direct downstream task.
+2. Every task directly downstream of the branch that was not chosen is set to `skipped`.
+3. Each later task applies its own trigger rule to its parents' states (see Q514).
+
+Variants:
+| Need | Tool |
+|---|---|
+| Choose a path in Python | `@task.branch` |
+| Choose by SQL result | `BranchSQLOperator` (common-sql provider) |
+| Choose by time of day or weekday | `BranchDateTimeOperator`, `BranchDayOfWeekOperator` |
+| Reusable custom logic | Subclass `BaseBranchOperator` and implement `choose_branch` |
+| Just stop or continue | `@task.short_circuit` (see Q516) |
+
+Design rules:
+- **Branch on run metadata**, such as `data_interval_start`, `params` or upstream XComs, not on `datetime.now()`. A rerun next week must take the same path.
+- Return task_ids that are **direct** downstream tasks. Inside a task group, use the full id, such as `"group.task"`.
+- Keep the branch cheap. A heavy check belongs in an upstream task whose result the branch reads.
+- If the branches build the same output in different ways, think about one task with a parameter instead. Branches add a lot of skipped boxes to the grid.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime, timezone
+from airflow.sdk import TriggerRule, dag, task
+
+
+@dag(schedule="@daily", start_date=datetime(2026, 1, 1), catchup=False)
+def branch_by_day():
+    @task.branch
+    def choose_load(**context) -> str:
+        # Branch on run metadata, not on wall-clock time, so reruns pick the same path.
+        is_month_start = context["data_interval_start"].day == 1
+        return "full_reload" if is_month_start else "incremental_load"
+
+    @task
+    def full_reload():
+        print("rebuilding whole table")
+
+    @task
+    def incremental_load():
+        print("merging one day")
+
+    # Without this trigger rule the join would be skipped along with the unchosen branch.
+    @task(trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS)
+    def refresh_dashboard():
+        print("dashboard refreshed")
+
+    choose_load() >> [full_reload(), incremental_load()] >> refresh_dashboard()
+
+
+dag_obj = branch_by_day()
+
+if __name__ == "__main__":
+    for day in (1, 2):
+        run = dag_obj.test(logical_date=datetime(2026, 3, day, tzinfo=timezone.utc))
+        states = {ti.task_id: ti.state for ti in run.get_task_instances()}
+        print(f"2026-03-0{day}:", dict(sorted(states.items())))
+```
+```text
+2026-03-01: {'choose_load': 'success', 'full_reload': 'success', 'incremental_load': 'skipped', 'refresh_dashboard': 'success'}
+2026-03-02: {'choose_load': 'success', 'full_reload': 'skipped', 'incremental_load': 'success', 'refresh_dashboard': 'success'}
+```
+
+**Real-World Use Case:**
+A subscription-metrics DAG fully rebuilt its churn table on the first day of each month and merged one day on the other days. Because the branch read `data_interval_start`, a backfill of last quarter took the full-reload path on exactly the right three dates.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Forgetting the join's trigger rule, then "fixing" it with `all_done`, which also runs after a failure.
+- Branching on `datetime.now()` or on a Variable someone edits, which makes reruns take a different path.
+- Returning a task_id that is not a direct child of the branch task.
+
+**Follow-up Questions Interviewers Ask:**
+- Can a branch pick several paths? — Yes. Return a list of task_ids.
+- Branch or dynamic task mapping? — Branch picks from a fixed set of paths. Mapping runs one task over a variable number of inputs (see Q519).
+
+---
+
+### Q516. Short-circuit, branch or `AirflowSkipException`: how do you skip work cleanly?
+**ID:** AF-08
+**Topic:** Airflow > Skipping Tasks
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `airflow`, `short-circuit`, `skip`, `trigger-rules`
+
+**Short Answer (2–3 lines):**
+`@task.short_circuit` skips downstream tasks when its function returns a falsy value; it is a stop-or-continue gate. A branch chooses between paths. Raising `AirflowSkipException` inside a task marks only that task as skipped. By default a short-circuit skips *all* downstream tasks and ignores their trigger rules. Set `ignore_downstream_trigger_rules=False` to skip only the direct children.
+
+**Detailed Explanation:**
+| Tool | Effect | Use when |
+|---|---|---|
+| `@task.short_circuit` (default) | Falsy result → every downstream task skipped, trigger rules ignored | "No new data today, stop here" |
+| `@task.short_circuit(ignore_downstream_trigger_rules=False)` | Direct children skipped; tasks further down apply their own rules | An audit or cleanup task must still run |
+| `@task.branch` | Unchosen direct children skipped | Choosing between paths (see Q515) |
+| `raise AirflowSkipException(...)` | This task becomes `skipped`; children follow their rules | Feature flag, an optional export, a tenant opt-out |
+| `raise AirflowFailException(...)` | Fails at once, with no retries | Bad input that retrying won't fix |
+
+Points to make:
+- A skip is not a failure. A DAG run whose leaves are all `success` or `skipped` counts as successful. Make sure "no data" really is fine; sometimes it should be an alert instead.
+- A short-circuit that runs before a sensor saves the waiting time as well as the work.
+- `on_skipped_callback` fires only when a task raises `AirflowSkipException` while running. It does not fire for tasks skipped by a branch or a trigger rule.
+- In Airflow 3, import task exceptions from `airflow.sdk.exceptions`.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.sdk import TriggerRule, dag, task
+from airflow.sdk.exceptions import AirflowSkipException
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False)
+def short_circuit_demo():
+    @task
+    def count_new_rows() -> int:
+        return 0                      # nothing arrived today
+
+    # False/falsy return -> skip downstream. ignore_downstream_trigger_rules=False
+    # skips only direct downstream tasks and lets the others apply their own trigger rules.
+    @task.short_circuit(ignore_downstream_trigger_rules=False)
+    def has_new_rows(n: int) -> bool:
+        return n > 0
+
+    @task
+    def transform():
+        print("transforming")
+
+    @task(trigger_rule=TriggerRule.ALL_DONE)
+    def write_audit_row():
+        print("audit row written")       # still runs: it has its own trigger rule
+
+    @task
+    def optional_export():
+        if True:                          # e.g. feature flag off for this tenant
+            raise AirflowSkipException("export disabled for this tenant")
+
+    gate = has_new_rows(count_new_rows())
+    gate >> transform() >> write_audit_row()
+    optional_export()
+
+
+dag_obj = short_circuit_demo()
+
+if __name__ == "__main__":
+    run = dag_obj.test()
+    for ti in sorted(run.get_task_instances(), key=lambda t: t.task_id):
+        print(f"{ti.task_id:16} {ti.state}")
+    print("dag run:", run.state)
+```
+```text
+audit row written
+count_new_rows   success
+has_new_rows     success
+optional_export  skipped
+transform        skipped
+write_audit_row  success
+dag run: success
+```
+With the default `ignore_downstream_trigger_rules=True`, the same run also marks `write_audit_row` as `skipped`.
+
+**Real-World Use Case:**
+A partner-feed DAG ran every hour, but the partner only published a few times a day. A short-circuit on "new manifest present" cut the run to two cheap tasks on most hours. The `ignore_downstream_trigger_rules=False` setting kept the audit-log task running, so operators could see each empty hour in the audit table.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Expecting a downstream `all_done` task to run after a default short-circuit.
+- Using a skip to hide errors. If the data should have arrived, fail or alert.
+- Catching every exception and turning it into `AirflowSkipException`.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you skip one mapped instance? — Raise `AirflowSkipException` inside it. Only that map index is skipped.
+- What does `AirflowFailException` do differently? — It fails the task without using the remaining retries.
+
+---
+
+### Q517. What are task groups, and why did they replace SubDAGs?
+**ID:** AF-09
+**Topic:** Airflow > Task Groups
+**Level:** Beginner
+**Frequency:** Common
+**Tags:** `airflow`, `task-groups`, `dag-structure`, `reuse`
+
+**Short Answer (2–3 lines):**
+A task group is a UI and authoring container. It folds related tasks into one collapsible box and prefixes their ids, as in `ingest_crm.load`. It does not change scheduling, so the tasks stay in the same DAG and run with the same executor and concurrency. SubDAGs ran a separate DAG with its own scheduling and deadlock problems, and they were removed in Airflow 3.0.
+
+**Detailed Explanation:**
+What task groups give you:
+- **Reuse.** A `@task_group` function is a template. Call it once per source with `.override(group_id=...)` to stamp out identical pipelines.
+- **Group-level `default_args`.** For example, give everything in the ingest group `retries=2`.
+- **Dependencies on the whole group.** `group_a >> group_b` connects group_a's leaf tasks to group_b's root tasks.
+- **Readable graphs.** Fifty tasks become five boxes.
+- **Mapping.** A task group can be mapped with `expand()` to repeat a whole sub-pipeline per input (see Q520).
+
+What they don't do:
+- They add no separate concurrency limit or pool. Use pools (see Q537) or `max_active_tis_per_dagrun`.
+- They don't isolate failures. A failure inside a group propagates like any other.
+- `prefix_group_id=False` removes the prefix, but then task_ids must be unique across the whole DAG.
+
+SubDAGs versus task groups:
+| | SubDAG (removed in 3.0) | Task group |
+|---|---|---|
+| Scheduling | Separate DAG run | Same DAG run |
+| Concurrency issues | Could deadlock the worker slots | None |
+| UI | Separate view | Collapsible in the graph |
+| Status in 3.x | Gone | Recommended |
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.sdk import dag, task, task_group
+
+
+@task
+def extract(source: str) -> str:
+    return f"s3://raw/{source}/"
+
+@task
+def validate(path: str) -> str:
+    return path
+
+@task
+def load(path: str) -> None:
+    print("loading", path)
+
+
+@task_group(default_args={"retries": 2})       # group-level defaults apply to its tasks
+def ingest(source: str):
+    load(validate(extract(source)))
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False)
+def ingest_sources():
+    @task
+    def publish():
+        print("all sources loaded")
+
+    groups = [ingest.override(group_id=f"ingest_{s}")(s) for s in ("crm", "billing")]
+    groups >> publish()
+
+
+dag_obj = ingest_sources()
+
+if __name__ == "__main__":
+    print(sorted(dag_obj.task_ids))
+    print("retries:", dag_obj.get_task("ingest_crm.load").retries)
+    print("publish upstream:", sorted(dag_obj.get_task("publish").upstream_task_ids))
+    print(dag_obj.test().state)
+```
+```text
+['ingest_billing.extract', 'ingest_billing.load', 'ingest_billing.validate', 'ingest_crm.extract', 'ingest_crm.load', 'ingest_crm.validate', 'publish']
+retries: 2
+publish upstream: ['ingest_billing.load', 'ingest_crm.load']
+loading s3://raw/billing/
+loading s3://raw/crm/
+success
+```
+
+**Real-World Use Case:**
+A marketing-data team pulled from six ad platforms, all with the same extract, validate and load shape. One `@task_group` function, called once per platform from a config list, replaced six copied blocks. A fix to validation now reached every platform in one change.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Expecting a task group to limit concurrency or retry as a unit.
+- Using a short task id in a branch's return value when the task lives inside a group.
+- Calling task groups "SubDAGs" or proposing SubDAGs in Airflow 3.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you retry a whole group? — Clear the group's tasks in the UI. Clearing a task can also clear its downstream tasks, and setup/teardown pairs inside it (see Q518).
+- Task group or separate DAG? — Use a separate DAG when the part has its own schedule, owner or SLA, and link it with assets (see Q528).
+
+---
+
+### Q518. What are setup and teardown tasks, and how are they different from an `all_done` cleanup?
+**ID:** AF-10
+**Topic:** Airflow > Setup and Teardown
+**Level:** Intermediate
+**Frequency:** Occasional
+**Tags:** `airflow`, `setup-teardown`, `resources`, `cleanup`
+
+**Short Answer (2–3 lines):**
+Setup and teardown tasks wrap work that needs a temporary resource, such as an ephemeral cluster, a temp schema or a lock. The teardown runs even when the work fails, as long as its setup succeeded. Teardowns are ignored when the DAG run's state is worked out. Clearing a work task also clears its setup and teardown, so a rerun gets a fresh resource.
+
+**Detailed Explanation:**
+Mark tasks with `@setup` / `@teardown`, or call `.as_setup()` / `.as_teardown(setups=...)` on existing operators. The tasks between a pair are in its **scope**.
+
+Why this beats a plain cleanup task with `trigger_rule="all_done"`:
+
+| Concern | `all_done` cleanup | Setup/teardown |
+|---|---|---|
+| Runs after a work failure | Yes | Yes |
+| Runs if the resource was never created | Yes (and may error) | No. The fixed rule `all_done_setup_success` needs a setup to have succeeded |
+| Effect on DAG run state | Can turn a failed run green when it is the leaf | Ignored by default; set `on_failure_fail_dagrun=True` to count it |
+| Clearing one work task | Doesn't recreate the resource | Clears its setup and teardown as well |
+| Graph | Ordinary edge | Dotted setup/teardown edge |
+
+Rules:
+- A teardown's trigger rule cannot be changed.
+- Every task in a setup's scope implicitly needs that setup to succeed.
+- Setups and teardowns can be attached to a whole task group, which gives the group a clear lifecycle.
+- They are tasks, so they use worker slots and honour retries. Keep teardowns idempotent ("delete if exists"), because they may run twice.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.sdk import dag, setup, task, teardown
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False)
+def ephemeral_cluster():
+    @setup
+    def create_cluster() -> str:
+        print("cluster created")
+        return "cluster-42"
+
+    @task
+    def run_job(cluster_id: str):
+        raise RuntimeError(f"job failed on {cluster_id}")
+
+    @task
+    def publish():
+        print("published")
+
+    @teardown
+    def delete_cluster(cluster_id: str):
+        print(f"deleted {cluster_id}")       # runs even though run_job failed
+
+    cluster = create_cluster()
+    job = run_job(cluster)
+    job >> publish()
+    # as_teardown links the setup to the teardown; the work in between is "in scope"
+    job >> delete_cluster(cluster).as_teardown(setups=cluster)
+
+
+dag_obj = ephemeral_cluster()
+
+if __name__ == "__main__":
+    run = dag_obj.test()
+    for ti in sorted(run.get_task_instances(), key=lambda t: t.task_id):
+        print(f"{ti.task_id:15} {ti.state}")
+    print("dag run:", run.state)
+```
+```text
+cluster created
+deleted cluster-42
+create_cluster  success
+delete_cluster  success
+publish         upstream_failed
+run_job         failed
+dag run: failed
+```
+
+**Real-World Use Case:**
+A team spun up a short-lived Spark cluster for each nightly run. Before setup/teardown, a failed job left the cluster running until someone noticed it on the bill. After the change, the delete always ran. Clearing the failed job also created a new cluster, instead of trying to reuse the one that had been deleted.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Using `all_done` for cleanup and then wondering why failed runs show green.
+- Writing a teardown that fails if the resource is already gone.
+- Expecting teardown failures to fail the run without `on_failure_fail_dagrun=True`.
+
+**Follow-up Questions Interviewers Ask:**
+- What happens if the setup fails? — The work tasks become `upstream_failed`, and the teardown does not run, because no setup succeeded.
+- Can one teardown serve several setups? — Yes. Pass a list to `as_teardown(setups=[...])`.
+
+---
+
+### Q519. How do `partial()` and `expand()` work in dynamic task mapping, and what is a map index?
+**ID:** AF-11
+**Topic:** Airflow > Dynamic Task Mapping
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `airflow`, `dynamic-task-mapping`, `expand`, `map-index`
+
+**Short Answer (2–3 lines):**
+`expand()` creates one task instance per element of a list or dict, and the list can come from an upstream task at run time. `partial()` sets the arguments that stay the same for every copy. Each copy gets a `map_index` (0, 1, 2…), and a downstream task that takes the mapped output receives every result as a lazy sequence.
+
+**Detailed Explanation:**
+Mapping happens at **run time**. The DAG file says "one copy of `export` per region", and the scheduler creates the copies after `list_regions` has pushed its list. The DAG's shape stays fixed, so parsing stays fast (compare Q521).
+
+The building blocks:
+| API | Effect |
+|---|---|
+| `.partial(fmt="parquet")` | Constant arguments, plus task settings such as `retries` or `pool` |
+| `.expand(region=[...])` | One instance per element. Several expand arguments give a **cross product** |
+| `.expand_kwargs([{...}, {...}])` | One instance per dict: explicit pairs, no cross product |
+| `xcom_arg.zip(other)` | Pair two lists by position before expanding |
+| `map_index_template="{{ ... }}"` | Human-readable label in the UI instead of 0/1/2 |
+
+Behaviour to remember:
+- An **empty list** creates no instances, and the mapped task is marked `skipped`.
+- The downstream "reduce" task gets a `LazySelectSequence`. Iterate it or call `list()` on it once; don't index into it over and over.
+- `[core] max_map_length` (1024 by default) caps the number of instances. Cap concurrency with `max_active_tis_per_dag` or `max_active_tis_per_dagrun`.
+- Each instance retries, fails and can be cleared on its own. You can rerun index 2 without touching 0 and 1.
+- Only arguments that are mapped can vary per instance. Task settings such as `retries`, `pool` and `queue` go in `partial()` and apply to all instances.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.sdk import dag, task
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False)
+def mapping_basics():
+    @task
+    def list_regions() -> list[str]:
+        return ["eu", "us", "apac"]          # decided at run time, not parse time
+
+    # partial(): constant for every copy. expand(): one copy per element.
+    @task(map_index_template="{{ task.op_kwargs['region'] }}")   # nicer UI label than 0/1/2
+    def export(region: str, fmt: str) -> int:
+        rows = {"eu": 120, "us": 300, "apac": 80}[region]
+        print(f"export {region} as {fmt}: {rows} rows")
+        return rows
+
+    @task
+    def total(counts) -> None:                # receives a lazy sequence of all results
+        print("total rows:", sum(counts))
+
+    counts = export.partial(fmt="parquet").expand(region=list_regions())
+    total(counts)
+
+    # expand over two lists = cross product; expand_kwargs = explicit pairs
+    @task
+    def copy(src: str, dst: str):
+        print(f"copy {src} -> {dst}")
+
+    copy.expand_kwargs([{"src": "a.csv", "dst": "bronze/a"}, {"src": "b.csv", "dst": "bronze/b"}])
+
+
+dag_obj = mapping_basics()
+
+if __name__ == "__main__":
+    run = dag_obj.test()
+    print(sorted((ti.task_id, ti.map_index, ti.rendered_map_index) for ti in run.get_task_instances()
+                 if ti.map_index >= 0))
+    print(run.state)
+```
+```text
+copy a.csv -> bronze/a
+copy b.csv -> bronze/b
+export us as parquet: 300 rows
+export apac as parquet: 80 rows
+export eu as parquet: 120 rows
+total rows: 500
+[('copy', 0, '0'), ('copy', 1, '1'), ('export', 0, 'eu'), ('export', 1, 'us'), ('export', 2, 'apac')]
+success
+```
+
+**Real-World Use Case:**
+A logistics company got between 3 and 40 carrier files a day. One mapped `load_file` task replaced a nightly job that had looped over the files inside a single task. A bad file now failed only its own map index. The on-call engineer fixed the file and cleared that one instance, and the other loads kept their results. (For choosing between mapping and other designs for this case, see the site's guide on processing a variable number of files.)
+
+**Common Mistakes / Interviewer Red Flags:**
+- Passing two lists to `expand()` and expecting them to be zipped. You get a cross product.
+- Listing files at parse time to build tasks, which runs on every parse.
+- Mapping over 50,000 tiny items. Batch them into chunks first, because every instance carries scheduling overhead.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you pull one instance's XCom? — `ti.xcom_pull(task_ids="export", map_indexes=1)`.
+- Can classic operators be mapped? — Yes, for example `BashOperator.partial(task_id="x").expand(bash_command=[...])`.
+
+---
+
+### Q520. How do you map a whole task group, filter inputs and limit fan-out?
+**ID:** AF-12
+**Topic:** Airflow > Dynamic Task Mapping
+**Level:** Advanced
+**Frequency:** Common
+**Tags:** `airflow`, `dynamic-task-mapping`, `task-groups`, `concurrency`
+
+**Short Answer (2–3 lines):**
+Call `.expand()` on a `@task_group` function, and Airflow creates a copy of the whole sub-pipeline for each input. Copies run depth-first, so each item's second step can start as soon as that item's first step finishes. Shape inputs with an upstream filter task, `XComArg.map()` or `.zip()`. Use `max_active_tis_per_dagrun` and pools so a thousand-way fan-out doesn't take every worker slot.
+
+**Detailed Explanation:**
+**Mapped task groups.** `process.expand(file=files)` maps every task in the group with the same index. `process.validate[2]` therefore belongs to `process.parse[2]`. A downstream task that depends on the group's return value receives every copy's result.
+
+**Shaping the input.**
+| Tool | Runs as | Use for |
+|---|---|---|
+| Filter task returning a shorter list | A real task | Dropping items based on data |
+| A mapped task returning `None` for an element | A real task | That element is left out of the next expansion |
+| `xcom_arg.map(fn)` | Pre-processing inside the downstream task, not a separate task | Reshaping each element, such as building kwargs. `fn` must be a plain function; raise `AirflowSkipException` in it to skip one element, because returning `None` does not work |
+| `a.zip(b)` / `a.concat(b)` | Pre-processing | Pairing or joining lists |
+
+**Limits and back-pressure.**
+- `[core] max_map_length` (1024 by default) is a hard ceiling. If an upstream task returns a longer list, *that upstream task* fails when it pushes the XCom, and the mapped task becomes `upstream_failed`. Chunk the input upstream.
+- `max_active_tis_per_dagrun` limits running copies within one run. `max_active_tis_per_dag` limits them across all runs.
+- A pool (see Q537) protects a shared external system across DAGs.
+- Each instance is a full task: it is scheduled, logged and has its own XCom. Ten thousand instances can slow the scheduler and the UI. Batching 100 items per instance is often better.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.sdk import dag, task, task_group
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False)
+def mapped_groups():
+    @task
+    def list_files() -> list[str]:
+        return ["orders_1.csv", "orders_2.csv", "README.txt", "orders_3.csv"]
+
+    # .map() transforms each element lazily without an extra task; returning None is not
+    # allowed, so filtering is done in a real task instead.
+    @task
+    def only_csv(files: list[str]) -> list[str]:
+        return [f for f in files if f.endswith(".csv")]
+
+    @task_group
+    def process(file: str):
+        @task(max_active_tis_per_dagrun=2)        # at most 2 copies of this task at once
+        def parse(file: str) -> dict:
+            return {"file": file, "rows": len(file) * 10}
+
+        @task
+        def validate(stats: dict) -> dict:
+            if stats["rows"] <= 0:
+                raise ValueError(f"empty file {stats['file']}")
+            return stats
+
+        return validate(parse(file))
+
+    @task
+    def summarise(results) -> None:
+        results = list(results)                   # materialise the lazy sequence once
+        print(f"{len(results)} files, {sum(r['rows'] for r in results)} rows")
+
+    csv_files = only_csv(list_files())
+    upper = csv_files.map(lambda f: f.upper())    # map() on an XComArg: no new task
+    summarise(process.expand(file=upper))
+
+
+dag_obj = mapped_groups()
+
+if __name__ == "__main__":
+    run = dag_obj.test()
+    mapped = sorted({(ti.task_id, ti.map_index) for ti in run.get_task_instances() if ti.map_index >= 0})
+    print(mapped)
+    print(run.state)
+```
+```text
+3 files, 360 rows
+[('process.parse', 0), ('process.parse', 1), ('process.parse', 2), ('process.validate', 0), ('process.validate', 1), ('process.validate', 2)]
+success
+```
+
+**Real-World Use Case:**
+A media company processed each partner's daily delivery with download, virus-scan and load steps. They mapped a task group over the partner list and set `max_active_tis_per_dagrun=5` on the download step, because the partners' SFTP servers throttled them. A slow partner no longer held up the others, since each copy moved to its next step on its own.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Passing an Airflow task to `.map()`. It must be a plain function.
+- Assuming Airflow truncates a list longer than `max_map_length`. It fails the task that produced the list.
+- Calling `list()` on the lazy sequence many times inside a loop, which pulls every XCom each time.
+
+**Follow-up Questions Interviewers Ask:**
+- Can you branch inside a mapped task group? — Yes. The branch result applies per map index, so the chosen task_ids must be inside the group.
+- How do you rerun only failed items? — Clear the failed map indexes. Successful copies keep their state and XComs.
+
+---
+
+### Q521. Generating many DAGs from config vs dynamic task mapping: when do you use each?
+**ID:** AF-13
+**Topic:** Airflow > Dynamic DAGs
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `airflow`, `dynamic-dags`, `dag-factory`, `parsing`
+
+**Short Answer (2–3 lines):**
+Generate separate DAGs when units need their own schedule, owner, permissions or history, for example one DAG per tenant. Use dynamic task mapping when the number of items changes from run to run inside one pipeline. When you generate DAGs, the config must be static and cheap to read at parse time, and `get_parsing_context()` lets workers skip building DAGs they don't need.
+
+**Detailed Explanation:**
+| Question | Many generated DAGs | One DAG with mapping |
+|---|---|---|
+| Different schedules or SLAs per unit? | Yes | No |
+| Separate pause, permissions or tags? | Yes | No |
+| Count changes run to run? | Awkward: the DAG list changes | Natural |
+| Parse cost | Grows with the number of DAGs | Constant |
+| Where the item list comes from | Parse time: a YAML/JSON file in the bundle | Run time: an upstream task |
+
+Rules for DAG factories:
+- **The config travels with the code.** Use a YAML file in the bundle, not a database query or an API call. Parse-time I/O runs every 30 seconds or so, and if it fails, DAGs disappear.
+- **Use a plain builder function** that takes Python values and returns a `DAG`. Arguments of an `@dag`-decorated function become DAG **params**, not Python values. Passing a list that way and then calling `.expand()` on it fails at parse time with `expand() got an unexpected type 'DagParam'`.
+- **Keep dag_ids stable.** Renaming a generated id orphans its history.
+- **`get_parsing_context().dag_id`** is set when a worker parses the file to run one task. Skipping the other DAGs then speeds up task start. The DAG processor leaves it as `None` and builds all of them.
+- Libraries such as DAG Factory build DAGs from YAML. They are useful for platform teams, but they still parse as Python.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+# One file -> one DAG per tenant. The config is a static file shipped with the code,
+# so parsing stays fast and deterministic (no API or DB calls at top level).
+from datetime import datetime
+from airflow.sdk import DAG, get_parsing_context, task
+
+TENANTS = {                       # in practice: yaml.safe_load(open(".../tenants.yaml"))
+    "acme":   {"schedule": "0 2 * * *", "tables": ["orders", "invoices"]},
+    "globex": {"schedule": "30 3 * * *", "tables": ["orders"]},
+}
+
+
+def build_dag(tenant: str, cfg: dict) -> DAG:
+    # A plain builder function: arguments of an @dag-decorated function would
+    # become DAG params instead of Python values.
+    with DAG(dag_id=f"export_{tenant}", schedule=cfg["schedule"], start_date=datetime(2026, 1, 1),
+             catchup=False, tags=["export", tenant]) as d:
+        @task
+        def export_table(table: str):
+            print(f"exporting {tenant}.{table}")
+
+        export_table.expand(table=cfg["tables"])
+    return d
+
+
+# A worker running one task sets the parsing context, so it can skip the other DAGs.
+# The DAG processor leaves it unset and builds all of them.
+current = get_parsing_context().dag_id
+for tenant, cfg in TENANTS.items():
+    if current is None or current == f"export_{tenant}":
+        build_dag(tenant, cfg)       # a DAG created at module level is registered
+```
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 — check script outside the DAG folder
+from airflow.dag_processing.dagbag import DagBag
+bag = DagBag(dag_folder="dags")
+for dag_id in sorted(bag.dag_ids):
+    d = bag.get_dag(dag_id)
+    print(dag_id, type(d.timetable).__name__, repr(d.timetable.expression), sorted(d.tags))
+print("errors:", bag.import_errors)
+```
+```text
+export_acme CronTriggerTimetable '0 2 * * *' ['acme', 'export']
+export_globex CronTriggerTimetable '30 3 * * *' ['export', 'globex']
+errors: {}
+```
+
+**Real-World Use Case:**
+A B2B SaaS company ran one export DAG per customer, generated from a `tenants.yaml` file kept in the DAG repo. Each customer had its own schedule in its own time zone, and support staff could pause a single customer's DAG. Inside each DAG, the tables were mapped, because the table list changed whenever a customer enabled a module.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Building the DAG list from a database query at parse time.
+- Generating thousands of near-identical DAGs where one mapped DAG would do.
+- Changing dag_ids on every deploy, for example by including a version or date in them.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you test a factory? — Load the DagBag in CI, assert the expected dag_ids, and check that there are no import errors (see Q550).
+- What happens when a tenant is removed from the YAML? — Its DAG stops being parsed and is marked stale. Its history stays in the DB until someone deletes it.
+
+---
+
+### Q522. How does Jinja templating work in Airflow, and which macros should you know?
+**ID:** AF-14
+**Topic:** Airflow > Templating and Macros
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `airflow`, `jinja`, `macros`, `templating`
+
+**Short Answer (2–3 lines):**
+Attributes listed in an operator's `template_fields` are rendered with Jinja on the worker, just before `execute()`. The run's context is available: `ds`, `data_interval_start`, `logical_date`, `run_id`, `params`, `var`, `conn`, `macros` and more. Templates are how one DAG file processes a different date in every run without changing any code.
+
+**Detailed Explanation:**
+- **What is templated:** only the fields named in `template_fields`, such as `bash_command` or `sql`. A string ending in a `template_ext` extension like `.sql` is loaded as a template file, searched under the DAG folder and `template_searchpath`.
+- **When:** at task run time on the worker. The DAG file only holds the template string, so `{{ ds }}` costs nothing at parse time.
+- **TaskFlow:** name context keys as function arguments (`ds=None`, `data_interval_start=None`), or call `get_current_context()`. You don't need Jinja inside Python.
+
+Context and macros used most:
+| Expression | Value |
+|---|---|
+| `{{ ds }}` / `{{ ds_nodash }}` | Logical date as `YYYY-MM-DD` / `YYYYMMDD` |
+| `{{ data_interval_start }}`, `{{ data_interval_end }}` | Pendulum datetimes for the run's interval |
+| `{{ data_interval_end \| ds }}` | Filters format datetimes (`ds`, `ds_nodash`, `ts`) |
+| `{{ macros.ds_add(ds, -7) }}` | Date arithmetic on `ds` strings |
+| `{{ macros.ds_format(ds, "%Y-%m-%d", "%d/%m/%Y") }}` | Reformat a date string |
+| `{{ params.region }}` | Run parameters (see Q523) |
+| `{{ var.value.k }}`, `{{ conn.id.host }}` | Variables and connections (see Q512) |
+
+Airflow 3 removed the old keys `execution_date`, `next_ds`, `prev_ds`, `yesterday_ds` and `tomorrow_ds`. Use `logical_date` and the `data_interval_*` keys, plus `macros.ds_add` when you need date arithmetic. Templates render to strings by default. Set `render_template_as_native_obj=True` on the DAG, or on a single operator since 3.2, to get Python lists and dicts back.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime, timezone
+from airflow.sdk import dag, task
+from airflow.providers.standard.operators.bash import BashOperator
+
+
+def fiscal_quarter(d) -> str:              # a custom macro: plain Python
+    return f"FY{d.year}Q{(d.month - 1) // 3 + 1}"
+
+
+@dag(
+    schedule="0 6 * * *",
+    start_date=datetime(2026, 1, 1),
+    catchup=False,
+    user_defined_macros={"fiscal_quarter": fiscal_quarter},
+)
+def templating_demo():
+    BashOperator(
+        task_id="export",
+        # Rendered on the worker just before execute(); the DAG file only holds the string.
+        bash_command=(
+            "echo ds={{ ds }} "
+            "start={{ data_interval_start | ds }} "
+            "week_ago={{ macros.ds_add(ds, -7) }} "
+            "compact={{ ds_nodash }} "
+            "fq={{ fiscal_quarter(data_interval_start) }} "
+            "run={{ run_id }}"
+        ),
+    )
+
+    @task
+    def show_context(ds=None, data_interval_start=None, data_interval_end=None):
+        # TaskFlow: name the context keys you need as arguments
+        print("ds:", ds, "| interval:", data_interval_start, "->", data_interval_end)
+
+    @task
+    def removed_keys(**context):
+        print("has yesterday_ds:", "yesterday_ds" in context, "| has execution_date:", "execution_date" in context)
+
+    show_context() >> removed_keys()
+
+
+dag_obj = templating_demo()
+
+if __name__ == "__main__":
+    print(dag_obj.test(logical_date=datetime(2026, 5, 20, 6, tzinfo=timezone.utc)).state)
+```
+```text
+ds: 2026-05-20 | interval: 2026-05-20 06:00:00+00:00 -> 2026-05-20 06:00:00+00:00
+... ds=2026-05-20 start=2026-05-20 week_ago=2026-05-13 compact=20260520 fq=FY2026Q2 run=manual__2026-10-17T13:42:04.945864+00:00
+has yesterday_ds: False | has execution_date: False
+success
+```
+The interval has zero length because a cron string in Airflow 3 uses `CronTriggerTimetable` by default (see Q525).
+
+**Real-World Use Case:**
+A warehouse load used `sql="sql/load_orders.sql"`, and the SQL file filtered on `'{{ data_interval_start }}' <= order_ts AND order_ts < '{{ data_interval_end }}'`. Clearing any past run reloaded exactly that window. The team reviewed the rendered SQL in the UI's "Rendered Template" tab before running backfills.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Using `{{ ds }}` in a field that isn't in `template_fields`, which leaves the literal braces in the output.
+- Building dates with `datetime.now()` in Python instead of using the run's interval.
+- Using removed 2.x keys such as `execution_date` or `yesterday_ds` in Airflow 3.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you template a field on a custom operator? — Add its attribute name to `template_fields` (see Q511).
+- Where do you see the rendered values? — The task instance's Rendered Template view, or `airflow tasks render`.
+
+---
+
+### Q523. How do Params work, and how do you trigger a DAG with validated inputs?
+**ID:** AF-15
+**Topic:** Airflow > Params
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `airflow`, `params`, `manual-runs`, `validation`
+
+**Short Answer (2–3 lines):**
+`params` declares typed, JSON-Schema-validated inputs with defaults on a DAG or task. A manual trigger, the API or `dag_run.conf` can override them, and invalid values are rejected before the run is created. Tasks read them as `params` in the context or as `{{ params.x }}` in templates. The trigger form in the UI is generated from them.
+
+**Detailed Explanation:**
+- **Declare:** `Param(default, type=..., enum=..., minimum=..., maximum=..., description=...)`. Types follow JSON Schema: `string`, `integer`, `number`, `boolean`, `array`, `object` and `null`, plus formats such as `date`.
+- **Override:** the trigger form, `airflow dags trigger --conf '{...}'`, the REST API or `TriggerDagRunOperator(conf=...)`. With `[core] dag_run_conf_overrides_params = True` (the default), conf values replace the defaults.
+- **Validate:** values are checked against the schema when the run is created. A scheduled run uses the defaults, so every default must be valid.
+- **Read:** `params["region"]` in TaskFlow, or `{{ params.region }}` in templates. Task-level params merge over DAG-level ones.
+
+Params versus other inputs:
+| Input | Use for |
+|---|---|
+| Params | Run-scoped options: reprocess a region, run dry |
+| Variables | Environment settings that are the same for every run |
+| Connections | Credentials |
+| XCom | Values produced during the run |
+
+Good practice: give every param a safe default, so scheduled runs need no conf. Use `enum` for choices. Document params with `description`, which appears in the trigger form. Treat conf as untrusted user input: never paste it straight into SQL; bind it as a query parameter or check it against an allow-list.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.sdk import Param, dag, task
+
+
+@dag(
+    schedule=None,
+    start_date=datetime(2026, 1, 1),
+    catchup=False,
+    params={
+        "region": Param("eu", type="string", enum=["eu", "us", "apac"]),
+        "lookback_days": Param(1, type="integer", minimum=1, maximum=31),
+        "dry_run": Param(False, type="boolean", description="Log the SQL only"),
+        "tables": Param(["orders"], type="array", items={"type": "string"}),
+    },
+)
+def reprocess_region():
+    @task
+    def plan(params=None):
+        print(f"region={params['region']} lookback={params['lookback_days']} "
+              f"dry_run={params['dry_run']} tables={params['tables']}")
+
+    plan()
+
+
+dag_obj = reprocess_region()
+
+if __name__ == "__main__":
+    print(dag_obj.test().state)                                    # defaults
+    print(dag_obj.test(run_conf={"region": "us", "lookback_days": 7,
+                                 "tables": ["orders", "refunds"]}).state)
+    try:
+        dag_obj.test(run_conf={"lookback_days": 90})
+    except Exception as e:
+        print(type(e).__name__, "->", str(e).splitlines()[0])
+```
+```text
+region=eu lookback=1 dry_run=False tables=['orders']
+success
+region=us lookback=7 dry_run=False tables=['orders', 'refunds']
+success
+ParamValidationError -> Invalid input for param lookback_days: 90 is greater than the maximum of 31
+```
+
+**Real-World Use Case:**
+A data team gave its support analysts a "reprocess region" DAG with no schedule. The analysts triggered it from the UI form and picked a region from a drop-down plus a lookback of up to 31 days. The schema blocked a 365-day request that would have overloaded the warehouse, and the engineers no longer had to run CLI commands for these requests.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Reading `dag_run.conf["x"]` directly with no default or validation.
+- Formatting conf values straight into SQL strings.
+- Using Variables as run inputs. A Variable is shared by every run.
+
+**Follow-up Questions Interviewers Ask:**
+- Can a scheduled run receive params? — Only the defaults. Params are meant for manual or API-triggered runs.
+- How do you pass params to a downstream DAG? — `TriggerDagRunOperator(conf={...})`, which the target validates against its own params (see Q532).
+
+---
+
+### Q524. What can you pass to `schedule`, and what does each option create?
+**ID:** AF-16
+**Topic:** Airflow > Scheduling
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `airflow`, `scheduling`, `cron`, `timetables`
+
+**Short Answer (2–3 lines):**
+`schedule` takes `None` (manual or API only), a cron string or preset such as `"@daily"`, a `timedelta`, `"@once"`, `"@continuous"`, one or more assets, or a timetable object. Airflow turns every one of them into a **timetable**. In Airflow 3, cron strings and presets become `CronTriggerTimetable` by default, which runs *at* the cron time instead of after an interval closes.
+
+**Detailed Explanation:**
+| Value | Timetable created (3.3) | Runs |
+|---|---|---|
+| `None` | `NullTimetable` | Only when triggered |
+| `"0 2 * * *"`, `"@daily"`, `"@hourly"`, `"@weekly"`, `"@monthly"`, `"@quarterly"`, `"@yearly"` | `CronTriggerTimetable` | At each cron tick |
+| `timedelta(hours=4)` | `DeltaTriggerTimetable` | Every 4 h from `start_date` |
+| `"@once"` | `OnceTimetable` | One run |
+| `"@continuous"` | `ContinuousTimetable` | A new run as soon as the last one ends (needs `max_active_runs=1`) |
+| `[asset]`, `a & b`, `a \| b` | `AssetTriggeredTimetable` | When assets update (see Q528) |
+| `AssetOrTimeSchedule(...)` | Itself | On a timer **or** on asset updates |
+| Custom `Timetable` subclass | Itself | Your own rules (see Q525) |
+
+Other settings that shape scheduling:
+- **`start_date`** is the earliest date that can be scheduled. Use a fixed, timezone-aware date, never `datetime.now()`. Its timezone, or the default timezone (UTC), sets the cron's timezone, so `"0 6 * * *"` with a `Europe/London` start date follows daylight-saving changes.
+- **`catchup`** is `False` by default in Airflow 3 (`[scheduler] catchup_by_default`). With `True`, Airflow creates every missed run since `start_date` (see Q45).
+- **`end_date`** stops scheduling after a date.
+- **`max_active_runs`** limits concurrent runs of the DAG (see Q539).
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime, timedelta
+from airflow.sdk import DAG, Asset
+
+schedules = {
+    "None (manual/API only)": None,
+    '"@daily" preset': "@daily",
+    '"15 2 * * 1-5" cron': "15 2 * * 1-5",
+    "timedelta(hours=4)": timedelta(hours=4),
+    '"@once"': "@once",
+    '"@continuous"': "@continuous",
+    "[Asset(...)]": [Asset("s3://lake/orders/")],
+}
+for label, sched in schedules.items():
+    kwargs = {"max_active_runs": 1} if sched == "@continuous" else {}
+    d = DAG(f"d{abs(hash(label))}", schedule=sched, start_date=datetime(2026, 1, 1), **kwargs)
+    print(f"{label:24} -> {type(d.timetable).__name__}")
+```
+```text
+None (manual/API only)   -> NullTimetable
+"@daily" preset          -> CronTriggerTimetable
+"15 2 * * 1-5" cron      -> CronTriggerTimetable
+timedelta(hours=4)       -> DeltaTriggerTimetable
+"@once"                  -> OnceTimetable
+"@continuous"            -> ContinuousTimetable
+[Asset(...)]             -> AssetTriggeredTimetable
+```
+
+**Real-World Use Case:**
+A retail team scheduled store-sales loads at `"30 5 * * *"` with a `start_date` in `America/New_York`. The loads stayed at 05:30 local time through the daylight-saving changes, so the morning reports were ready when stores opened, without anyone editing UTC offsets twice a year.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Using `start_date=datetime.now()`. The start date moves on every parse and runs never begin.
+- Using `schedule_interval` or `timetable=`, which were removed in Airflow 3. Use `schedule`.
+- Expecting `"@daily"` in Airflow 3 to run at midnight for "yesterday" with a one-day data interval. That is the old `CronDataIntervalTimetable` behaviour (see Q525).
+
+**Follow-up Questions Interviewers Ask:**
+- How do you see the next run? — `airflow dags next-execution <dag_id>`, or the DAG header in the UI.
+- How do you run on the 3rd business day of the month? — A custom timetable, or a daily cron plus a short-circuit (see Q516).
+
+---
+
+### Q525. `CronTriggerTimetable` vs `CronDataIntervalTimetable`: what changed in Airflow 3, and when do you write a custom timetable?
+**ID:** AF-17
+**Topic:** Airflow > Timetables
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `airflow`, `timetables`, `data-interval`, `airflow-3`
+
+**Short Answer (2–3 lines):**
+`CronDataIntervalTimetable`, the 2.x behaviour, gives each run an interval and starts it only after that interval ends. `CronTriggerTimetable`, the 3.x default for cron strings, fires at the cron time, and by default the data interval has zero length. Pass `interval=` to get a look-back window. Write a custom timetable only when cron, `MultipleCronTriggerTimetable`, `EventsTimetable` or a delta timetable can't express the calendar.
+
+**Detailed Explanation:**
+The first run for `"0 6 * * *"` with `start_date` 2026-03-01 (output below):
+
+| Timetable | logical_date | data interval | actually runs at |
+|---|---|---|---|
+| `CronTriggerTimetable` (3.x default) | 03-01 06:00 | 03-01 06:00 → 03-01 06:00 | 03-01 06:00 |
+| `CronTriggerTimetable(interval=1 day)` | 02-28 06:00 | 02-28 06:00 → 03-01 06:00 | 03-01 06:00 |
+| `CronDataIntervalTimetable` (2.x default) | 03-01 06:00 | 03-01 06:00 → 03-02 06:00 | 03-02 06:00 |
+
+Why this matters when you migrate: `{{ ds }}` and `data_interval_*` move between the two timetables. A task filtering on `data_interval_start <= ts < data_interval_end` would select **nothing** under a zero-length interval. Options:
+- Set `[scheduler] create_cron_data_intervals = True` to keep the 2.x semantics for every cron-string DAG. Do it *before* upgrading.
+- Pass an explicit `CronDataIntervalTimetable(...)` on the DAGs that depend on intervals.
+- Or use `CronTriggerTimetable(..., interval=timedelta(days=1))` and check your templates.
+
+Built-in timetables to know: `DeltaTriggerTimetable` / `DeltaDataIntervalTimetable`, `MultipleCronTriggerTimetable` (several crons, one DAG), `EventsTimetable` (a fixed list of datetimes), `AssetOrTimeSchedule`, and the partition timetables from 3.2+ (see Q531).
+
+A **custom timetable** subclasses `Timetable` and implements `next_dagrun_info` and `infer_manual_data_interval`. It is registered through a plugin, because the scheduler must import it to deserialise DAGs. Typical cases are trading-day calendars and "business day N of the month".
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+# Compare how two timetables label and time the first run for "every day at 06:00".
+from datetime import datetime, timedelta, timezone
+from airflow.timetables.base import TimeRestriction
+from airflow.timetables.interval import CronDataIntervalTimetable
+from airflow.timetables.trigger import CronTriggerTimetable
+
+start = datetime(2026, 3, 1, tzinfo=timezone.utc)
+tables = {
+    "CronTriggerTimetable (3.x default for cron strings)": CronTriggerTimetable("0 6 * * *", timezone="UTC"),
+    "CronTriggerTimetable with interval=1 day": CronTriggerTimetable(
+        "0 6 * * *", timezone="UTC", interval=timedelta(days=1)),
+    "CronDataIntervalTimetable (2.x behaviour)": CronDataIntervalTimetable("0 6 * * *", timezone="UTC"),
+}
+for name, tt in tables.items():
+    info = tt.next_dagrun_info(
+        last_automated_data_interval=None,
+        restriction=TimeRestriction(earliest=start, latest=None, catchup=True),
+    )
+    print(name)
+    print("  logical_date:", info.logical_date)
+    print("  interval:    ", info.data_interval.start, "->", info.data_interval.end)
+    print("  runs at:     ", info.run_after)
+```
+```text
+CronTriggerTimetable (3.x default for cron strings)
+  logical_date: 2026-03-01 06:00:00+00:00
+  interval:     2026-03-01 06:00:00+00:00 -> 2026-03-01 06:00:00+00:00
+  runs at:      2026-03-01 06:00:00+00:00
+CronTriggerTimetable with interval=1 day
+  logical_date: 2026-02-28 06:00:00+00:00
+  interval:     2026-02-28 06:00:00+00:00 -> 2026-03-01 06:00:00+00:00
+  runs at:      2026-03-01 06:00:00+00:00
+CronDataIntervalTimetable (2.x behaviour)
+  logical_date: 2026-03-01 06:00:00+00:00
+  interval:     2026-03-01 06:00:00+00:00 -> 2026-03-02 06:00:00+00:00
+  runs at:      2026-03-02 06:00:00+00:00
+```
+
+**Real-World Use Case:**
+After an upgrade to Airflow 3, a team's hourly incremental loads started reporting zero rows. Their SQL filtered on `data_interval_start`/`data_interval_end`, and the new default timetable gave a zero-length interval. They switched those DAGs to an explicit `CronDataIntervalTimetable` and added a CI test that asserts the interval length of every interval-based DAG.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Saying "a daily DAG always runs for yesterday". That depends on the timetable.
+- Changing `create_cron_data_intervals` after Airflow 3 runs already exist. Logical dates shift, and runs can be duplicated or skipped.
+- Writing a custom timetable without registering it in a plugin.
+
+**Follow-up Questions Interviewers Ask:**
+- Which one fits "run at 9:00 and use whatever is there"? — `CronTriggerTimetable`, the default.
+- How does `EventsTimetable` help? — It schedules runs on an explicit list of dates, such as earnings dates, with no cron at all.
+
+---
+
+### Q526. How do scheduler-managed backfills work in Airflow 3?
+**ID:** AF-18
+**Topic:** Airflow > Backfills
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `airflow`, `backfill`, `reprocessing`, `airflow-3`
+
+**Short Answer (2–3 lines):**
+In Airflow 3 a backfill is a database object. The scheduler creates and runs its DAG runs like any others, with `max_active_runs`, pools and the normal executors. You start one from the UI, the REST API or `airflow backfill create`. You choose the date range and a **reprocess behaviour** (`none`, `failed` or `completed`), and you can run it backwards or as a dry run.
+
+**Detailed Explanation:**
+In 2.x, `airflow dags backfill` ran a loop in your terminal: closing the terminal killed it, and it ignored part of the scheduler's limits. Airflow 3 moved backfills into the scheduler (AIP-78).
+
+| Option | Meaning |
+|---|---|
+| `--from-date` / `--to-date` | Logical-date window. Both ends are inclusive, but they are datetimes: a `--to-date` of midnight leaves out a 03:00 run on that day |
+| `--reprocess-behavior none` | Only create runs for dates that have none (the default) |
+| `failed` | Also re-run dates whose latest run failed |
+| `completed` | Re-run every date, including successful ones |
+| `--max-active-runs` | Concurrency for *this* backfill, applied separately from the DAG's own `max_active_runs` |
+| `--run-backwards` | Newest dates first. Not allowed when tasks use `depends_on_past` |
+| `--dag-run-conf` | Conf/params for every run |
+| `--run-on-latest-version` | Use the latest bundle version instead of each run's original one (the default for backfills; see Q548) |
+| `--dry-run` | List the runs it would create |
+
+Backfill runs have `run_type=backfill`, appear in the grid, and can be paused or cancelled. A date that is currently running or queued is never duplicated. Backfills need a time-based schedule. For DAGs on partition timetables, the window is read as partition dates.
+
+The DAG still has to be **idempotent per interval** (see Q46, Q553), because a backfill simply replays history.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Airflow 3.3 CLI; DAG "daily_revenue" has schedule "0 3 * * *"
+airflow backfill create --dag-id daily_revenue \
+  --from-date 2026-03-01 --to-date 2026-03-05 \
+  --reprocess-behavior failed --max-active-runs 2 --dry-run
+```
+```text
+Performing dry run of backfill.
+Printing params:
+    - dag_id = daily_revenue
+    - from_date = 2026-03-01 00:00:00+00:00
+    - to_date = 2026-03-05 00:00:00+00:00
+    - max_active_runs = 2
+    - reverse = False
+    - dag_run_conf = None
+    - reprocess_behavior = ReprocessBehavior.FAILED
+    - run_on_latest_version = True
+Runs to be attempted:
++---------------------------+-----------------+------------------+
+| logical_date              | partition_key   | partition_date   |
++===========================+=================+==================+
+| 2026-03-01 03:00:00+00:00 |                 |                  |
++---------------------------+-----------------+------------------+
+| 2026-03-02 03:00:00+00:00 |                 |                  |
++---------------------------+-----------------+------------------+
+| 2026-03-03 03:00:00+00:00 |                 |                  |
++---------------------------+-----------------+------------------+
+| 2026-03-04 03:00:00+00:00 |                 |                  |
++---------------------------+-----------------+------------------+
+```
+The 5 March run is missing because the window ends at 00:00 that day. Use `--to-date 2026-03-05T23:59` to include it.
+
+**Real-World Use Case:**
+A currency-conversion bug inflated revenue for six weeks. After deploying the fix, the team ran a dry run, then `--reprocess-behavior completed --max-active-runs 3 --run-backwards`. The most recent weeks, which finance needed first, were corrected within hours, and the warehouse never ran more than three rebuilds at once.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Describing the 2.x `airflow dags backfill` CLI loop as current behaviour.
+- Assuming the default (`none`) reprocesses dates that already ran. It only fills gaps.
+- Backfilling a DAG whose tasks read "latest" data instead of their own interval.
+
+**Follow-up Questions Interviewers Ask:**
+- Catchup or backfill? — Catchup automatically fills missed intervals since `start_date`. A backfill is an explicit range that you start (see Q45).
+- How do you protect production during a big backfill? — Use a low `--max-active-runs`, pools on the heavy tasks, and lower priority weights (see Q537, Q538).
+
+---
+
+### Q527. Manual and API-triggered runs in Airflow 3: why can `logical_date` be `None`?
+**ID:** AF-19
+**Topic:** Airflow > Dag Runs
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `airflow`, `manual-runs`, `logical-date`, `airflow-3`
+
+**Short Answer (2–3 lines):**
+Airflow 3 separates *when a run may start* (`run_after`) from *which data it represents* (`logical_date`). Asset-triggered runs, and API or UI triggers that give no date, get `logical_date=None` and no data interval. That lets many runs exist side by side, for inference or ad-hoc jobs. Tasks that support several trigger types must handle a missing date.
+
+**Detailed Explanation:**
+| Run created by | `logical_date` | data interval | `run_after` |
+|---|---|---|---|
+| Schedule (cron/timetable) | Set by the timetable | Set by the timetable | When it may start |
+| UI/API trigger **with** a date | That date | Inferred by the timetable | Trigger time |
+| UI/API trigger **without** a date (REST default) | `None` | Absent | Trigger time |
+| Asset event | `None` | Absent | Event time |
+| Backfill | Each date in the range | From the timetable | Scheduled by the backfill |
+
+What changed compared with 2.x:
+- A logical date was always present and unique per DAG. With `None`, multiple runs no longer collide, which is why inference-style DAGs (AIP-83) became possible.
+- Triggering with a **future** logical date is no longer allowed. Use `logical_date=None` instead.
+- When the run has no logical date, context keys such as `data_interval_start` are missing from the context. The 3.0 release notes say reading them raises a `KeyError`.
+- The `conf` context key and `dag_run.external_trigger` were removed. Use `params` and `dag_run.run_type`.
+
+Defensive pattern: read `dag_run.logical_date`, fall back to `dag_run.run_after` or a param, and log which one you used. Or make the date a required `Param` on DAGs that are only triggered manually (see Q523).
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime, timezone
+from airflow.sdk import dag, task
+
+
+@dag(schedule="0 4 * * *", start_date=datetime(2026, 1, 1), catchup=False)
+def run_types_demo():
+    @task
+    def which_day(**context) -> str:
+        dr = context["dag_run"]
+        # logical_date is None for API/UI triggers without a date and for asset-triggered runs.
+        # Fall back to run_after, which every run has, and say so in the log.
+        anchor = dr.logical_date or dr.run_after
+        print(f"run_type={dr.run_type} logical_date={dr.logical_date} "
+              f"run_after={dr.run_after:%Y-%m-%d %H:%M} -> processing {anchor:%Y-%m-%d}")
+        print("has data_interval_start:", "data_interval_start" in context)
+        return anchor.strftime("%Y-%m-%d")
+
+    which_day()
+
+
+dag_obj = run_types_demo()
+
+if __name__ == "__main__":
+    dag_obj.test(logical_date=datetime(2026, 4, 2, 4, tzinfo=timezone.utc))   # like a scheduled/dated run
+    dag_obj.test(logical_date=None, run_after=datetime(2026, 4, 9, 10, 30, tzinfo=timezone.utc))
+```
+```text
+run_type=DagRunType.MANUAL logical_date=2026-04-02 04:00:00+00:00 run_after=2026-10-17 13:45 -> processing 2026-04-02
+has data_interval_start: True
+run_type=DagRunType.MANUAL logical_date=None run_after=2026-04-09 10:30 -> processing 2026-04-09
+has data_interval_start: False
+```
+
+**Real-World Use Case:**
+A fraud team's scoring DAG was triggered through the REST API for every batch of flagged transactions, often dozens of times an hour. In 2.x each trigger needed a unique, made-up logical date. In 3.x they trigger without one and pass the batch id as a param. Each run reads its inputs from conf, and nothing in the DAG depends on dates.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Assuming every run has `ds` and a data interval.
+- Inventing future logical dates to make runs unique.
+- Using `run_after` as the data date for scheduled runs. It is when the run may start, not which data it covers.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you trigger a dated rerun from the CLI? — `airflow dags trigger <dag_id> --logical-date 2026-04-02T04:00:00+00:00`.
+- Which data interval does a manual run with a date get? — Whatever the timetable infers. Don't assume it equals the logical date; check the context (see Q525).
+
+---
+
+### Q528. How does asset-aware scheduling work, and how do you combine asset conditions?
+**ID:** AF-20
+**Topic:** Airflow > Assets
+**Level:** Intermediate
+**Frequency:** Very Common
+**Tags:** `airflow`, `assets`, `data-aware-scheduling`, `airflow-3`
+
+**Short Answer (2–3 lines):**
+A task lists an `Asset` in `outlets`. When the task succeeds, Airflow records an asset event. A DAG with `schedule=[asset]`, or a condition such as `(a & b) | c`, is queued once the condition is met by events received since its last run. Events can carry `extra` metadata, and consumers read them through `triggering_asset_events`.
+
+**Detailed Explanation:**
+- **Identity.** In Airflow 3, `Asset(name=..., uri=...)` can be identified by name, URI or both. The URI is normalised, so a trailing `/` is dropped. Pick one convention and use it everywhere.
+- **Producing.** A task with `outlets=[asset]` emits an event when it **succeeds**. Use `outlet_events[asset].extra = {...}` to attach row counts, partitions or paths. Events can also come from the REST API, or from other DAGs through `AssetAlias`.
+- **Consuming.** `schedule=[a, b]` means *all of them*. `a & b` is all, `a | b` is any, and the operators nest. Each consumer keeps a queue of the events received since its last run. Two producer events before one consumer run give **one** run that sees both events.
+- **Mixing with time.** `AssetOrTimeSchedule(timetable=..., assets=...)` runs on a timer *or* on updates.
+- **What it doesn't do.** Airflow doesn't check the data. An event means "the producer task succeeded", not "the data is valid". Put quality checks before the outlet task.
+
+| | Assets | `TriggerDagRunOperator` | `ExternalTaskSensor` |
+|---|---|---|---|
+| Coupling | Producer doesn't know its consumers | Producer names the target | Consumer names producer and task |
+| Waiting | None; event-driven | None; push | Polls or defers |
+| Lineage in the UI | Asset graph | Partial | Partial |
+
+See Q532 for the trade-offs and the site's guide on cross-DAG dependencies.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.sdk import Asset, dag, task
+
+orders = Asset(name="silver_orders", uri="s3://lake/silver/orders/")
+customers = Asset(name="silver_customers", uri="s3://lake/silver/customers/")
+fx_rates = Asset(name="fx_rates", uri="s3://lake/ref/fx_rates/")
+
+
+@dag(schedule="@hourly", start_date=datetime(2026, 1, 1), catchup=False)
+def load_orders():
+    @task(outlets=[orders])          # success of this task emits an asset event
+    def write_orders(*, outlet_events):
+        outlet_events[orders].extra = {"rows": 1834, "partition": "2026-05-20T10"}
+
+    write_orders()
+
+
+# Runs when orders AND customers have both updated since the last run, OR fx_rates updated.
+@dag(schedule=(orders & customers) | fx_rates, start_date=datetime(2026, 1, 1), catchup=False)
+def build_revenue_mart():
+    @task
+    def build(*, triggering_asset_events):
+        for asset, events in triggering_asset_events.items():
+            print(asset.name, [e.extra for e in events])
+
+    build()
+
+
+producer = load_orders()
+consumer = build_revenue_mart()
+
+if __name__ == "__main__":
+    print("consumer timetable:", type(consumer.timetable).__name__)
+    def show(c):  # compact view of the condition tree
+        return c.name if hasattr(c, "name") else f"{type(c).__name__}({', '.join(show(o) for o in c.objects)})"
+    print("condition:", show(consumer.timetable.asset_condition))
+    print("normalised uri:", orders.uri)
+    print("producer run:", producer.test().state)
+    from airflow.models.asset import AssetEvent
+    from airflow.utils.session import create_session
+    with create_session() as s:
+        for ev in s.query(AssetEvent).order_by(AssetEvent.id.desc()).limit(1):
+            print("event:", ev.asset.name, ev.extra, "from", ev.source_dag_id, ev.source_task_id)
+```
+```text
+consumer timetable: AssetTriggeredTimetable
+condition: AssetAny(AssetAll(silver_orders, silver_customers), fx_rates)
+normalised uri: s3://lake/silver/orders
+producer run: success
+event: silver_orders {'rows': 1834, 'partition': '2026-05-20T10'} from load_orders write_orders
+```
+The DB query at the end only inspects the result in this local test. Task code in Airflow 3 cannot query the metadata DB (see Q547).
+
+**Real-World Use Case:**
+A company replaced a 6 a.m. cron on its revenue mart, which ran whether or not the orders load had finished, with `schedule=(orders & customers) | fx_rates`. The mart now built minutes after both loads landed. The extra rebuild when FX rates were corrected happened automatically, and the empty-dashboard incidents on late-load days stopped.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Thinking an asset event proves the data is correct, or that Airflow watches the storage path. It only records that the producer task succeeded.
+- Expecting one consumer run per producer event. Events are batched until the consumer runs.
+- Using different URIs for the same data in different DAGs, such as with and without a trailing slash, or `s3a://` versus `s3://`.
+
+**Follow-up Questions Interviewers Ask:**
+- Can an external system emit an event? — Yes, through the REST API's asset-events endpoint, or event-driven with an `AssetWatcher` (see Q530).
+- What is `AssetAlias`? — A placeholder whose concrete asset is chosen at run time, for example when the output path depends on the data (see Q529).
+
+---
+
+### Q529. What do the `@asset` decorator, `Metadata` and `AssetAlias` add on top of plain asset outlets?
+**ID:** AF-21
+**Topic:** Airflow > Assets
+**Level:** Intermediate
+**Frequency:** Occasional
+**Tags:** `airflow`, `assets`, `asset-alias`, `lineage`
+
+**Short Answer (2–3 lines):**
+`@asset` is shorthand for a DAG with one task that produces one asset, all named after the function. A parameter named after another asset makes that asset an inlet. Yielding `Metadata` attaches extra data to the event the task emits. `AssetAlias` lets a task decide *at run time* which concrete assets it produced, and downstream DAGs can schedule on the alias.
+
+**Detailed Explanation:**
+| Feature | Solves | Notes |
+|---|---|---|
+| `@asset(uri=..., schedule=...)` | Boilerplate for asset-centric pipelines | Creates an `Asset`, a DAG and a task, all with the function's name |
+| Inlet parameters, e.g. `def summary(self, context, raw_orders)` | Reading upstream events | `self`, `context` and `outlet_events` are reserved parameter names |
+| `yield Metadata(asset, {...})` | Attaching row counts or ranges to the event | Must be JSON-serialisable; it is stored in the DB |
+| `context["inlet_events"][asset][-1]` | Reading past events of an inlet | Lazy; ordered oldest to newest |
+| `@asset.multi(outlets=[a, b])` | One function producing several assets | |
+| `AssetAlias("name")` | Outputs known only at run time, such as one asset per country | The task adds concrete assets with `outlet_events[alias].add(Asset(...), extra=...)` |
+| `Asset.ref(name=...)` | Referring to an asset defined in another file | Avoids duplicate definitions |
+
+When to use which:
+- Use `@asset` when the team thinks in data products ("the daily_summary table") and each product is one step. Use normal DAGs when a pipeline has many steps but publishes one result.
+- Use `AssetAlias` when the set of outputs depends on the data. Defining a fixed asset for each possible output would be impractical.
+- Asset events are lineage records too. The UI's asset graph shows which DAG produced and consumed what, so use names people recognise.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from airflow.sdk import Asset, AssetAlias, Metadata, asset, dag, task
+
+
+# @asset = one DAG + one task + one Asset, all named after the function.
+@asset(uri="s3://lake/raw/orders", schedule="@daily")
+def raw_orders(self):
+    rows = 4210                                   # ... write the file ...
+    yield Metadata(self, {"row_count": rows})     # becomes the asset event's extra
+
+
+# Naming a parameter after another asset makes it an inlet; schedule on it to run after it.
+@asset(uri="s3://lake/gold/daily_summary", schedule=raw_orders)
+def daily_summary(self, context, raw_orders):
+    last = context["inlet_events"][raw_orders][-1]   # most recent upstream event
+    print("upstream rows:", last.extra["row_count"])
+
+
+# AssetAlias: the concrete asset (here, which country partition) is only known at run time.
+@dag(schedule=None)
+def export_by_country():
+    @task(outlets=[AssetAlias("country_exports")])
+    def export(*, outlet_events):
+        for country in ("de", "fr"):
+            outlet_events[AssetAlias("country_exports")].add(
+                Asset(name=f"export_{country}", uri=f"s3://exports/{country}/"), extra={"country": country})
+
+    export()
+
+export_by_country()
+
+
+@dag(schedule=AssetAlias("country_exports"))     # runs when any asset resolved by the alias updates
+def notify_partners():
+    @task
+    def notify(*, triggering_asset_events):
+        print(sorted(a.name for a in triggering_asset_events))
+
+    notify()
+
+notify_partners()
+```
+```text
+# DagBag + dag.test() of raw_orders, daily_summary and export_by_country:
+daily_summary      tasks=['daily_summary'] timetable=AssetTriggeredTimetable outlets=['daily_summary']
+export_by_country  tasks=['export'] timetable=NullTimetable outlets=['country_exports']
+notify_partners    tasks=['notify'] timetable=AssetTriggeredTimetable outlets=[]
+raw_orders         tasks=['raw_orders'] timetable=CronTriggerTimetable outlets=['raw_orders']
+raw_orders run: success
+upstream rows: 4210
+daily_summary run: success
+export run: success
+event: export_fr {'country': 'fr'}
+event: export_de {'country': 'de'}
+```
+
+**Real-World Use Case:**
+A data-products team declared each gold table as an `@asset`. They yielded the row count and the max event time as `Metadata`. A freshness dashboard read these from the asset events API, so it could report "last updated, rows" for every product without scanning the warehouse.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Defining the same asset with slightly different names or URIs in two files. Use `Asset.ref` or a shared module.
+- Putting large payloads in event `extra`. Like XCom, it belongs in the metadata DB only when small.
+- Assuming `@asset` works for multi-step pipelines. It creates exactly one task; use `@task` with `outlets` in a normal DAG instead.
+
+**Follow-up Questions Interviewers Ask:**
+- How do classic operators attach metadata? — Through `context["outlet_events"][asset].extra` inside `execute`, or by subclassing the operator.
+- Are asset events emitted on failure? — No. Only a successful task emits its outlets' events.
+
+---
+
+### Q530. How do `AssetWatcher` and event-driven scheduling work?
+**ID:** AF-22
+**Topic:** Airflow > Event-Driven Scheduling
+**Level:** Advanced
+**Frequency:** Common
+**Tags:** `airflow`, `asset-watcher`, `event-driven`, `triggerer`
+
+**Short Answer (2–3 lines):**
+An `AssetWatcher` attaches a trigger to an asset. The trigger runs in the **triggerer** and listens to an outside source, such as SQS, Kafka, Redis pub/sub or a custom poller. Each time it fires, Airflow records an asset event, and DAGs scheduled on that asset run. Only triggers that subclass `BaseEventTrigger` are allowed, and their payload reaches tasks through `triggering_asset_events`.
+
+**Detailed Explanation:**
+How the pieces fit together (added in 3.0):
+1. Define `Asset(name=..., watchers=[AssetWatcher(name=..., trigger=SomeEventTrigger(...))])`.
+2. The DAG processor registers the watcher, and a triggerer starts running the trigger's async `run()`.
+3. When the trigger yields a `TriggerEvent`, the triggerer creates an asset event whose `extra` contains the event payload. For the messaging triggers that means the message, under `payload`.
+4. The trigger is then started again to wait for the next event, and every DAG scheduled on the asset is queued.
+
+Ready-made: `MessageQueueTrigger(scheme="sqs" | "kafka" | "redis+pubsub", ...)` from the `common.messaging` provider, backed by the AWS, Kafka and Redis providers.
+
+Rules for a custom event trigger:
+- Subclass **`BaseEventTrigger`**. Ordinary deferral triggers are not accepted, because many of them fire again immediately when restarted, which would trigger endless runs.
+- It must be **idempotent across restarts**. Consume, acknowledge or move what it saw, as the example does by moving each file. Otherwise the same file fires again after the restart.
+- It must be fully async. A blocking call stalls every trigger on that triggerer (see Q533).
+- `serialize()` returns an importable classpath, and the module must be on the triggerer's path. Changing it needs a triggerer restart.
+- Since 3.3, siblings that poll the same source can share one poll loop via `shared_stream_key()`.
+
+Delivery is about as reliable as the source and the trigger make it. Keep consumers **idempotent**, and use the payload, such as a message id or file name, as the deduplication key.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 — plugins/inbox_trigger.py (must be importable by the triggerer)
+import asyncio
+import os
+from airflow.triggers.base import BaseEventTrigger, TriggerEvent
+
+
+class InboxFileTrigger(BaseEventTrigger):
+    """Fires once per file dropped into an inbox directory, then moves the file away
+    so the same file can never fire twice (the trigger is restarted after each event)."""
+
+    def __init__(self, inbox: str, done_dir: str, poll_seconds: float = 5.0):
+        super().__init__()
+        self.inbox, self.done_dir, self.poll_seconds = inbox, done_dir, poll_seconds
+
+    def serialize(self):
+        return ("inbox_trigger.InboxFileTrigger",
+                {"inbox": self.inbox, "done_dir": self.done_dir, "poll_seconds": self.poll_seconds})
+
+    async def run(self):
+        while True:
+            for name in sorted(os.listdir(self.inbox)):
+                os.makedirs(self.done_dir, exist_ok=True)
+                os.replace(os.path.join(self.inbox, name), os.path.join(self.done_dir, name))
+                yield TriggerEvent({"file": name})
+                return
+            await asyncio.sleep(self.poll_seconds)
+```
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 — dags/partner_drop.py
+from airflow.sdk import Asset, AssetWatcher, dag, task
+from inbox_trigger import InboxFileTrigger
+
+partner_drop = Asset(
+    name="partner_drop",
+    uri="file:///srv/inbox/partner_a",
+    watchers=[AssetWatcher(name="partner_a_inbox",
+                           trigger=InboxFileTrigger("/srv/inbox/partner_a", "/srv/done/partner_a"))],
+)
+
+
+@dag(schedule=[partner_drop])            # no cron: one run per event (batched if they pile up)
+def ingest_partner_drop():
+    @task
+    def ingest(*, triggering_asset_events):
+        for event in triggering_asset_events[partner_drop]:
+            print("ingesting", event.extra)
+
+    ingest()
+
+
+ingest_partner_drop()
+```
+```text
+# Parsed with DagBag, then the trigger's run() driven with asyncio as the triggerer would:
+errors: {}
+watchers: [('partner_a_inbox', 'InboxFileTrigger')]
+event: {'file': 'orders_0520.csv'} | inbox now: []
+```
+`os.listdir` is a quick local call. On a network filesystem, use an async client or run it in a thread with `asyncio.to_thread`.
+
+**Real-World Use Case:**
+An order-events team replaced a sensor DAG that ran every five minutes and mostly found nothing. They added an SQS-backed `MessageQueueTrigger` on an `orders_events` asset. Runs started within seconds of a message arriving, and the idle runs disappeared. The consumer used the message id from the payload as its deduplication key.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Using a normal `BaseTrigger` (for example a file sensor's trigger) in a watcher.
+- A trigger that doesn't consume or acknowledge what it saw, so it fires again forever.
+- Treating event-driven runs as exactly-once.
+
+**Follow-up Questions Interviewers Ask:**
+- What happens if the triggerer is down? — Nothing fires until it is back. The trigger resumes on another triggerer, but events the source didn't keep may be lost, depending on the source.
+- How is this different from a deferrable sensor? — A sensor waits inside a DAG run that already exists. A watcher *creates* runs (see Q533).
+
+---
+
+### Q531. What is asset partitioning in Airflow 3.2+, and when would you use it?
+**ID:** AF-23
+**Topic:** Airflow > Asset Partitioning
+**Level:** Advanced
+**Frequency:** Occasional
+**Tags:** `airflow`, `asset-partitions`, `timetables`, `airflow-3`
+
+**Short Answer (2–3 lines):**
+Asset partitioning gives each asset event a `partition_key`, such as an hour, a day or a region, so that downstream runs are matched to the exact partitions they need. A producer uses `CronPartitionTimetable`, or assigns keys at run time with `PartitionedAtRuntime`. A consumer uses `PartitionedAssetTimetable` with partition mappers. Since 3.3, `RollupMapper` can hold a daily run until its hourly partitions arrive.
+
+**Detailed Explanation:**
+Plain asset scheduling only knows that something was updated. Partitioning adds *which slice* was updated.
+
+| Piece | Role |
+|---|---|
+| `CronPartitionTimetable("0 * * * *")` | Producer: each scheduled run gets a key for its tick, and its events carry it |
+| `PartitionedAtRuntime()` (3.3) | Producer: the task calls `outlet_events[asset].add_partitions([...])` once it knows the keys |
+| `PartitionedAssetTimetable(assets=..., default_partition_mapper=...)` | Consumer: one run per downstream key |
+| `IdentityMapper`, `StartOfHourMapper`, `StartOfDayMapper`, …, `ProductMapper`, `AllowedKeyMapper` | Translate upstream keys into downstream keys |
+| `RollupMapper(upstream_mapper, window=DayWindow(), wait_policy=...)` (3.3) | Many to one: wait for every hour in a day |
+| `WaitForAll()` / `MinimumCount(n)` | Release a rollup when all keys, or at least `n`, have arrived |
+| `FanOutMapper`, `SegmentWindow` + `FixedKeyMapper` (3.3) | One to many, and categorical rollups such as all regions |
+
+Inside the run, read `dag_run.partition_key`. When the mapper is temporal, `dag_run.partition_date` is set too. Backfills of partitioned DAGs read `--from-date/--to-date` as a partition-date range (see Q526). Partitioned events don't trigger DAGs that aren't partition-aware, and a consumer on `PartitionedAssetTimetable` ignores events with no key.
+
+Points to raise in an interview:
+- It is new and still changing quickly between minor versions. Pin the version and read the release notes before relying on mappers. *Product behaviour changes; checked October 2026.*
+- A `DayWindow` assumes 24 hourly steps. Use UTC keys for rollups that cross a daylight-saving change, otherwise a day can wait forever for an hour that never exists.
+- `[scheduler] partition_mapper_max_downstream_keys` bounds how far one event can fan out.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 (asset partitioning: 3.2+, rollups: 3.3+)
+from airflow.sdk import (DAG, Asset, CronPartitionTimetable, DayWindow, MinimumCount,
+                         PartitionedAssetTimetable, RollupMapper, StartOfHourMapper, task)
+
+hourly_clicks = Asset(name="hourly_clicks", uri="s3://lake/bronze/clicks")
+
+# Producer: each run carries a partition key for its hour and stamps it on the asset event.
+with DAG("ingest_hourly_clicks",
+         schedule=CronPartitionTimetable("0 * * * *", timezone="UTC"), catchup=False) as producer:
+    @task(outlets=[hourly_clicks])
+    def ingest(dag_run=None):
+        print("ingesting partition", dag_run.partition_key)
+
+    ingest()
+
+# Consumer: one run per UTC day, released when at least 23 of the 24 hours have landed.
+with DAG("daily_click_summary",
+         schedule=PartitionedAssetTimetable(
+             assets=hourly_clicks,
+             default_partition_mapper=RollupMapper(
+                 upstream_mapper=StartOfHourMapper(),
+                 window=DayWindow(),
+                 wait_policy=MinimumCount(23),     # tolerate one late hour
+             ),
+         ),
+         catchup=False) as consumer:
+    @task
+    def summarise(dag_run=None):
+        print("summarising day", dag_run.partition_key)   # e.g. "2026-05-20"
+
+    summarise()
+
+if __name__ == "__main__":
+    print("consumer timetable:", type(consumer.timetable).__name__)
+    # How the scheduler computes the producer's next run (core-side class, used here only to show it):
+    import pendulum
+    from airflow.timetables.base import TimeRestriction
+    from airflow.timetables.trigger import CronPartitionTimetable as CoreCronPartition
+
+    info = CoreCronPartition("0 * * * *", timezone="UTC").next_dagrun_info_v2(
+        last_dagrun_info=None,
+        restriction=TimeRestriction(earliest=pendulum.datetime(2026, 5, 20, 9, 30, tz="UTC"),
+                                    latest=None, catchup=True))
+    print("next producer run:", info.run_after, "| partition_key:", info.partition_key)
+```
+```text
+consumer timetable: PartitionedAssetTimetable
+next producer run: 2026-05-20 10:00:00+00:00 | partition_key: 2026-05-20T10:00:00
+```
+
+**Real-World Use Case:**
+A clickstream platform ingested hourly files, some of which arrived hours late. Before partitioning, the daily summary ran on a fixed cron and sometimes missed late hours. The fix was a scheduled re-run the next day. With a `RollupMapper` on `DayWindow`, each day's summary ran once its hours were in. Run history was now one run per day, which made reprocessing a single day simple.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Calling this "Airflow 3.0 functionality". Partitioning arrived in 3.2, and rollups and runtime partitions in 3.3.
+- Expecting a partitioned producer to trigger an ordinary asset-scheduled DAG.
+- Building hourly-to-daily rollups on local-time keys across daylight-saving changes.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you rerun one partition? — Trigger the consumer with that `partition_key` from the UI or the REST API, or clear its run.
+- How do you see what a rollup is waiting for? — Partial windows show as pending on the DAG's next-run assets view.
+
+---
+
+### Q532. TriggerDagRunOperator, ExternalTaskSensor or assets: how do you choose for cross-DAG dependencies?
+**ID:** AF-24
+**Topic:** Airflow > Cross-DAG Dependencies
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `airflow`, `cross-dag`, `trigger-dagrun`, `external-task-sensor`
+
+**Short Answer (2–3 lines):**
+Use assets when "run after that data is updated" is enough. The producer doesn't need to know its consumers. Use `TriggerDagRunOperator` when the producer must start a particular DAG and pass it conf. Use `ExternalTaskSensor` only when two DAGs keep their own schedules and one must wait for a specific task in the other, and make the schedules line up.
+
+**Detailed Explanation:**
+| Need | Best fit | Watch out for |
+|---|---|---|
+| Many consumers react to one dataset | Assets (see Q528) | Events mean "task succeeded", not "data valid" |
+| Producer passes run parameters | `TriggerDagRunOperator(conf=...)` | Producer and target are tightly coupled; target validates params |
+| Wait for the other DAG to finish too | `TriggerDagRunOperator(wait_for_completion=True, deferrable=True)` | Without `deferrable`, it holds a worker slot while it waits |
+| Two scheduled DAGs, one task depends on another's | `ExternalTaskSensor` | Logical dates must match; use `execution_delta` or `execution_date_fn` |
+| Clear downstream when upstream is cleared | `ExternalTaskMarker` | Needs a matching `ExternalTaskSensor` |
+
+`ExternalTaskSensor` looks for the *same logical date* in the other DAG unless you shift it. A 03:00 DAG waiting on a 02:00 DAG needs `execution_delta=timedelta(hours=1)`. If you get this wrong, the sensor waits until it times out. Run it with `mode="reschedule"` or `deferrable=True`, and always set `timeout` (see Q534). In Airflow 3, logical dates can be `None` for manual and asset-triggered runs (see Q527), which makes date-matching sensors even more fragile. That is one more reason to prefer assets.
+
+In Airflow 3, these operators live in `apache-airflow-providers-standard`. A run created by `TriggerDagRunOperator` shows up with its own run type, so you can tell it apart from manual runs.
+
+For a longer walk-through, see the site's guide on making one Airflow DAG depend on another.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 (apache-airflow-providers-standard)
+from datetime import datetime, timedelta
+from airflow.sdk import dag, task
+from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.providers.standard.sensors.external_task import ExternalTaskSensor
+
+
+@dag(schedule="0 2 * * *", start_date=datetime(2026, 1, 1), catchup=False)
+def load_sales():
+    @task
+    def load() -> int:
+        return 1834
+
+    # Push: the producer names its downstream and hands over parameters.
+    load() >> TriggerDagRunOperator(
+        task_id="trigger_finance_report",
+        trigger_dag_id="finance_report",
+        conf={"source": "load_sales", "rows": "{{ ti.xcom_pull(task_ids='load') }}"},
+        wait_for_completion=False,
+    )
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False)
+def finance_report():
+    @task
+    def build(params=None, dag_run=None):
+        print("triggered with conf:", dag_run.conf)
+
+    build()
+
+
+# Pull: a DAG on its own schedule waits for a task in another DAG.
+@dag(schedule="0 3 * * *", start_date=datetime(2026, 1, 1), catchup=False)
+def marketing_mart():
+    ExternalTaskSensor(
+        task_id="wait_for_sales_load",
+        external_dag_id="load_sales",
+        external_task_id="load",
+        execution_delta=timedelta(hours=1),     # 03:00 run looks for the 02:00 run
+        mode="reschedule", poke_interval=300, timeout=3 * 3600,
+    )
+
+
+producer, consumer, sensor_dag = load_sales(), finance_report(), marketing_mart()
+
+if __name__ == "__main__":
+    print("producer:", producer.test().state)
+    from airflow.models.dagrun import DagRun
+    for dr in DagRun.find(dag_id="finance_report"):
+        print("finance_report run:", dr.run_type, dr.state, dr.conf)
+```
+```text
+producer: success
+finance_report run: operator_triggered queued {'source': 'load_sales', 'rows': '1834'}
+```
+The triggered run waits in `queued` because no scheduler is running in this local test. `rows` arrives as a string because templates render to strings (see Q522).
+
+**Real-World Use Case:**
+A company had twelve report DAGs that each used an `ExternalTaskSensor` on one ingestion DAG, so every schedule change broke some sensors. They replaced the sensors with an asset on the ingestion output. The twelve reports now run when the data lands, and the ingestion team can change its schedule without telling anyone.
+
+**Common Mistakes / Interviewer Red Flags:**
+- An `ExternalTaskSensor` between DAGs on different schedules with no `execution_delta`.
+- Chains of `TriggerDagRunOperator(wait_for_completion=True)` without deferrable mode, which tie up worker slots.
+- Building a web of cross-DAG links that should have been one DAG or task groups.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you see dependencies between DAGs? — The UI's DAG dependencies view, or `airflow dags show-dependencies`.
+- Can `TriggerDagRunOperator` reuse a run id? — Yes, with `trigger_run_id`. `reset_dag_run=True` clears an existing run instead of failing.
+
+---
+
+### Q533. How does the triggerer work, and how would you write a deferrable operator?
+**ID:** AF-25
+**Topic:** Airflow > Deferrable Operators
+**Level:** Advanced
+**Frequency:** Common
+**Tags:** `airflow`, `deferrable`, `triggerer`, `asyncio`
+
+**Short Answer (2–3 lines):**
+A deferrable operator starts the work, then calls `self.defer(trigger=..., method_name=...)`. The task moves to `deferred` and gives up its worker slot. The triggerer is an asyncio process that runs thousands of triggers in one event loop. When a trigger yields an event, the task is scheduled again and continues in `method_name` with the event payload.
+
+**Detailed Explanation:**
+Lifecycle:
+1. `execute()` runs on a worker and submits the job, which is quick.
+2. `self.defer(...)` raises a special exception. The trigger is serialised (classpath and kwargs) and stored, and the task becomes `deferred`. It holds no worker slot, and by default no pool slot either.
+3. A triggerer picks the trigger up and runs `async def run()`. Each triggerer handles up to `[triggerer] capacity` triggers, 1000 by default. Run two or more triggerers for high availability; they split the triggers between them.
+4. The trigger yields a `TriggerEvent(payload)`. The task goes back to `scheduled`, a worker starts it again, and it calls `execute_complete(context, event)`. That method is a fresh call, so any state must come from the event or from `kwargs` passed to `defer`.
+
+Design rules:
+- **Never block in `run()`.** Use async clients, `asyncio.sleep` and `asyncio.to_thread` for unavoidable sync calls. One blocking call stalls every trigger in that process. Set `PYTHONASYNCIODEBUG=1` to find them.
+- **Triggers must be importable by the triggerer** and must not depend on worker-only state.
+- **Timeouts.** `defer(timeout=...)` bounds the wait. `execution_timeout` covers the *whole* task, including the deferred time.
+- **`start_from_trigger=True`** lets suitable operators go straight to the triggerer without starting on a worker at all.
+- Many provider operators support `deferrable=True`. `[operators] default_deferrable = True` turns it on everywhere it is supported.
+
+Compared with sensors in reschedule mode (see Q44, Q534): reschedule releases the slot between pokes, but every poke is still a full task start. Deferral is cheaper when there are many long waits.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 — job_trigger.py, importable by workers and the triggerer
+import asyncio
+from airflow.triggers.base import BaseTrigger, TriggerEvent
+
+
+class JobDoneTrigger(BaseTrigger):
+    """Polls an external job asynchronously inside the triggerer's event loop."""
+
+    def __init__(self, job_id: str, poll_seconds: float = 30.0):
+        super().__init__()
+        self.job_id, self.poll_seconds = job_id, poll_seconds
+
+    def serialize(self):
+        # classpath + kwargs: stored in the DB so any triggerer can rebuild this object
+        return ("job_trigger.JobDoneTrigger", {"job_id": self.job_id, "poll_seconds": self.poll_seconds})
+
+    async def run(self):
+        polls = 0
+        while True:
+            polls += 1
+            status = "SUCCEEDED" if polls >= 3 else "RUNNING"   # stand-in for an async API call
+            if status in ("SUCCEEDED", "FAILED"):
+                yield TriggerEvent({"job_id": self.job_id, "status": status, "polls": polls})
+                return
+            await asyncio.sleep(self.poll_seconds)              # never time.sleep() here
+```
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 — the DAG file
+from datetime import datetime, timedelta
+from airflow.sdk import BaseOperator, dag
+from airflow.sdk.exceptions import AirflowException
+from job_trigger import JobDoneTrigger
+
+
+class RunJobOperator(BaseOperator):
+    def __init__(self, job_name: str, poll_seconds: float = 30.0, **kwargs):
+        super().__init__(**kwargs)
+        self.job_name, self.poll_seconds = job_name, poll_seconds
+
+    def execute(self, context):
+        job_id = f"{self.job_name}-0001"          # submit the job (fast, synchronous)
+        print("submitted", job_id, "- deferring")
+        # Frees the worker slot; the task goes to state "deferred" until the trigger fires.
+        self.defer(trigger=JobDoneTrigger(job_id, self.poll_seconds),
+                   method_name="execute_complete", timeout=timedelta(hours=2))
+
+    def execute_complete(self, context, event: dict):
+        # A fresh worker process resumes here with the trigger's payload.
+        if event["status"] != "SUCCEEDED":
+            raise AirflowException(f"job {event['job_id']} ended {event['status']}")
+        print(f"job {event['job_id']} finished after {event['polls']} polls")
+        return event["job_id"]
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False)
+def deferrable_demo():
+    RunJobOperator(task_id="run_job", job_name="nightly_spark", poll_seconds=0.5)
+
+
+dag_obj = deferrable_demo()
+
+if __name__ == "__main__":
+    print(dag_obj.test().state)
+```
+```text
+submitted nightly_spark-0001 - deferring
+job nightly_spark-0001 finished after 3 polls
+success
+```
+`dag.test()` runs the trigger in-process, so you can test deferral without a triggerer.
+
+**Real-World Use Case:**
+A platform submitted about 800 Databricks and EMR jobs a night, each lasting 20 to 90 minutes. With classic operators that wait synchronously, 800 worker slots sat idle while they waited. With deferrable operators, two small triggerer pods handled all the waits, and the worker pool shrank to the size of the actual compute work.
+
+**Common Mistakes / Interviewer Red Flags:**
+- `time.sleep()` or a synchronous HTTP client inside `run()`.
+- Keeping state on `self` between `execute` and `execute_complete`. It is a new process.
+- Not running a triggerer at all, so deferred tasks wait forever.
+
+**Follow-up Questions Interviewers Ask:**
+- Where do trigger logs go? — Into the task's log, interleaved with the triggerer's output for that trigger.
+- What if a triggerer dies? — Its triggers are reassigned to a live triggerer, so `run()` should be safe to restart.
+
+---
+
+### Q534. Which sensor settings matter, and how do you write a sensor with `@task.sensor`?
+**ID:** AF-26
+**Topic:** Airflow > Sensors
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `airflow`, `sensors`, `poke-return-value`, `timeouts`
+
+**Short Answer (2–3 lines):**
+A sensor checks a condition repeatedly. The settings that matter are `poke_interval`, `timeout`, `mode` (`poke` or `reschedule`), `soft_fail` and `exponential_backoff`, plus `deferrable=True` where the sensor supports it. `@task.sensor` turns a function into a sensor. Returning `PokeReturnValue(is_done=..., xcom_value=...)` both ends the wait and hands a value to the next task.
+
+**Detailed Explanation:**
+This question is about *configuring* sensors. For poke versus reschedule versus deferrable, see Q44 and the site's guide on how sensors should wait.
+
+| Setting | Meaning | Guidance |
+|---|---|---|
+| `poke_interval` | Seconds between checks | Minutes, not seconds, for slow sources; respect API rate limits |
+| `timeout` | Total seconds before the sensor gives up | **Always set it.** The default is 7 days |
+| `mode="poke"` | Holds a worker slot the whole time | Only for waits of a few minutes |
+| `mode="reschedule"` | Frees the slot between checks; state `up_for_reschedule` | For waits of minutes to hours, when no deferrable version exists |
+| `deferrable=True` | Hands the wait to the triggerer | Best for long or numerous waits (see Q533) |
+| `soft_fail=True` | Timeout gives `skipped` instead of `failed` | When "nothing arrived" is an acceptable result |
+| `exponential_backoff=True` | Interval grows between checks | Flaky or expensive sources |
+| `max_wait` | Caps the backoff interval | Use with backoff |
+| `silent_fail=True` | Errors other than a timeout count as "not yet" | Rarely a good idea |
+
+Things to know:
+- `timeout` counts total time since the first check, and retries don't reset it. In reschedule mode, `execution_timeout` doesn't limit the overall wait either; `timeout` does.
+- A sensor that returns a value saves a second lookup. Pass the discovered path forward with `PokeReturnValue`.
+- Sensors fill pools like any other task. Hundreds of `poke` sensors can deadlock a pool.
+- If the producer is inside Airflow, an asset is usually better than any sensor (see Q528).
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.sdk import PokeReturnValue, dag, task
+
+ATTEMPTS = {"n": 0}            # stand-in for "is the partner manifest there yet?"
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False)
+def sensor_demo():
+    @task.sensor(
+        poke_interval=1,            # seconds between checks (use minutes in production)
+        timeout=30,                 # total seconds before giving up
+        mode="poke",                # "reschedule" frees the worker slot between pokes
+        exponential_backoff=False,
+        soft_fail=False,            # True = mark skipped instead of failed on timeout
+    )
+    def wait_for_manifest() -> PokeReturnValue:
+        ATTEMPTS["n"] += 1
+        found = ATTEMPTS["n"] >= 3
+        print(f"poke {ATTEMPTS['n']}: found={found}")
+        # is_done ends the wait; xcom_value is passed downstream like a return value
+        return PokeReturnValue(is_done=found, xcom_value="s3://partner/2026-05-20/manifest.json" if found else None)
+
+    @task
+    def load(manifest: str):
+        print("loading from", manifest)
+
+    load(wait_for_manifest())
+
+
+dag_obj = sensor_demo()
+
+if __name__ == "__main__":
+    print(dag_obj.test().state)
+```
+```text
+poke 1: found=False
+poke 2: found=False
+poke 3: found=True
+loading from s3://partner/2026-05-20/manifest.json
+success
+```
+The module-level counter only works because `dag.test()` runs every poke in one process. A real sensor must check outside state, because in reschedule mode each poke is a new process.
+
+**Real-World Use Case:**
+A bank's partner sent a manifest file some time between 01:00 and 05:00. The team used an S3 key sensor in deferrable mode with `timeout=5*3600` and `soft_fail=False`. When the partner didn't deliver, the sensor failed at 06:00 and paged the on-call engineer, instead of waiting quietly for the default seven days.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Leaving `timeout` at its default, so a missing file holds a slot or a deferral for a week.
+- A `poke_interval` of a few seconds against a rate-limited API.
+- Keeping state in Python globals inside a reschedule-mode sensor.
+
+**Follow-up Questions Interviewers Ask:**
+- What does `up_for_reschedule` mean? — A reschedule-mode sensor between checks. It holds no slot.
+- How do you make sensors deferrable by default? — Set `[operators] default_deferrable = True` for operators and sensors that support it.
+
+---
+
+### Q535. How do custom and object-storage XCom backends work?
+**ID:** AF-27
+**Topic:** Airflow > XCom
+**Level:** Advanced
+**Frequency:** Occasional
+**Tags:** `airflow`, `xcom`, `object-storage`, `custom-backend`
+
+**Short Answer (2–3 lines):**
+An XCom backend controls how XCom values are serialised and where they are stored. The `common.io` provider ships `XComObjectStorageBackend`. Values over a size threshold go to S3, GCS, Azure or a file path, and the database keeps only a reference. Reads resolve the reference without the DAG code changing. A custom backend subclasses `BaseXCom` and overrides `serialize_value`, `deserialize_value` and `purge`.
+
+**Detailed Explanation:**
+Q43 explains why the default backend should only hold small values. A backend changes that without touching DAG code.
+
+Configuration for the built-in object-storage backend:
+| Setting | Example |
+|---|---|
+| `[core] xcom_backend` | `airflow.providers.common.io.xcom.backend.XComObjectStorageBackend` |
+| `[common.io] xcom_objectstorage_path` | `s3://aws_default@my-bucket/xcom` |
+| `[common.io] xcom_objectstorage_threshold` | Bytes. `-1` = always DB (the default), `0` = always object storage |
+| `[common.io] xcom_objectstorage_compression` | `gzip`, `bz2`, `zip`, `lzma`, `snappy` |
+
+The environment-variable form replaces the section's dot with an underscore: `AIRFLOW__COMMON_IO__XCOM_OBJECTSTORAGE_PATH`.
+
+Things to design for:
+- **Where it runs.** In Airflow 3 serialisation happens in the worker's Task SDK. Workers need credentials for the bucket, and so does the API server if the UI is to show values.
+- **Lifecycle.** Objects outlive their DB rows unless `purge` runs, for example when task instances are cleared. Add a bucket lifecycle rule as a safety net.
+- **Security.** Bucket permissions now control who can read task outputs.
+- **What it doesn't fix.** Moving 2 GB between tasks is still slow. For real data, pass paths to tables or files you write yourself (see the site's guide on XCom vs external storage).
+- **A custom backend** fits special encodings, such as storing DataFrames as Parquet, or an internal blob store. Keep `serialize_value` deterministic and its errors clear, because every task depends on it.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3, apache-airflow-providers-common-io
+# Config (env vars here; airflow.cfg or Helm values in production):
+#   AIRFLOW__CORE__XCOM_BACKEND=airflow.providers.common.io.xcom.backend.XComObjectStorageBackend
+#   AIRFLOW__COMMON_IO__XCOM_OBJECTSTORAGE_PATH=file:///srv/xcom   (s3://aws_conn@bucket/xcom in prod)
+#   AIRFLOW__COMMON_IO__XCOM_OBJECTSTORAGE_THRESHOLD=1024           (bytes; smaller values stay in the DB)
+#   AIRFLOW__COMMON_IO__XCOM_OBJECTSTORAGE_COMPRESSION=gzip
+from datetime import datetime
+from airflow.sdk import dag, task
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False)
+def xcom_backend_demo():
+    @task
+    def small() -> int:
+        return 42                                        # under threshold -> metadata DB
+
+    @task
+    def big() -> list[dict]:
+        return [{"id": i, "sku": f"SKU-{i:05d}"} for i in range(2000)]   # over threshold -> object storage
+
+    @task
+    def use(n: int, rows: list[dict]):
+        print("small:", n, "| big rows:", len(rows), rows[-1])   # transparently read back
+
+    use(small(), big())
+
+
+dag_obj = xcom_backend_demo()
+
+if __name__ == "__main__":
+    print(dag_obj.test().state)
+```
+```text
+small: 42 | big rows: 2000 {'id': 1999, 'sku': 'SKU-01999'}
+success
+# object written:   <store>/xcom_backend_demo/manual__2026-10-17T18:43:24.878067+00:00/big/1828eda6-....gz
+# metadata DB rows: small -> 42
+#                   big   -> file:///<store>/xcom_backend_demo/manual__.../big/1828eda6-....gz
+```
+
+**Real-World Use Case:**
+A team's tasks returned API pages of a few hundred KB, and the `xcom` table grew to tens of GB, which slowed DB backups and upgrades. They switched to the object-storage backend with a 64 KB threshold, gzip compression and a 30-day lifecycle rule on the bucket. The table shrank to a few MB, and no DAG code changed.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Treating an object-storage backend as permission to pass big datasets through XCom.
+- Forgetting worker credentials for the bucket. The tasks then fail when they push, not at parse time.
+- Writing `AIRFLOW__COMMON.IO__...` as an environment variable. Shells won't export the dot, and Airflow reads `COMMON_IO`.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you implement a custom backend? — Subclass `airflow.sdk.BaseXCom`, override `serialize_value` and `deserialize_value` (and `purge`), and point `[core] xcom_backend` to it.
+- Why did pandas 3 come up in the 3.3.1 notes? — It changed how DataFrame XComs are stored and read back. Check serialisation whenever you upgrade libraries.
+
+---
+
+### Q536. How do TaskFlow tasks pass values: return values, `multiple_outputs` and named XComs?
+**ID:** AF-28
+**Topic:** Airflow > XCom
+**Level:** Beginner
+**Frequency:** Common
+**Tags:** `airflow`, `xcom`, `taskflow`, `multiple-outputs`
+
+**Short Answer (2–3 lines):**
+A TaskFlow return value becomes the `return_value` XCom, and passing it to another task wires the dependency. With `multiple_outputs=True`, or a `dict`/`TypedDict` return annotation, each key is also pushed as its own XCom, and `result["key"]` passes one key on. `ti.xcom_push` and `ti.xcom_pull` remain for named values and classic operators.
+
+**Detailed Explanation:**
+| Need | How |
+|---|---|
+| Pass the whole result | `b(a())` |
+| Pass one field of a dict result | `meta = a(); b(meta["path"])`, with `multiple_outputs` on |
+| A value under a custom key | `ti.xcom_push(key="published_path", value=...)` |
+| Read from a classic operator | `op.output`, or `op.output["key"]` |
+| Read in Jinja | `{{ ti.xcom_pull(task_ids='a', key='rows') }}` |
+| Read one mapped instance | `ti.xcom_pull(task_ids="a", map_indexes=2)` |
+
+Things to remember:
+- `multiple_outputs` is inferred from a `dict` or `TypedDict` return annotation. Pass `multiple_outputs=False` to stop it.
+- Values must be serialisable. Primitives, lists, dicts, dataclasses and a few library types work through Airflow's serde. Pickling is not the default.
+- XComs belong to one DAG run and one try. Clearing a task deletes its XComs, so downstream tasks must not expect old values.
+- Return **pointers** (paths, table names, counts, ids), not data (see Q43, Q535).
+- `do_xcom_push=False` on classic operators stops them from pushing anything, for example a huge stdout from a Bash command.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.sdk import dag, task
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False)
+def passing_data():
+    @task(multiple_outputs=True)       # also inferred from a dict / TypedDict return annotation
+    def extract() -> dict:
+        # Return a pointer to the data, not the data itself
+        return {"path": "s3://lake/raw/orders/2026-05-20.parquet", "rows": 1834}
+
+    @task
+    def validate(path: str, rows: int) -> str:
+        if rows == 0:
+            raise ValueError("empty extract")
+        return path
+
+    @task
+    def publish(path: str, ti=None):
+        ti.xcom_push(key="published_path", value=path)     # an extra, named XCom
+        print("published", path)
+
+    @task
+    def audit(ti=None):
+        # Pull by task id and key; TaskFlow wiring would be nicer, this shows the raw API
+        print("audit saw:", ti.xcom_pull(task_ids="publish", key="published_path"),
+              "| rows key:", ti.xcom_pull(task_ids="extract", key="rows"))
+
+    meta = extract()
+    publish(validate(meta["path"], meta["rows"])) >> audit()   # meta["path"] -> XComArg for one key
+
+
+dag_obj = passing_data()
+
+if __name__ == "__main__":
+    print(dag_obj.test().state)
+```
+```text
+published s3://lake/raw/orders/2026-05-20.parquet
+audit saw: s3://lake/raw/orders/2026-05-20.parquet | rows key: 1834
+success
+```
+
+**Real-World Use Case:**
+An ingestion task returned `{"path": ..., "rows": ..., "max_ts": ...}`. A quality task used `rows`, the load task used `path`, and the watermark task used `max_ts`. Each took only the key it needed, so the graph showed exactly which value each step depended on.
+
+**Common Mistakes / Interviewer Red Flags:**
+- `xcom_pull` with no `task_ids`, or a misspelt key, which returns `None` without an error.
+- Expecting XComs to survive a clear, or to be shared between DAG runs.
+- Returning a DataFrame "because it worked in dev".
+
+**Follow-up Questions Interviewers Ask:**
+- Why not just use globals? — Every task runs in its own process, possibly on another machine. Only XCom, storage or the state store crosses that boundary.
+- What is the 3.3 task state store for? — Key/value state that persists across retries and runs, such as a watermark. XComs, by contrast, belong to one run.
+
+---
+
+### Q537. What are pools, and how do you use them to protect a shared system?
+**ID:** AF-29
+**Topic:** Airflow > Pools
+**Level:** Beginner
+**Frequency:** Common
+**Tags:** `airflow`, `pools`, `concurrency`, `resource-management`
+
+**Short Answer (2–3 lines):**
+A pool is a named number of slots shared by every DAG. A task that names the pool takes `pool_slots` slots, 1 by default, while it runs. When the pool is full, further tasks wait in `scheduled`. Pools cap load on a shared system, such as at most 4 concurrent warehouse rebuilds, whichever DAG starts them.
+
+**Detailed Explanation:**
+- **Default.** Tasks without a pool use `default_pool`, which has 128 slots (`[core] default_pool_task_slot_count`).
+- **Create pools** with `airflow pools set NAME SLOTS "description"`, the REST API, the UI, or your infrastructure code. Pools are deployment state, not DAG code, so manage them like config.
+- **Weighting.** `pool_slots=3` lets one heavy query count as three light ones.
+- **Deferred tasks** don't use pool slots unless the pool has `include_deferred=True`.
+- **Order in a full pool.** Higher `priority_weight` goes first (see Q538).
+- **Mapping.** Every mapped instance takes slots, so a pool is the natural limit for a large fan-out against one system (see Q520).
+
+Pools compared with other limits:
+| Limit | Scope |
+|---|---|
+| Pool | Across all DAGs, per resource |
+| `max_active_tis_per_dag` / `max_active_tis_per_dagrun` | One task (all of its copies) |
+| `max_active_tasks` | One DAG across its runs |
+| `parallelism` | The whole scheduler |
+
+See Q539 for how they combine.
+
+A task that names a pool which doesn't exist won't be scheduled. Create pools before deploying the DAGs that use them, and test that every referenced pool exists in CI (see Q552).
+
+**Example / Code:**
+```bash
+# Runtime: Apache Airflow 3.3 CLI
+airflow pools set warehouse_heavy 4 "Big warehouse queries" --include-deferred
+airflow pools list
+```
+```text
+Pool warehouse_heavy created
+pool            | slots | description           | include_deferred | team_name
+================+=======+=======================+==================+==========
+default_pool    | 128   | Default pool          | False            | None
+warehouse_heavy | 4     | Big warehouse queries | True             | None
+```
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.sdk import dag, task
+
+
+@dag(schedule="0 4 * * *", start_date=datetime(2026, 1, 1), catchup=False)
+def nightly_marts():
+    # Every mapped copy competes for the same 4 slots, across ALL DAGs using this pool.
+    @task(pool="warehouse_heavy", pool_slots=1)
+    def build_mart(name: str):
+        print("building", name)
+
+    # A very heavy statement can take several slots of the same pool.
+    @task(pool="warehouse_heavy", pool_slots=3)
+    def rebuild_fact_sales():
+        print("rebuilding fact_sales")
+
+    build_mart.expand(name=["finance", "marketing", "ops"]) >> rebuild_fact_sales()
+
+
+dag_obj = nightly_marts()
+
+if __name__ == "__main__":
+    run = dag_obj.test()
+    print({(ti.task_id, ti.map_index): (ti.pool, ti.pool_slots) for ti in run.get_task_instances()})
+    print(run.state)
+```
+```text
+{('build_mart', 0): ('warehouse_heavy', 1), ('build_mart', 1): ('warehouse_heavy', 1), ('build_mart', 2): ('warehouse_heavy', 1), ('rebuild_fact_sales', -1): ('warehouse_heavy', 3)}
+success
+```
+
+**Real-World Use Case:**
+Twenty teams' DAGs all ran heavy SQL against one shared warehouse around 04:00, and queued queries regularly hit the warehouse's concurrency limit. A `warehouse_heavy` pool with 6 slots made Airflow queue the excess itself. Teams could see their tasks waiting for a slot in the UI, instead of getting cryptic warehouse timeouts.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Using pools as a per-DAG throttle when `max_active_tasks` or `max_active_runs` is meant for that.
+- Long poke-mode sensors in a small pool, which starve the real work.
+- Referencing a pool in code that was never created in production.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you see pool pressure? — The Pools page shows running, queued and scheduled slots. The `pool.open_slots` and `pool.starving_tasks` metrics, tagged by pool, expose it too.
+- Can pools be team-scoped? — In 3.2+ multi-team deployments, pools can be assigned to a team.
+
+---
+
+### Q538. How do priority weights and `weight_rule` decide what runs first?
+**ID:** AF-30
+**Topic:** Airflow > Priority Weights
+**Level:** Intermediate
+**Frequency:** Occasional
+**Tags:** `airflow`, `priority-weight`, `scheduling`, `pools`
+
+**Short Answer (2–3 lines):**
+When slots are scarce, the scheduler queues task instances with the highest *effective* priority weight first. `weight_rule` decides how the effective weight is computed. `downstream`, the default, adds the weights of every task downstream. `upstream` adds the weights of every task upstream. `absolute` uses the task's own `priority_weight` only.
+
+**Detailed Explanation:**
+For a three-task chain `extract >> clean >> load` where `load` has `priority_weight=10` and the others 1 (output below):
+
+| `weight_rule` | extract | clean | load | Effect |
+|---|---|---|---|---|
+| `downstream` (default) | 12 | 11 | 10 | Starts many new pipelines (breadth first) |
+| `upstream` | 1 | 2 | 12 | Finishes pipelines that are already running (depth first) |
+| `absolute` | 1 | 1 | 10 | Only explicit weights count; cheapest to compute |
+
+Points to make:
+- Weights only matter when something is **full**: a pool, `parallelism` or executor slots. With spare capacity, everything ready runs.
+- Weights are compared across DAGs. Use weights to put the CFO dashboard's DAG ahead of an exploratory backfill.
+- `upstream` is good for long DAGs, so half-finished runs don't wait behind brand-new ones. That helps especially during catchup or backfills.
+- `absolute` is cheap and predictable on very large DAGs.
+- A custom `PriorityWeightStrategy`, registered through a plugin, can compute weights from task attributes.
+- Weight doesn't pre-empt anything. A running low-priority task keeps its slot.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.sdk import DAG, WeightRule
+from airflow.providers.standard.operators.empty import EmptyOperator
+
+dags = {}
+for rule in (WeightRule.DOWNSTREAM, WeightRule.UPSTREAM, WeightRule.ABSOLUTE):
+    with DAG(f"weights_{rule.value}", schedule=None, start_date=datetime(2026, 1, 1),
+             default_args={"weight_rule": rule}) as d:
+        extract = EmptyOperator(task_id="extract")
+        clean = EmptyOperator(task_id="clean")
+        load = EmptyOperator(task_id="load", priority_weight=10)   # own weight 10, others 1
+        extract >> clean >> load
+    dags[rule.value] = d
+
+if __name__ == "__main__":
+    for name, d in dags.items():
+        run = d.test()
+        # the effective weight the scheduler stored on each task instance
+        print(f"{name:10}", {ti.task_id: ti.priority_weight for ti in
+                             sorted(run.get_task_instances(), key=lambda t: ["extract", "clean", "load"].index(t.task_id))})
+```
+```text
+downstream {'extract': 12, 'clean': 11, 'load': 10}
+upstream   {'extract': 1, 'clean': 2, 'load': 12}
+absolute   {'extract': 1, 'clean': 1, 'load': 10}
+```
+
+**Real-World Use Case:**
+During a 90-day backfill, the backfill's runs crowded out the daily production loads in a shared pool. The team gave production DAGs `priority_weight=100` with `weight_rule="absolute"` and left the backfill at 1. Production tasks got the next free slot every time, and the backfill used whatever capacity was left.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Expecting priority to speed things up when there is spare capacity.
+- Raising weights everywhere ("everything is priority 100"), which changes nothing.
+- Not knowing the default rule adds up downstream weights, so long DAGs win over short ones.
+
+**Follow-up Questions Interviewers Ask:**
+- Where is weight applied — the scheduler or the executor? — The scheduler orders what it queues. Celery queues and Kubernetes scheduling add their own ordering after that.
+- How do you give a whole DAG priority? — `default_args={"priority_weight": ..., "weight_rule": "absolute"}`.
+
+---
+
+### Q539. How do Airflow's concurrency limits stack, from `parallelism` down to a single task?
+**ID:** AF-31
+**Topic:** Airflow > Concurrency
+**Level:** Advanced
+**Frequency:** Common
+**Tags:** `airflow`, `concurrency`, `max-active-runs`, `scaling`
+
+**Short Answer (2–3 lines):**
+A task instance only starts when *every* limit on it has room. The limits are: `[core] parallelism` per scheduler, the executor's or worker's slots, the pool, the DAG's `max_active_tasks` and `max_active_runs`, and the task's `max_active_tis_per_dag` and `max_active_tis_per_dagrun`. The tightest limit wins, so "tasks stuck in scheduled" usually means one of these is full.
+
+**Detailed Explanation:**
+| Level | Setting | Default (3.3) | Limits |
+|---|---|---|---|
+| Scheduler | `[core] parallelism` | 32 | Running + queued task instances per scheduler |
+| Executor | Celery `worker_concurrency`, K8s quotas, Local process count | Celery 16 per worker | Physical slots |
+| Pool | `slots` per pool | `default_pool` 128 | One resource, across all DAGs |
+| DAG | `max_active_tasks` | `[core] max_active_tasks_per_dag` = 16 | Running tasks of one DAG across all its runs |
+| DAG | `max_active_runs` | `[core] max_active_runs_per_dag` = 16 | Concurrent runs (catchup, backfill) |
+| Task | `max_active_tis_per_dag` | None | Copies of one task across runs |
+| Task | `max_active_tis_per_dagrun` | None | Copies of one task within a run (mapping) |
+| Backfill | `--max-active-runs` | n/a | That backfill only (see Q526) |
+
+Related settings:
+- `max_consecutive_failed_dag_runs` pauses a DAG automatically after N failed runs in a row.
+- `[scheduler] max_tis_per_query` controls how many task instances the scheduler examines per loop. It is a throughput knob, not a limit.
+- With two or more schedulers, `parallelism` applies **per scheduler**, so the total capacity multiplies (see Q545).
+
+How to diagnose: open a task stuck in `scheduled`. The UI's task-instance details, or `airflow tasks failed-deps <dag_id> <task_id> <run_id>`, list the unmet dependency, such as "pool full" or "max_active_tasks reached". Then raise the limit that is actually the bottleneck. Raising `parallelism` does nothing when the pool is full. See the site's guide on finding why tasks sit in scheduled or queued.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.configuration import conf
+from airflow.sdk import dag, task
+
+
+@dag(
+    schedule="@hourly", start_date=datetime(2026, 1, 1), catchup=True,
+    max_active_runs=3,                 # at most 3 runs of this DAG at once (catchup can't flood)
+    max_active_tasks=8,                # at most 8 running task instances across those runs
+    max_consecutive_failed_dag_runs=5, # auto-pause after 5 failed runs in a row
+)
+def throttled_ingest():
+    @task(max_active_tis_per_dagrun=2,     # per run: 2 copies of this task at once
+          max_active_tis_per_dag=4,        # across all runs: 4 copies at once
+          pool="partner_api")              # across ALL DAGs: pool slots
+    def fetch_page(page: int):
+        print("page", page)
+
+    fetch_page.expand(page=list(range(20)))
+
+
+d = throttled_ingest()
+
+if __name__ == "__main__":
+    t = d.get_task("fetch_page")
+    print("[core] parallelism:", conf.getint("core", "parallelism"),
+          "| max_active_tasks_per_dag default:", conf.getint("core", "max_active_tasks_per_dag"),
+          "| max_active_runs_per_dag default:", conf.getint("core", "max_active_runs_per_dag"))
+    print("DAG:", {"max_active_runs": d.max_active_runs, "max_active_tasks": d.max_active_tasks,
+                   "max_consecutive_failed_dag_runs": d.max_consecutive_failed_dag_runs})
+    print("task:", {"per_dagrun": t.max_active_tis_per_dagrun, "per_dag": t.max_active_tis_per_dag, "pool": t.pool})
+```
+```text
+[core] parallelism: 32 | max_active_tasks_per_dag default: 16 | max_active_runs_per_dag default: 16
+DAG: {'max_active_runs': 3, 'max_active_tasks': 8, 'max_consecutive_failed_dag_runs': 5}
+task: {'per_dagrun': 2, 'per_dag': 4, 'pool': 'partner_api'}
+```
+For this DAG, at most 4 `fetch_page` copies run at once, and only if the `partner_api` pool and the scheduler's `parallelism` both have room.
+
+**Real-World Use Case:**
+A platform raised Celery workers from 4 to 12, but throughput didn't change. `failed-deps` showed "Task Instance Slots Available: parallelism reached". `parallelism` was still 32, while the 12 workers offered 192 slots. Raising it to 192, and setting per-DAG `max_active_tasks` so one DAG couldn't take everything, let the new workers do useful work.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Turning on `catchup=True` for an hourly DAG with a year-old `start_date` and the default `max_active_runs` of 16.
+- Using one huge pool as the only control and ignoring the DAG-level limits.
+- Not knowing that `parallelism` is per scheduler.
+
+**Follow-up Questions Interviewers Ask:**
+- What happened to `concurrency` and `task_concurrency`? — They were renamed to `max_active_tasks` and `max_active_tis_per_dag`. The old names are gone in Airflow 3.
+- How do you protect a downstream API from all DAGs? — With a pool (see Q537).
+
+---
+
+### Q540. How do you configure retries, backoff, timeouts and the 3.3 retry policies?
+**ID:** AF-32
+**Topic:** Airflow > Retries and Timeouts
+**Level:** Intermediate
+**Frequency:** Very Common
+**Tags:** `airflow`, `retries`, `execution-timeout`, `retry-policy`
+
+**Short Answer (2–3 lines):**
+`retries` and `retry_delay` set how many times and how long to wait. `retry_exponential_backoff` grows the delay, with a numeric multiplier allowed since 3.2, and `max_retry_delay` caps it. `execution_timeout` kills a single hung try. Airflow 3.3 adds `retry_policy`, which retries, fails fast or falls back to the defaults depending on the exception. `AirflowFailException` always fails at once.
+
+**Detailed Explanation:**
+| Setting | Scope | Notes |
+|---|---|---|
+| `retries` | Task | Default `[core] default_task_retries` = 0. Set it in `default_args` |
+| `retry_delay` | Task | Default 300 s |
+| `retry_exponential_backoff` | Task | `True` or a multiplier such as `2.0` (3.2+); adds jitter |
+| `max_retry_delay` | Task | Cap for the backoff |
+| `execution_timeout` | **One try** | Kills the try and counts as a failure, which may be retried |
+| `dagrun_timeout` | DAG run | Marks a run that runs too long as failed |
+| `retry_policy` (3.3) | Task | `ExceptionRetryPolicy(rules=[RetryRule(...)])`, or subclass `RetryPolicy` |
+| `AirflowFailException` | Raised in code | No retries, ever |
+
+How retry policies work: rules are checked in order against the exception, using `isinstance` by default, and the first match wins. An action of `RETRY` can set its own delay but never goes beyond `retries`. `FAIL` stops now. `DEFAULT` falls back to the normal settings, and so does an exception no rule matches. The policy runs in the worker, and its decision is written to the task log. A subclass can inspect HTTP status codes, `Retry-After` headers or `dag_run.run_type`.
+
+Rules of thumb:
+- Retry *transient* errors such as timeouts, 429s, 5xx responses and lost connections. Fail fast on bad credentials, 4xx responses, schema errors and bad input.
+- Retries are only safe if the task is idempotent (see Q46 and the site's guide on retries and idempotency).
+- Always set `execution_timeout` on tasks that call networks. A hung socket otherwise holds a slot until the heartbeat timeout fires (see Q557).
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 (retry policies are new in 3.3)
+from datetime import datetime, timedelta
+from airflow.sdk import ExceptionRetryPolicy, RetryAction, RetryRule, dag, task
+
+CALLS = {"flaky": 0}
+
+# First matching rule wins; anything unmatched falls back to retries/retry_delay.
+API_POLICY = ExceptionRetryPolicy(rules=[
+    RetryRule(exception=PermissionError, action=RetryAction.FAIL, reason="bad credentials, retrying won't help"),
+    RetryRule(exception=ConnectionError, action=RetryAction.RETRY, retry_delay=timedelta(seconds=1)),
+])
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False,
+     default_args={
+         "retries": 3,
+         "retry_delay": timedelta(seconds=1),
+         "retry_exponential_backoff": 2.0,          # numeric multiplier since 3.2 (True = 2)
+         "max_retry_delay": timedelta(minutes=30),
+         "execution_timeout": timedelta(minutes=10),  # per try; kills a hung call
+         "retry_policy": API_POLICY,
+     })
+def retry_demo():
+    @task
+    def flaky_api():
+        CALLS["flaky"] += 1
+        if CALLS["flaky"] < 3:
+            raise ConnectionError(f"timeout on attempt {CALLS['flaky']}")
+        print("succeeded on attempt", CALLS["flaky"])
+
+    @task
+    def bad_credentials():
+        raise PermissionError("token rejected")
+
+    flaky_api()
+    bad_credentials()
+
+
+dag_obj = retry_demo()
+
+if __name__ == "__main__":
+    run = dag_obj.test()
+    for ti in sorted(run.get_task_instances(), key=lambda t: t.task_id):
+        print(f"{ti.task_id:16} state={ti.state} try_number={ti.try_number} max_tries={ti.max_tries}")
+```
+```text
+succeeded on attempt 3
+bad_credentials  state=failed try_number=1 max_tries=3
+flaky_api        state=success try_number=3 max_tries=3
+```
+`bad_credentials` had 3 retries available but failed on its first try, because of the policy's `FAIL` rule.
+
+**Real-World Use Case:**
+A marketing-API extractor had `retries=5`. When an expired token caused 401s, it retried for 40 minutes before failing, and the on-call engineer only heard about it after the dashboards were late. A retry policy that fails at once on auth errors, while still retrying 429s and 5xx with backoff, cut the alert time to about a minute.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Treating `execution_timeout` as a whole-run timeout. It applies to each try, including time spent deferred.
+- Retrying non-idempotent appends, which duplicates data on every retry.
+- Very many retries with no backoff against a struggling dependency.
+
+**Follow-up Questions Interviewers Ask:**
+- Can a retry policy add tries? — No. It can fail earlier or change the delay, but `retries` stays the maximum.
+- How do you retry a whole DAG? — Clear the failed run. For automatic DAG-level retries, the docs show a pattern based on a failure callback.
+
+---
+
+### Q541. SLAs were removed in Airflow 3. How do Deadline Alerts replace them?
+**ID:** AF-33
+**Topic:** Airflow > Deadline Alerts
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `airflow`, `deadline-alerts`, `sla`, `alerting`
+
+**Short Answer (2–3 lines):**
+The old `sla` and `sla_miss_callback` were removed in 3.0. Passing them now only gives a warning. Since 3.1, a DAG declares `deadline=DeadlineAlert(reference=..., interval=..., callback=...)`. When a run has not finished by reference + interval, the callback runs. Callbacks are `AsyncCallback` (run in the triggerer) or `SyncCallback` (run by the executor, since 3.2). The feature is still marked experimental.
+
+**Detailed Explanation:**
+Why SLAs went away: they were measured from odd anchors, they were evaluated by the DAG processor, and they misfired around catchup. Deadlines are explicit.
+
+References (the point the clock starts from):
+| Reference | Deadline = |
+|---|---|
+| `DAGRUN_LOGICAL_DATE` | Scheduled time + interval. "Done by 04:00 for the 01:00 run", even if the run never started |
+| `DAGRUN_QUEUED_AT` | Queue time + interval. Catches capacity problems |
+| `FIXED_DATETIME(dt)` | A wall-clock time; a negative interval alerts *before* it |
+| `AVERAGE_RUNTIME(max_runs, min_runs)` | Now + historical average + interval. No deadline is set if there aren't enough runs |
+| Custom reference | Any function that returns a timestamp |
+
+Callbacks:
+- `AsyncCallback(callable_or_notifier, kwargs=...)` runs in the **triggerer**. The callable must be importable there, for example from the plugins folder, and the triggerer needs a restart after you change it.
+- `SyncCallback(...)` (3.2+) is sent to the executor and runs as a top-priority task.
+- Templated kwargs such as `{{ dag_run.dag_id }}` and `{{ deadline.deadline_time }}` work with notifiers, and a `context` kwarg is passed in.
+- Airflow 3.3 adds a Deadlines page under Browse.
+
+How to migrate: map each old `sla=timedelta(...)` to a `DAGRUN_LOGICAL_DATE` deadline at the DAG level, and send it to the same channel. Remember that the old SLAs were per task, while deadlines are per DAG run. *Product behaviour changes; checked October 2026.*
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 — plugins/deadline_callbacks.py
+def page_finance_oncall(**kwargs):
+    context = kwargs.get("context", {})
+    dag_id = context.get("dag_run", {}).get("dag_id")
+    print(f"[{kwargs['severity']}] {dag_id} missed its deadline")
+```
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 (Deadline Alerts: 3.1+, experimental) — dags/finance_close.py
+from datetime import datetime, timedelta
+from airflow.sdk import DeadlineAlert, DeadlineReference, SyncCallback, dag, task
+from deadline_callbacks import page_finance_oncall
+
+
+@dag(
+    schedule="0 1 * * *",
+    start_date=datetime(2026, 1, 1),
+    catchup=False,
+    # "Must be finished 3 hours after its scheduled time", whether or not it has started.
+    deadline=DeadlineAlert(
+        reference=DeadlineReference.DAGRUN_LOGICAL_DATE,
+        interval=timedelta(hours=3),
+        callback=SyncCallback(page_finance_oncall, kwargs={"severity": "P2"}),
+    ),
+)
+def finance_close():
+    @task
+    def reconcile():
+        print("reconciling ledgers")
+
+    reconcile()
+
+
+finance_close()
+```
+```text
+# DagBag parse, then calling the callback the way Airflow does on a miss:
+errors: {}
+reference: DagRunLogicalDateDeadline | interval: 3:00:00 | callback: deadline_callbacks.page_finance_oncall
+[P2] finance_close missed its deadline
+```
+
+**Real-World Use Case:**
+A month-end close DAG had to finish by 04:00 for the controllers. In 2.x its SLA was measured per task from odd anchors and fired inconsistently. A `DAGRUN_LOGICAL_DATE` deadline of 3 hours paged the on-call engineer at 04:00 whenever the 01:00 run wasn't done. That included nights when a scheduler outage meant the run never started, which a duration check alone would have missed.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Saying "set `sla=` on the task" for Airflow 3.
+- Defining an `AsyncCallback` that the triggerer can't import.
+- Using only `AVERAGE_RUNTIME` on a new DAG, which sets no deadline until enough runs exist.
+
+**Follow-up Questions Interviewers Ask:**
+- Can a DAG have several deadlines? — Yes. Pass a list of `DeadlineAlert`s, for example a warning at +2 h and a page at +3 h.
+- Deadline or `dagrun_timeout`? — `dagrun_timeout` *fails* a run that takes too long. A deadline only *alerts*, and can fire before the run has even started.
+
+---
+
+### Q542. How do callbacks and notifiers work, and where do they run?
+**ID:** AF-34
+**Topic:** Airflow > Callbacks and Alerting
+**Level:** Beginner
+**Frequency:** Common
+**Tags:** `airflow`, `callbacks`, `notifiers`, `alerting`
+
+**Short Answer (2–3 lines):**
+Tasks accept `on_execute_callback`, `on_success_callback`, `on_failure_callback`, `on_retry_callback` and `on_skipped_callback`. DAGs accept success and failure callbacks. Each takes a function, a list of functions, or a notifier: a `BaseNotifier` subclass with templated fields, such as the Slack, SMTP or PagerDuty notifiers from providers. Task callbacks run where the task ran. DAG-level callbacks are run by the DAG processor, so their errors show up in its logs.
+
+**Detailed Explanation:**
+| Callback | Fires when | Level |
+|---|---|---|
+| `on_execute_callback` | Just before the task executes | Task |
+| `on_success_callback` | Task or run succeeded | Task, DAG |
+| `on_failure_callback` | Task failed for good, or run failed | Task, DAG |
+| `on_retry_callback` | Task failed and will retry | Task |
+| `on_skipped_callback` | Task raised `AirflowSkipException` while running | Task |
+
+Behaviour to know:
+- Callbacks fire only for state changes caused by running tasks. Marking a task failed or successful in the UI or CLI doesn't trigger them.
+- In 3.0+ `on_success_callback` no longer fires for tasks that end `skipped`.
+- Put task callbacks in `default_args` to cover every task. Put a DAG-level `on_failure_callback` on the DAG for one alert per run instead of one per task.
+- **Notifiers** are reusable classes with `template_fields` and `notify(context)`. Prefer provider notifiers, such as `SlackNotifier` or `SmtpNotifier`, over hand-written HTTP calls.
+- A callback must be quick and must not fail. An exception in it is only logged, so the alert is lost.
+- For "the run didn't finish by a certain time", use Deadline Alerts (see Q541). For alerting patterns overall, see the site's guide on failure handling and alerting.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime, timedelta
+from airflow.sdk import BaseNotifier, dag, task
+
+
+class ChatNotifier(BaseNotifier):
+    """Reusable alert: template_fields are rendered with the task's context, like an operator."""
+    template_fields = ("message",)
+
+    def __init__(self, message: str, channel: str = "#data-alerts"):
+        super().__init__()
+        self.message, self.channel = message, channel
+
+    def notify(self, context):
+        # real version: post to Slack/Teams via a provider hook or notifier
+        print(f"to {self.channel}: {self.message}")
+
+
+def log_retry(context):                      # plain-function callbacks work too
+    ti = context["ti"]
+    print(f"retrying {ti.task_id}, try {ti.try_number}")
+
+
+@dag(
+    schedule=None, start_date=datetime(2026, 1, 1), catchup=False,
+    on_failure_callback=ChatNotifier("DAG {{ dag.dag_id }} run {{ run_id }} FAILED"),
+    default_args={
+        "retries": 1, "retry_delay": timedelta(seconds=1),
+        "on_retry_callback": log_retry,
+        "on_failure_callback": ChatNotifier("task {{ ti.task_id }} failed after {{ ti.try_number }} tries"),
+    },
+)
+def alerting_demo():
+    @task
+    def load():
+        raise RuntimeError("warehouse unavailable")
+
+    load()
+
+
+dag_obj = alerting_demo()
+
+if __name__ == "__main__":
+    print(dag_obj.test().state)
+```
+```text
+retrying load, try 1
+to #data-alerts: task load failed after 2 tries
+failed
+```
+In this local `dag.test()` run only the task-level callbacks printed. In a deployment, the DAG-level `on_failure_callback` is run by the DAG processor once the run fails.
+
+**Real-World Use Case:**
+A team with 300 tasks had a task-level `on_failure_callback` posting to Slack. A single warehouse outage produced 300 messages, and the channel got muted. They moved the alert to DAG level with a notifier that lists the failed task ids, and kept task-level alerts only for a few critical tasks. One incident became one message.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Expecting callbacks to fire after marking a task failed in the UI.
+- Doing heavy work, such as queries or retries, inside a callback.
+- Hard-coding webhook URLs in DAG code instead of keeping them in a connection.
+
+**Follow-up Questions Interviewers Ask:**
+- Where do you find callback errors? — Task callbacks in the task log. DAG callbacks in the DAG processor logs.
+- Can you attach several notifiers? — Yes. Pass a list, for example Slack and PagerDuty.
+
+---
+
+### Q543. How do multiple executors work, and how do you route a task to a specific one?
+**ID:** AF-35
+**Topic:** Airflow > Executors
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `airflow`, `executors`, `multiple-executors`, `routing`
+
+**Short Answer (2–3 lines):**
+Since 2.10 you can list several executors, for example `[core] executor = CeleryExecutor,KubernetesExecutor`. The first is the default. A task picks another with `executor="KubernetesExecutor"` or an alias, and a whole DAG can do it through `default_args`. Airflow 3 removed the hybrid CeleryKubernetes and LocalKubernetes executors in favour of this.
+
+**Detailed Explanation:**
+Q42 compares the executors themselves. This question is about running more than one.
+
+Configuration:
+- `executor = LocalExecutor,CeleryExecutor`, or with aliases: `executor = fast:CeleryExecutor,isolated:KubernetesExecutor`.
+- Every component (schedulers, API server, workers, DAG processor) must have the **same** list. A task that names an executor not in the list makes the **DAG fail to parse** (output below).
+- One class can't be listed twice, except across teams in multi-team mode (3.2+).
+
+Routing:
+| Scope | How |
+|---|---|
+| One task | `@task(executor="KubernetesExecutor")` or `Operator(executor=...)` |
+| Whole DAG | `default_args={"executor": "..."}` |
+| Per-executor settings | `executor_config={"pod_override": k8s.V1Pod(...)}` for Kubernetes; `queue=` for Celery |
+
+Typical layouts:
+- **Celery default + Kubernetes for the heavy work**: low latency for thousands of light tasks, isolation for big ones.
+- **Local default + an ECS, Batch or Kubernetes executor**: a small single-machine deployment that can burst.
+- **Celery + EdgeExecutor**: run some tasks on remote sites or in other networks (see Q544).
+
+Each executor reports its own metrics, such as `executor.open_slots.<executor class name>`. Watch each one separately. An idle Kubernetes executor doesn't help when the Celery queue is full.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+# airflow.cfg (every component must have the same list):
+#   [core] executor = CeleryExecutor,KubernetesExecutor     # first = default
+from datetime import datetime
+from airflow.sdk import dag, task
+
+
+@dag(schedule="0 2 * * *", start_date=datetime(2026, 1, 1), catchup=False)
+def mixed_executors():
+    @task                                              # default executor (first in the list)
+    def trigger_warehouse_job():
+        print("submitting SQL")
+
+    @task(executor="KubernetesExecutor",               # own pod, own resources
+          executor_config={"pod_override": None})      # e.g. a k8s V1Pod with 16Gi memory
+    def train_model():
+        print("training")
+
+    trigger_warehouse_job() >> train_model()
+
+
+mixed_executors()
+```
+```text
+# Parsed on a deployment configured with only "executor = LocalExecutor":
+dags: []
+import error: UnknownExecutorException: Task 'train_model' specifies executor 'KubernetesExecutor', which is not available. Make sure it is listed in your [core] executors co...
+```
+
+**Real-World Use Case:**
+A company ran Celery for about 5,000 short "submit and poll" tasks a day. A few ML-feature tasks needed 32 GB of RAM and GPU libraries. Routing those to the Kubernetes executor with a `pod_override` let them have their own images and node pools. The Celery workers stayed small and identical.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Configuring the second executor on the scheduler but not on other components, which leads to parse errors in some places.
+- Proposing CeleryKubernetesExecutor for Airflow 3.
+- Confusing `executor=` with `queue=`. A queue routes between Celery worker groups *within* the Celery executor.
+
+**Follow-up Questions Interviewers Ask:**
+- How does this relate to KubernetesPodOperator? — KPO runs a pod from any executor. Executor routing decides where the Airflow task process itself runs (see Q546).
+- Does the scheduler run the executors? — Yes. Executor logic runs inside each scheduler process; there is no separate executor service.
+
+---
+
+### Q544. What is the Edge Executor, and when would you use it?
+**ID:** AF-36
+**Topic:** Airflow > Executors
+**Level:** Advanced
+**Frequency:** Occasional
+**Tags:** `airflow`, `edge-executor`, `remote-execution`, `hybrid`
+
+**Short Answer (2–3 lines):**
+The `EdgeExecutor`, from the `apache-airflow-providers-edge3` package, sends tasks to lightweight **edge workers** that run anywhere with outbound HTTPS to the API server: a factory, a branch office, another cloud or an on-premises data centre. Workers pull jobs over HTTP, so nothing needs inbound firewall rules, a message broker or database access. It usually runs alongside Celery or Kubernetes as one of several executors.
+
+**Detailed Explanation:**
+How it works:
+- The central scheduler queues jobs for the `EdgeExecutor`. The API server exposes the edge API (`[edge] api_enabled = True`, `[edge] api_url`).
+- An edge worker started with `airflow edge worker -q <queues>` polls for jobs, runs them with the Task SDK, and sends back heartbeats and logs over HTTPS. It authenticates with the shared `[api_auth] jwt_secret`.
+- Tasks are routed with `executor="EdgeExecutor"` plus a `queue` that only the right site's workers listen on. If the Edge Executor isn't the default, both are needed.
+- On Airflow 3.2+, the provider registers its own database tables automatically. Older versions need `[database] external_db_managers`.
+- From 3.2, multi-team mode can give each team its own Edge Executor and workers.
+
+Requirements and limits:
+- Each worker needs Airflow, the Task SDK, the edge3 provider and the libraries its tasks use. DAG files must be synced to it, for example by Git sync, because the worker parses them.
+- Configuration must match the central site.
+- Throughput and latency depend on HTTP polling. It suits tens to hundreds of remote tasks, not tens of thousands of short tasks a minute.
+
+| Use Edge when | Use something else when |
+|---|---|
+| Data can't leave a site, or the network only allows outbound connections | Everything runs in one cloud network (use Celery or Kubernetes) |
+| You need hardware on site (OT systems, GPUs on premises) | You only need a different image (KubernetesPodOperator) |
+| A few hybrid tasks in an otherwise central platform | The remote site runs its own full Airflow anyway |
+
+**Example / Code:**
+```properties
+# Runtime: Apache Airflow 3.3 + apache-airflow-providers-edge3 — airflow.cfg on central site AND workers
+[core]
+executor = CeleryExecutor,airflow.providers.edge3.executors.EdgeExecutor
+[api_auth]
+jwt_secret = <same random secret everywhere>
+[edge]
+api_enabled = True
+api_url = https://airflow.example.internal/edge_worker/v1/rpcapi
+```
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3, apache-airflow-providers-edge3
+# [core] executor = CeleryExecutor,airflow.providers.edge3.executors.EdgeExecutor
+from datetime import datetime
+from airflow.sdk import dag, task
+
+
+@dag(schedule="*/30 * * * *", start_date=datetime(2026, 1, 1), catchup=False)
+def plant_sync():
+    # Runs on an edge worker inside the factory network, started with:
+    #   airflow edge worker -q plant_berlin
+    @task(executor="EdgeExecutor", queue="plant_berlin")
+    def read_scada_export() -> str:
+        return "/data/exports/latest.csv"
+
+    @task                       # default executor in the central cluster
+    def load_to_lake(path: str):
+        print("uploading", path)
+
+    load_to_lake(read_scada_export())
+
+
+plant_sync()
+```
+```text
+# DagBag parse with executor = LocalExecutor,airflow.providers.edge3.executors.EdgeExecutor
+errors: {}
+{'read_scada_export': ('EdgeExecutor', 'plant_berlin'), 'load_to_lake': (None, 'default')}
+```
+
+**Real-World Use Case:**
+A manufacturer had to read machine exports that lived on a plant network, which allowed no inbound connections. One edge worker per plant, each on its own queue, read the files locally and uploaded summaries. Everything else ran on the central Kubernetes executor, and operators managed all of it in one Airflow UI.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Expecting edge workers to work without the DAG files or the tasks' libraries.
+- Setting `queue="site_a"` but not `executor="EdgeExecutor"` when Edge isn't the default executor.
+- Treating it as a way around security reviews. The worker still runs arbitrary DAG code inside that network.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you take an edge worker out of service? — Put it into maintenance mode from the UI or CLI, so it stops taking jobs and drains.
+- Edge or a remote Celery worker? — Celery needs the worker to reach the broker, and in practice the metadata/result backends too. Edge only needs outbound HTTPS to the API server.
+
+---
+
+### Q545. How do you scale and make the scheduler highly available?
+**ID:** AF-37
+**Topic:** Airflow > Scheduler Scaling
+**Level:** Advanced
+**Frequency:** Common
+**Tags:** `airflow`, `scheduler`, `high-availability`, `performance`
+
+**Short Answer (2–3 lines):**
+Run two or more schedulers against a Postgres or MySQL 8+ metadata DB. They coordinate through row-level locks (`SELECT … FOR UPDATE SKIP LOCKED`), so all of them are active at once and if one dies the others carry on. Scale the DAG processor and triggerer separately. Tune the loop with `max_dagruns_per_loop_to_schedule`, `max_tis_per_query` and `parallelism`, and look at the database first when things get slow.
+
+**Detailed Explanation:**
+In Airflow 3 there are several components to scale, not one:
+| Component | Scales by | Bottleneck symptoms |
+|---|---|---|
+| Scheduler | More replicas (active-active) | Runs late to start, tasks slow to queue |
+| DAG processor | `parsing_processes`, more replicas, separate bundles | DAGs update slowly, parse timeouts (see Q558) |
+| Triggerer | Replicas × `[triggerer] capacity` (1000) | Deferred tasks resume late |
+| API server | Replicas, workers | Slow UI, slow Execution API calls from tasks |
+| Executor/workers | Celery workers, K8s nodes | Tasks sit in `queued` |
+| Metadata DB | Instance size, connection pooling (PgBouncer), cleanup | Everything is slow |
+
+Scheduler essentials:
+- **HA needs** `[scheduler] use_row_level_locking = True` (the default) and a database with `SKIP LOCKED`. SQLite supports neither, so it is for local development only.
+- **`parallelism` is per scheduler.** Three schedulers with 32 each can have 96 task instances running or queued.
+- **Loop tuning:** `max_dagruns_to_create_per_loop` (10), `max_dagruns_per_loop_to_schedule` (20) and `max_tis_per_query` (16). Raise them carefully; larger batches mean longer locks.
+- **Database hygiene:** `airflow db clean --clean-before-timestamp ...` trims old runs, task instances, XComs and logs metadata. Large tables slow every query the scheduler makes.
+- **Health checks:** `airflow jobs check --job-type SchedulerJob --allow-multiple`, which can serve as a liveness probe, plus `scheduler_heartbeat` metrics.
+
+Before adding schedulers, check whether the problem is parsing (top-level code), the database, or concurrency limits (see Q539). A second scheduler fixes none of those.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Airflow 3.3 CLI (run on any host with the deployment's config)
+airflow jobs check --job-type SchedulerJob --allow-multiple --limit 5   # exits 0 if a scheduler is alive
+airflow jobs check --job-type TriggererJob --allow-multiple
+airflow jobs check --job-type DagProcessorJob --allow-multiple
+airflow db clean --clean-before-timestamp "$(date -u -d '-90 days' +%Y-%m-%dT%H:%M:%S)" --yes
+```
+```text
+# On a machine where no scheduler is running, the first command prints and exits non-zero:
+No alive jobs found.
+```
+```properties
+# airflow.cfg values worth knowing (3.3 defaults shown)
+[core]
+parallelism = 32
+[scheduler]
+use_row_level_locking = True
+max_dagruns_to_create_per_loop = 10
+max_dagruns_per_loop_to_schedule = 20
+max_tis_per_query = 16
+[dag_processor]
+parsing_processes = 2
+[triggerer]
+capacity = 1000
+```
+
+**Real-World Use Case:**
+A deployment with about 1,500 DAGs had runs starting up to 10 minutes late. Metrics showed the scheduler loop was fine, but DB CPU sat at 90%. The task-instance table held three years of history. After `airflow db clean` to keep 90 days, PgBouncer in front of Postgres, and a second scheduler for redundancy, start latency dropped below 30 seconds.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Thinking only one scheduler can be active, an active-passive model. Since 2.0, all schedulers are active.
+- Running HA schedulers on SQLite, or on MySQL 5.x without `SKIP LOCKED`.
+- Scaling schedulers to fix slow parsing, which is the DAG processor's job in Airflow 3.
+
+**Follow-up Questions Interviewers Ask:**
+- What does `--only-idle` do (3.2+)? — Used with `--num-runs`, it counts only the loops where the scheduler was idle. A short-lived scheduler, for example in CI, then processes every triggered DAG and queued task before it exits.
+- How do you see the scheduler loop time? — The `scheduler.scheduler_loop_duration` metric, plus the `dag_processing.*` metrics for parsing.
+
+---
+
+### Q546. KubernetesPodOperator vs KubernetesExecutor vs virtualenv tasks: how do you isolate dependencies?
+**ID:** AF-38
+**Topic:** Airflow > Task Isolation
+**Level:** Intermediate
+**Frequency:** Very Common
+**Tags:** `airflow`, `kubernetes-pod-operator`, `isolation`, `dependencies`
+
+**Short Answer (2–3 lines):**
+`KubernetesPodOperator` runs **any container image** as one task, from any executor. The Airflow task only launches the pod and watches it. `KubernetesExecutor` runs the *Airflow task itself* in a new pod. `@task.virtualenv` and `@task.external_python` isolate Python packages on the worker without building an image. `@task.docker` and `@task.kubernetes` run a Python function inside a container.
+
+**Detailed Explanation:**
+| Option | What is isolated | Startup cost | Best for |
+|---|---|---|---|
+| `@task.virtualenv(requirements=[...])` | Python packages; venv built per run (cacheable) | Seconds to minutes | Occasional conflicting libraries |
+| `@task.external_python(python="/opt/venvs/x/bin/python")` | A venv that already exists | Low | Stable, heavy dependencies baked into the worker image |
+| `@task.docker` / `DockerOperator` | Container on a Docker host | Medium | Docker-based setups |
+| `@task.kubernetes` | A Python function in a pod with a chosen image | Pod start | Python code with its own image |
+| `KubernetesPodOperator` | Any image, any language, own CPU/RAM/GPU | Pod start | Spark-submit, dbt, ML, non-Python tools |
+| `KubernetesExecutor` (`executor=` routing) | The whole Airflow task process | Pod start | Per-task resources while keeping normal operators |
+
+KubernetesPodOperator settings that matter:
+- `image` with a pinned tag, `cmds`/`arguments` (templated), and `container_resources` requests and limits.
+- `namespace`, `service_account_name` for cloud IAM through workload identity, and `node_selector`/`tolerations`.
+- `on_finish_action="delete_succeeded_pod"` keeps failed pods around for debugging.
+- `get_logs=True` streams logs. `do_xcom_push=True` reads `/airflow/xcom/return.json` from a sidecar.
+- `deferrable=True` waits in the triggerer instead of keeping a worker busy while the pod runs (see Q533).
+- `reattach_on_restart=True`, the default, avoids launching a second pod after a worker restart.
+
+The usual mistake is mixing up KPO and `KubernetesExecutor` (see Q42). KPO works fine on Celery.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3, apache-airflow-providers-cncf-kubernetes 10.x
+from datetime import datetime
+from kubernetes.client import models as k8s
+from airflow.sdk import dag, task
+from airflow.providers.cncf.kubernetes.operators.pod import KubernetesPodOperator
+
+
+@dag(schedule="0 3 * * *", start_date=datetime(2026, 1, 1), catchup=False)
+def isolated_tasks():
+    # 1) Any container image, any language, own CPU/memory; works with ANY executor.
+    score = KubernetesPodOperator(
+        task_id="score_customers",
+        name="score-customers",
+        namespace="data-jobs",
+        image="registry.internal/ml/scorer:2026.05.1",        # pinned tag, not :latest
+        cmds=["python", "-m", "scorer"],
+        arguments=["--date", "{{ ds }}"],                       # templated
+        container_resources=k8s.V1ResourceRequirements(
+            requests={"cpu": "2", "memory": "8Gi"}, limits={"memory": "8Gi"}),
+        env_vars={"OUTPUT": "s3://lake/gold/scores/{{ ds }}/"},
+        on_finish_action="delete_succeeded_pod",                # keep failed pods for debugging
+        get_logs=True,
+        deferrable=True,                                        # wait in the triggerer, not a worker
+    )
+
+    # 2) Python with conflicting libraries, no image build: a throwaway virtualenv on the worker.
+    @task.virtualenv(requirements=["pandas==2.2.3"], system_site_packages=False)
+    def legacy_report():
+        import pandas as pd
+        return pd.__version__
+
+    score >> legacy_report()
+
+
+isolated_tasks()
+```
+```text
+# DagBag parse (no cluster needed to parse):
+errors: {}
+{'score_customers': 'KubernetesPodOperator', 'legacy_report': '_PythonVirtualenvDecoratedOperator'}
+image: registry.internal/ml/scorer:2026.05.1 | requests: {'cpu': '2', 'memory': '8Gi'} | namespace: data-jobs | deferrable: True
+```
+
+**Real-World Use Case:**
+A data-science team needed CUDA libraries and a newer scikit-learn than the Airflow image allowed. Their scoring job became a KubernetesPodOperator on a GPU node pool with its own image, built and versioned by the DS team. The Airflow image stayed small and stable, and the platform team no longer had to settle dependency conflicts between teams.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Using the `:latest` tag, which makes reruns not reproducible.
+- No resource requests or limits, so pods get evicted or starve their neighbours.
+- `@task.virtualenv` with a large requirements list on every run, without caching (`venv_cache_path`).
+
+**Follow-up Questions Interviewers Ask:**
+- How does a KPO pod return a value? — Write JSON to `/airflow/xcom/return.json` and set `do_xcom_push=True`.
+- How does a pod get cloud credentials? — Through a Kubernetes service account mapped to a cloud IAM role, such as IRSA or GKE Workload Identity, not through keys in environment variables.
+
+---
+
+### Q547. What are the Task SDK and the Task Execution API, and why do they matter?
+**ID:** AF-39
+**Topic:** Airflow > Task SDK
+**Level:** Advanced
+**Frequency:** Common
+**Tags:** `airflow`, `task-sdk`, `execution-api`, `airflow-3`
+
+**Short Answer (2–3 lines):**
+In Airflow 3, task code talks to Airflow only through the **Task SDK** (`airflow.sdk`). A supervisor process on the worker sends those calls to the API server's **Task Execution API** over HTTP, using a short-lived JWT for that task instance. Workers no longer need metadata-DB credentials. This brings security, independent upgrades of the SDK, remote execution (Edge), and task SDKs in other languages (Java and Go, experimental in 3.3).
+
+**Detailed Explanation:**
+Airflow 2: every worker had the DB connection string. Any task could open an ORM session and read or change anything in the database.
+
+Airflow 3:
+1. The executor starts the **supervisor** on the worker. The supervisor starts the task process and relays its requests: Variables, Connections, XCom, state changes, heartbeats and logs.
+2. The supervisor calls the Execution API (`/execution/...` on the API server) with a token scoped to that task instance.
+3. The task process sees a stable interface: `airflow.sdk` classes, `get_current_context()`, `Variable`, `Connection`, XCom and `outlet_events`.
+
+What this means for DAG authors:
+| Old pattern | Airflow 3 replacement |
+|---|---|
+| `from airflow.settings import Session` in task code | Not supported. Use the SDK, or the REST API / Python client for admin operations |
+| `DagRun.find(...)` or `TaskInstance` queries in a task | The context (`dag_run`, `ti`), or the REST API |
+| `from airflow.models import Variable` | `from airflow.sdk import Variable` |
+| Raising `airflow.exceptions.AirflowSkipException` | `airflow.sdk.exceptions` |
+
+Operational effects: API-server capacity now affects running tasks. Network rules must allow workers to reach the API server. `[core] execution_api_server_url` must be correct on the workers. The Task SDK can be upgraded on a different cadence from airflow-core (since 3.1). Note that the DAG processor and the triggerer still run user code with DB access, so that boundary is not complete.
+
+The 3.3 **Coordinator** layer (AIP-108) lets `@task.stub(queue=...)` tasks run in Java or Go runtimes that use the same Execution API. *Product behaviour changes; checked October 2026.*
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.sdk import Variable, dag, get_current_context, task
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False)
+def sdk_boundary():
+    @task
+    def produce(dag_run=None) -> dict:
+        # Each call below is a Task SDK call that the worker's supervisor sends to the
+        # Execution API (HTTP + a short-lived JWT for this task instance) - no DB session.
+        Variable.set("last_seen_run", dag_run.run_id)
+        return {"rows": 10}
+
+    @task
+    def consume(payload: dict):
+        ctx = get_current_context()
+        prev = ctx["ti"].xcom_pull(task_ids="produce")
+        print("variable ok:", Variable.get("last_seen_run") == ctx["dag_run"].run_id,
+              "| xcom:", prev, "| arg:", payload, "| try:", ctx["ti"].try_number)
+
+    consume(produce())
+
+
+dag_obj = sdk_boundary()
+
+if __name__ == "__main__":
+    print(dag_obj.test().state)
+```
+```text
+variable ok: True | xcom: {'rows': 10} | arg: {'rows': 10} | try: 1
+success
+```
+`dag.test()` runs in one process that has the database configured. An ORM query inside a task would therefore "work" locally but fail on real workers, which get no DB credentials. Catch it in code review, and with `ruff --select AIR` in CI (see Q554), not with `dag.test()`.
+
+**Real-World Use Case:**
+A security review flagged that every Airflow 2 worker pod held the metadata-DB password. After the move to Airflow 3, worker pods held only the API URL and per-task tokens. Two legacy tasks that queried `TaskInstance` directly were rewritten to use the context and the REST API's Python client.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Saying tasks "can't access Variables any more". They can, through the SDK.
+- Leaving the API server undersized, even though every running task now calls it.
+- Claiming the DAG processor is isolated as well. It still runs user code with DB access.
+
+**Follow-up Questions Interviewers Ask:**
+- What is `airflowctl`? — The remote CLI that talks to the REST API. It is separate from the `airflow` CLI that runs components (AIP-81).
+- How does a task get a Connection with a secrets backend? — The supervisor gets it from the worker's secrets backend if one is configured, otherwise through the Execution API (see Q549).
+
+---
+
+### Q548. What are DAG bundles and DAG versioning in Airflow 3?
+**ID:** AF-40
+**Topic:** Airflow > DAG Bundles and Versioning
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `airflow`, `dag-bundles`, `dag-versioning`, `airflow-3`
+
+**Short Answer (2–3 lines):**
+A DAG bundle is a source of DAG code: a local folder, a Git repository, or an S3 or GCS prefix. Airflow records a new **DAG version** whenever a DAG's structure changes after it has run. Versioned bundles, today `GitDagBundle`, also pin each run to the commit it started with. A run's tasks keep running that code even if `main` moves during the run, and the UI shows each run's own graph.
+
+**Detailed Explanation:**
+| Bundle | Versioned? | Notes |
+|---|---|---|
+| `LocalDagBundle` (default `dags-folder`) | No | Same behaviour as Airflow 2's DAGs folder; always the latest code |
+| `GitDagBundle` (git provider) | **Yes** | `tracking_ref` (branch, tag or SHA), `git_conn_id` or `repo_url`, `subdir`, `sparse_dirs` |
+| `S3DagBundle` / `GCSDagBundle` | No | Bucket and prefix; latest code |
+
+Configure bundles with `[dag_processor] dag_bundle_config_list`, a JSON list of `{name, classpath, kwargs}`. You can mix bundle types and have several repositories, for example one per team.
+
+DAG versioning behaviour:
+- The DAG processor serialises each DAG. If the result differs and the current version already has task instances, a new version number is created. Otherwise the current version is updated in place.
+- Each run records `created_dag_version`. The grid and graph views show history *as it was*, so removed tasks no longer vanish from the history.
+- **Rerun and clear (3.3).** `rerun_with_latest_version` (DAG argument, `[core]` setting, or a per-request flag) chooses between the original bundle version and the latest one. The default is the original version for clear and rerun, and the latest version for backfills.
+- `disable_bundle_versioning=True` on a DAG opts it out of versioning.
+
+Why interviewers care: Airflow 2 always reran with the latest code. A fix deployed in the middle of a run could leave half a run on old code and half on new. Versioned bundles make reruns reproducible and deploys safer.
+
+**Example / Code:**
+```properties
+# Runtime: Apache Airflow 3.3 + apache-airflow-providers-git — airflow.cfg
+[dag_processor]
+dag_bundle_config_list = [
+    {"name": "analytics-dags",
+     "classpath": "airflow.providers.git.bundles.git.GitDagBundle",
+     "kwargs": {"git_conn_id": "github_analytics", "tracking_ref": "main", "subdir": "dags"}},
+    {"name": "dags-folder",
+     "classpath": "airflow.dag_processing.bundles.local.LocalDagBundle",
+     "kwargs": {}}
+  ]
+[core]
+rerun_with_latest_version = False
+```
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3
+from datetime import datetime
+from airflow.sdk import dag, task
+
+
+@dag(
+    schedule="0 5 * * *", start_date=datetime(2026, 1, 1), catchup=False,
+    rerun_with_latest_version=False,   # clears/reruns use the commit the run started with (3.3)
+    disable_bundle_versioning=False,   # opt a single DAG out of versioning if it must always run latest
+)
+def versioned_pipeline():
+    @task
+    def extract():
+        return 1
+
+    extract()
+
+
+versioned_pipeline()
+```
+```text
+# Parsed with DagBag; the default bundle list printed by "airflow config get-value dag_processor dag_bundle_config_list":
+{'rerun_with_latest_version': False, 'disable_bundle_versioning': False}
+[
+{
+"name": "dags-folder",
+"classpath": "airflow.dag_processing.bundles.local.LocalDagBundle",
+"kwargs": {}
+}
+]
+```
+
+**Real-World Use Case:**
+An engineer merged a refactor that renamed a task while the nightly run was halfway through. In Airflow 2, the remaining tasks would have picked up the new code and the rename would have broken the run. With a `GitDagBundle`, the run finished on the commit it started with, and the next night's run used the new version. Both graphs stayed visible in the UI history.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Assuming versioning pins code when you use the local DAGs folder. Only versioned bundles pin code. The local folder still records DAG *structure* versions.
+- Expecting a clear to use new code by default in 3.3. Clears default to the original version; use "run on latest version" when you are deploying a fix.
+- Not giving the DAG processor and the workers Git credentials and network access.
+
+**Follow-up Questions Interviewers Ask:**
+- Where does a worker get the right code? — It checks out the bundle version recorded on the run, such as a Git commit, before parsing the DAG file.
+- How do you clean up old checkouts? — The `[dag_processor] stale_bundle_cleanup_*` settings control how long old bundle versions are kept on disk.
+
+---
+
+### Q549. How do secrets backends work in Airflow 3, and what is the lookup order?
+**ID:** AF-41
+**Topic:** Airflow > Secrets Backends
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `airflow`, `secrets-backend`, `security`, `connections`
+
+**Short Answer (2–3 lines):**
+A secrets backend fetches Connections and Variables (and sensitive config values) from Vault, AWS Secrets Manager, GCP Secret Manager or Azure Key Vault when they are requested. Airflow checks the configured backend first, then environment variables, then the metadata DB, and the order can't be changed. Airflow 3 adds `[workers] secrets_backend`, so workers can use their own backend, which they check before the general one.
+
+**Detailed Explanation:**
+Configuration:
+```properties
+[secrets]
+backend = airflow.providers.amazon.aws.secrets.secrets_manager.SecretsManagerBackend
+backend_kwargs = {"connections_prefix": "airflow/connections", "variables_prefix": "airflow/variables"}
+use_cache = False          # True caches lookups for cache_ttl_seconds (900)
+[workers]
+secrets_backend =          # optional worker-only backend, checked first on workers
+```
+Each kwarg can also be set on its own as `AIRFLOW__SECRETS__BACKEND_KWARG__<KEY>`, which is handy for Kubernetes secrets.
+
+How it behaves:
+- **Search path:** custom backend → `AIRFLOW_CONN_*` / `AIRFLOW_VAR_*` → metadata DB. The first match wins, so a key that exists in two places can hide another.
+- **Writes** from the UI, CLI or `Variable.set` always go to the **metadata DB**. A value stored in the backend keeps winning on reads, which confuses people.
+- **The UI shows only DB-stored values.** Check backend-provided values in the backend itself.
+- **Cost and latency:** every `Variable.get` is an API call to the backend. Top-level lookups multiply that by the parse rate (see Q558). Turn on `use_cache` or read only inside tasks.
+- **Prefixes and lookup patterns** (`connections_lookup_pattern`, `variables_lookup_pattern` on several providers) limit which keys are sent to the backend, which saves calls for DB-stored keys.
+- **Masking:** values from backends are masked in logs like any connection password.
+
+A custom backend subclasses `BaseSecretsBackend` and implements `get_conn_value` (returning a URI or JSON) and `get_variable`. Returning `None` means "not here", and the next source is tried.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 — plugins/file_secrets.py; a toy backend. Real ones:
+# AWS Secrets Manager, GCP Secret Manager, Azure Key Vault, HashiCorp Vault (each in its provider)
+import json
+from airflow.secrets import BaseSecretsBackend
+
+
+class JsonFileSecretsBackend(BaseSecretsBackend):
+    def __init__(self, path: str, connections_prefix: str = "connections", variables_prefix: str = "variables"):
+        super().__init__()
+        with open(path) as f:
+            self.data = json.load(f)
+        self.cp, self.vp = connections_prefix, variables_prefix
+
+    def get_conn_value(self, conn_id: str):          # URI or JSON string, or None = "not here"
+        return self.data.get(self.cp, {}).get(conn_id)
+
+    def get_variable(self, key: str):
+        return self.data.get(self.vp, {}).get(key)
+```
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 — dags/secrets_demo.py
+# Run with: AIRFLOW__SECRETS__BACKEND=file_secrets.JsonFileSecretsBackend
+#           AIRFLOW__SECRETS__BACKEND_KWARGS='{"path": "/opt/airflow/secrets.json"}'
+# secrets.json: {"connections": {"warehouse": "postgres://etl:...@wh-prod.internal:5432/analytics"},
+#                "variables": {"export_bucket": "s3://exports-prod"}}
+import os
+from datetime import datetime
+from airflow.sdk import BaseHook, Variable, dag, task
+
+os.environ["AIRFLOW_VAR_EXPORT_BUCKET"] = "s3://exports-from-env"   # shadowed by the backend
+
+
+@dag(schedule=None, start_date=datetime(2026, 1, 1), catchup=False)
+def secrets_demo():
+    @task
+    def show():
+        conn = BaseHook.get_connection("warehouse")
+        print("host:", conn.host, "| login:", conn.login,
+              "| bucket:", Variable.get("export_bucket"),
+              "| missing:", Variable.get("not_anywhere", default="(default)"))
+
+    show()
+
+
+dag_obj = secrets_demo()
+```
+```text
+host: wh-prod.internal | login: etl | bucket: s3://exports-prod | missing: (default)
+success
+```
+The backend's `s3://exports-prod` beat the environment variable, as the lookup order says it should.
+
+**Real-World Use Case:**
+A company moved 400 connections out of the metadata DB into AWS Secrets Manager under `airflow/connections/*`. They gave the workers an IAM role that can read only that prefix, and set a `connections_lookup_pattern`, so Variables still came from the DB without extra API calls. Credential rotation now happened in Secrets Manager, and Airflow needed no changes.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Editing a Variable in the UI and expecting it to override the backend's value.
+- Top-level `Variable.get` with a paid secrets API behind it, which turns into thousands of calls an hour.
+- Giving workers access to *all* secrets instead of a prefix.
+
+**Follow-up Questions Interviewers Ask:**
+- Can config values come from a backend? — Yes. Sensitive options can use the `_secret` suffix, such as `sql_alchemy_conn_secret`, to read from the backend.
+- How do you test a connection? — `airflow connections test <id>`, or the UI's test button if `[core] test_connection` is enabled.
+
+---
+
+### Q550. How do you write DAG integrity tests that catch broken DAGs before merge?
+**ID:** AF-42
+**Topic:** Airflow > Testing
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `airflow`, `testing`, `dagbag`, `pytest`
+
+**Short Answer (2–3 lines):**
+Load the DAG folder with `DagBag` in pytest and fail on any `import_errors`. That catches syntax errors, missing imports, duplicate task ids, cycles and invalid arguments. Then check team rules on each DAG, such as tags, owners, retries and allowed pools, and set a budget for parse time. These tests run in seconds and catch most of the problems that would otherwise surface as UI banners in production.
+
+**Detailed Explanation:**
+What a DagBag load catches, because it runs the same import the DAG processor runs:
+- Python errors and missing packages. CI must use the **same image or constraints** as production.
+- `DuplicateTaskIdFound`, cycles, unknown executors (see Q543), invalid `schedule` values and failed param defaults.
+- Removed Airflow 2 APIs, such as `airflow.datasets` or `schedule_interval` (see Q554).
+
+Convention checks worth adding:
+| Check | Why |
+|---|---|
+| Every DAG has an owner or team tag | Routing alerts, ownership |
+| `retries >= 1` on tasks | No silent single-attempt failures |
+| `catchup` set explicitly | Avoid surprise backfills when defaults change |
+| Pools used ∈ an allowed list | Missing pools mean tasks are never scheduled (see Q537) |
+| No `Variable.get` or network at module level | Parse cost (see Q558); enforce with a lint rule or a parse-time budget |
+| Parse time below a budget | Catches heavy top-level code early |
+
+Practical notes:
+- In 3.3, `DagBag(dag_folder=...)` no longer takes `include_examples`. Example DAGs are separate bundles.
+- Keep test files outside the DAG folder. A file that mentions "airflow" and "dag" inside the folder gets parsed as a DAG file.
+- Use **`dag.test()`** for behaviour and plain unit tests for logic (see Q551). Integrity tests only prove that a DAG loads.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3, pytest — tests/test_dag_integrity.py, run in CI on every PR
+import os
+import time
+import pytest
+from airflow.dag_processing.dagbag import DagBag
+
+DAG_FOLDER = os.path.join(os.path.dirname(__file__), "..", "dags")
+
+
+@pytest.fixture(scope="session")
+def dagbag():
+    start = time.perf_counter()
+    bag = DagBag(dag_folder=DAG_FOLDER)
+    bag.parse_seconds = time.perf_counter() - start
+    return bag
+
+
+def test_no_import_errors(dagbag):
+    assert dagbag.import_errors == {}, f"Import errors: {dagbag.import_errors}"
+
+
+def test_parse_time_budget(dagbag):
+    assert dagbag.parse_seconds < 5, f"DAG folder took {dagbag.parse_seconds:.1f}s to parse"
+
+
+@pytest.mark.parametrize("dag_id", sorted(DagBag(dag_folder=DAG_FOLDER).dag_ids))
+def test_dag_conventions(dagbag, dag_id):
+    dag = dagbag.get_dag(dag_id)
+    assert any(t.startswith("team:") for t in dag.tags), f"{dag_id}: add a team:<name> tag"
+    for t in dag.tasks:
+        assert t.retries >= 1, f"{dag_id}.{t.task_id}: set retries (default_args)"
+```
+```text
+# dags/ holds orders_daily (tagged, retries=2) and adhoc_export (no tags, no retries)
+>       assert any(t.startswith("team:") for t in dag.tags), f"{dag_id}: add a team:<name> tag"
+E       AssertionError: adhoc_export: add a team:<name> tag
+...
+FAILED tests/test_dag_integrity.py::test_dag_conventions[adhoc_export] - Asse...
+1 failed, 3 passed in 1.78s
+```
+
+**Real-World Use Case:**
+A platform team saw roughly one "DAG disappeared" incident a week, caused by typos and missing provider packages in merged code. A required CI check that runs these tests in the production image made such merges impossible, and the incidents stopped. The convention tests also made ownership tags universal within a month.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Running CI in an environment that doesn't match production, so it passes in CI and breaks in prod.
+- Treating "it loads" as "it works". Pair integrity tests with `dag.test()` and unit tests.
+- Calling real APIs or databases at import time, which makes CI depend on the network.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you test only the changed DAGs? — Load a DagBag per changed file (`DagBag(dag_folder=path)`), but keep a nightly full-folder check.
+- Where do linters fit? — `ruff` with the `AIR` rules catches deprecated or removed Airflow APIs before the tests run (see Q552, Q554).
+
+---
+
+### Q551. How do you test task logic and run a DAG end to end with `dag.test()`?
+**ID:** AF-43
+**Topic:** Airflow > Testing
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `airflow`, `testing`, `dag-test`, `pytest`
+
+**Short Answer (2–3 lines):**
+Keep business logic in plain functions and unit-test them without Airflow. That is fast and deterministic. Test TaskFlow tasks through their raw callable (`.function` on the decorated task, or `python_callable` on the operator). Use `dag.test()` to run a whole DAG in one process, with no scheduler, executor or triggerer. Its `run_conf`, `logical_date`, `conn_file_path`, `variable_file_path` and `mark_success_pattern` arguments make that run repeatable.
+
+**Detailed Explanation:**
+A testing pyramid for Airflow:
+| Layer | What | Speed |
+|---|---|---|
+| Unit | Pure functions such as transforms, SQL builders and file parsers | Milliseconds |
+| Task | `.function(...)` or `operator.execute(context)` with a fake or minimal context | Milliseconds |
+| Integrity | DagBag loads, conventions (see Q550) | Seconds |
+| DAG | `dag.test()`: real dependencies, XCom, trigger rules, branching, deferral (triggers run in-process) | Seconds |
+| Integration | Against real services in a staging environment, possibly with `use_executor=True` | Minutes |
+
+`dag.test()` in 3.3:
+- `logical_date=...` (timezone-aware) or `logical_date=None`, plus `run_after=` to simulate a run without a date (see Q527).
+- `run_conf={...}` validates against params (see Q523).
+- `conn_file_path` / `variable_file_path` load test Connections and Variables from a file.
+- `mark_success_pattern="publish|notify"` marks tasks whose ids match the regex as successful without running them, which skips side effects.
+- It needs a metadata DB. A local SQLite DB, created with `airflow db migrate`, is fine. It also syncs the DAG's bundle first, so keep the test harness *outside* the DAG folder.
+- It returns the DagRun, so you can assert on `run.state` and on each task instance's state.
+
+Mocking: patch hooks at their import path (`unittest.mock.patch("my_dag.S3Hook")`), or inject clients so tests can pass fakes. Avoid mocking Airflow internals.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 — dags/fx_pipeline.py
+from datetime import datetime
+from airflow.sdk import dag, task
+
+
+def to_eur(rows: list[dict], rates: dict) -> list[dict]:
+    """Pure business logic: no Airflow imports needed to test it."""
+    out = []
+    for r in rows:
+        if r["currency"] not in rates:
+            raise ValueError(f"no rate for {r['currency']}")
+        out.append({**r, "amount_eur": round(r["amount"] * rates[r["currency"]], 2)})
+    return out
+
+
+@dag(schedule="0 6 * * *", start_date=datetime(2026, 1, 1), catchup=False)
+def fx_pipeline():
+    @task
+    def extract() -> list[dict]:
+        return [{"id": 1, "amount": 100.0, "currency": "USD"}, {"id": 2, "amount": 50.0, "currency": "GBP"}]
+
+    @task
+    def convert(rows: list[dict]) -> list[dict]:
+        return to_eur(rows, {"USD": 0.92, "GBP": 1.17})
+
+    @task
+    def publish(rows: list[dict]) -> int:
+        print("publishing", rows)
+        return len(rows)
+
+    publish(convert(extract()))
+
+
+fx_pipeline()
+```
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3, pytest — tests/test_fx_pipeline.py (conftest adds dags/ to sys.path)
+import pytest
+from airflow.dag_processing.dagbag import DagBag
+from fx_pipeline import to_eur
+
+
+# 1) Plain unit tests for the logic: milliseconds, no scheduler, no DB.
+def test_to_eur_converts_and_rounds():
+    assert to_eur([{"id": 1, "amount": 10.0, "currency": "USD"}], {"USD": 0.9234}) == [
+        {"id": 1, "amount": 10.0, "currency": "USD", "amount_eur": 9.23}]
+
+
+def test_to_eur_rejects_unknown_currency():
+    with pytest.raises(ValueError, match="no rate for JPY"):
+        to_eur([{"id": 1, "amount": 1.0, "currency": "JPY"}], {})
+
+
+# 2) A TaskFlow task's raw function is reachable via python_callable
+def test_convert_task_function():
+    dag = DagBag(dag_folder="dags").get_dag("fx_pipeline")
+    convert = dag.get_task("convert").python_callable
+    assert convert([{"id": 9, "amount": 2.0, "currency": "GBP"}])[0]["amount_eur"] == 2.34
+
+
+# 3) One end-to-end run in-process; skip the side-effecting task with mark_success_pattern.
+def test_dag_runs_end_to_end():
+    dag = DagBag(dag_folder="dags").get_dag("fx_pipeline")
+    run = dag.test(mark_success_pattern="publish")
+    states = {ti.task_id: ti.state for ti in run.get_task_instances()}
+    assert run.state == "success", states
+```
+```text
+....                                                                     [100%]
+4 passed in 6.50s
+```
+
+**Real-World Use Case:**
+A team's DAGs held 300-line `@task` bodies mixing API calls and transformations, and nobody could test them. They moved the transforms into a package with 95% unit-test coverage, kept the tasks to a few lines of wiring, and added one `dag.test()` per DAG with publishing masked. Bugs in branching and trigger rules now showed up in CI instead of at 3 a.m.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Testing only through the Airflow UI.
+- Calling real external systems from `dag.test()` in CI.
+- Treating `dag.test()` as proof of production isolation. It runs in one process with DB access (see Q547).
+
+**Follow-up Questions Interviewers Ask:**
+- How do you test a custom operator? — Instantiate it and call `execute(context)` with a minimal context dict, with its hook mocked.
+- How do you run a DAG locally from the CLI? — `airflow dags test <dag_id> [logical_date]`.
+
+---
+
+### Q552. What does a good CI/CD pipeline for Airflow DAGs look like?
+**ID:** AF-44
+**Topic:** Airflow > CI/CD
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `airflow`, `ci-cd`, `deployment`, `dag-bundles`
+
+**Short Answer (2–3 lines):**
+On each pull request: lint with ruff and its `AIR` rules, run unit tests, load a DagBag in the production image, and optionally run `dag.test()` for the changed DAGs. On merge, deploy the DAG code by moving a Git bundle's `tracking_ref` or syncing files, and build a new image only when dependencies change. Promote through staging before prod, using the same code and different connections.
+
+**Detailed Explanation:**
+Split the two kinds of change:
+| Artifact | Changes how often | Deploy by |
+|---|---|---|
+| **DAG code** (Python, SQL, YAML) | Many times a day | `GitDagBundle` (versioned, see Q548), git-sync, or object-storage sync |
+| **Runtime image** (Airflow, providers, libraries) | Weekly or monthly | Image build with constraints, then a rolling restart of the components |
+
+Pipeline stages:
+1. **Static:** `ruff check --select AIR` and general lint, plus `sqlfluff` for SQL files and type checks.
+2. **Unit:** pure-function tests (see Q551).
+3. **Integrity:** DagBag with zero import errors, conventions, and a parse-time budget, all inside the production image (see Q550).
+4. **Behaviour:** `dag.test()` for DAGs whose files changed, with side effects masked.
+5. **Deploy to staging:** move the bundle ref, then smoke-test with `airflow dags list-import-errors` and one triggered run.
+6. **Promote to prod:** the same commit with prod connections from the secrets backend.
+
+Things worth calling out:
+- **Constraints files.** Install Airflow with the official `constraints-<version>/constraints-<python>.txt`, so providers and libraries don't change silently.
+- **Pools, Variables and connections as code.** Set them with Terraform, the REST API or `airflow pools import` in the pipeline, not by hand.
+- **Version pinning.** Because a `GitDagBundle` pins each run to a commit, a deploy in the middle of a run is safe. A local-folder sync is not.
+- **Rollback** means reverting the commit or moving the ref back. Running DAGs keep their versions.
+- **Managed platforms** have their own deploy tools, such as `astro deploy`, Composer's bucket sync and MWAA's S3 sync (see Q555).
+
+**Example / Code:**
+```yaml
+# Runtime: GitHub Actions; Apache Airflow 3.3 image used for test steps
+name: dags-ci
+on: [pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    container: registry.internal/data/airflow:3.3.2-2026.10   # same image as production
+    env:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+    steps:
+      - uses: actions/checkout@v4
+      - run: ruff check --select AIR3 dags/ plugins/
+      - run: airflow db migrate            # throwaway SQLite DB for DagBag and dag.test()
+      - run: pytest -q tests/unit tests/test_dag_integrity.py
+      - run: pytest -q tests/dag_runs -k "$(git diff --name-only origin/main -- dags | xargs -n1 basename | sed 's/.py$//' | paste -sd' or ' -)"
+```
+```bash
+# Runtime: ruff 0.17 — what the lint step reports for an Airflow 2-style file
+ruff check --select AIR3 --output-format concise legacy/
+```
+```text
+legacy/old_style.py:7:10: AIR311 [*] `airflow.datasets.Dataset` is removed in Airflow 3.0; It still works in Airflow 3.0 but is expected to be removed in a future version.
+legacy/old_style.py:10:14: AIR311 `airflow.models.Variable` is removed in Airflow 3.0; It still works in Airflow 3.0 but is expected to be removed in a future version.
+legacy/old_style.py:13:6: AIR311 `airflow.DAG` is removed in Airflow 3.0; It still works in Airflow 3.0 but is expected to be removed in a future version.
+legacy/old_style.py:13:23: AIR301 [*] `schedule_interval` is removed in Airflow 3.0
+legacy/old_style.py:14:5: AIR312 `airflow.operators.python.PythonOperator` is deprecated and moved into `standard` provider in Airflow 3.0; It still works in Airflow 3.0 but is expected to be removed in a future version.
+Found 5 errors.
+```
+The `-k` expression in the last workflow step assumes one test module per DAG file. Adapt it to your own layout.
+
+**Real-World Use Case:**
+A company used to `scp` DAG files to the production servers. A typo once took down 40 DAGs for an afternoon. They moved to PR checks, plus a `GitDagBundle` tracking a `release` branch that the pipeline fast-forwards after staging passes. Deploys became merges, rollbacks became reverts, and an import error never reached production again.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Rebuilding and redeploying the whole image for every SQL change.
+- CI that tests in a different Python, Airflow or provider version than production.
+- Hand-editing pools and connections in prod, so environments drift apart.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you handle dependency changes? — Bump the image with a constraints file, test it in staging, then do a rolling restart. DAGs that need new libraries go out *after* the image.
+- How do you test DAGs that use providers you don't run locally? — Use the production image, or a test image with the same providers installed.
+
+---
+
+### Q553. How do you design DAGs so any past interval can be reprocessed safely?
+**ID:** AF-45
+**Topic:** Airflow > Idempotent Design
+**Level:** Advanced
+**Frequency:** Very Common
+**Tags:** `airflow`, `idempotency`, `reprocessing`, `data-interval`
+
+**Short Answer (2–3 lines):**
+Every run should be a pure function of its interval: read only data inside `[data_interval_start, data_interval_end)`, and *replace* that interval's output in one transaction (partition overwrite, delete+insert, or MERGE). Don't use `now()`, "latest" reads or shared mutable state. Then clears, retries, catchup and backfills give the same result whenever they run. Q46 covers idempotency at the task level; this question is about the design across a whole DAG.
+
+**Detailed Explanation:**
+A checklist for a design review:
+| Rule | Breaks when ignored |
+|---|---|
+| Time comes from the run (`data_interval_*`, `logical_date`, or a partition key), never from `now()` | A backfill processes today's data 90 times |
+| Half-open intervals `>= start AND < end` | Boundary rows are counted twice or missed |
+| Output is keyed by the interval: `.../dt=2026-03-01/`, `WHERE day = ...` | Reruns append duplicates |
+| Replace atomically: partition overwrite, `DELETE`+`INSERT` in one transaction, `MERGE`, `INSERT OVERWRITE` | A half-written partition is visible |
+| Inputs are frozen or versioned: snapshot tables, time travel, immutable raw zone | Reprocessing gives different numbers from the original run |
+| Reference data "as of" the interval: SCD2, effective dates | Old days are re-priced with today's FX rates |
+| Side effects (emails, API posts) deduplicated by `run_id` or interval | Customers get duplicate notifications |
+| Writes per interval don't conflict; `max_active_runs` set | Parallel backfill runs fight over the same table |
+| Choose the timetable on purpose (see Q525) | Zero-length intervals select nothing |
+
+Late data has two remedies: re-run a trailing window (`lookback` days, MERGE by key), or schedule on assets so runs start when data lands (see Q528, Q531). For **non-time-based** runs (`logical_date=None`), make the unit of work explicit with a param or partition key (see Q527).
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 (sqlite3 stands in for the warehouse)
+import os
+import sqlite3
+import tempfile
+from datetime import datetime, timezone
+from airflow.sdk import dag, task
+from airflow.timetables.interval import CronDataIntervalTimetable
+
+WAREHOUSE = os.path.join(tempfile.gettempdir(), "af_reprocess_demo.db")
+
+
+@dag(schedule=CronDataIntervalTimetable("0 0 * * *", timezone="UTC"),   # explicit interval semantics
+     start_date=datetime(2026, 1, 1), catchup=False, max_active_runs=1)
+def daily_revenue_rebuild():
+    @task
+    def rebuild_partition(data_interval_start=None, data_interval_end=None):
+        day = data_interval_start.strftime("%Y-%m-%d")       # derived from the run, never from now()
+        con = sqlite3.connect(WAREHOUSE)
+        with con:                                             # one transaction: delete + insert
+            con.execute("CREATE TABLE IF NOT EXISTS orders (id INT, ts TEXT, amount REAL)")
+            con.execute("CREATE TABLE IF NOT EXISTS revenue_daily (day TEXT, revenue REAL)")
+            if con.execute("SELECT COUNT(*) FROM orders").fetchone()[0] == 0:
+                con.executemany("INSERT INTO orders VALUES (?,?,?)", [
+                    (1, "2026-03-01T10:00:00", 40.0), (2, "2026-03-01T23:59:59", 60.0),
+                    (3, "2026-03-02T00:00:00", 99.0)])            # belongs to the NEXT day
+            con.execute("DELETE FROM revenue_daily WHERE day = ?", (day,))   # replace, never append
+            con.execute("""INSERT INTO revenue_daily
+                           SELECT ?, COALESCE(SUM(amount), 0) FROM orders
+                           WHERE ts >= ? AND ts < ?""",           # half-open interval [start, end)
+                        (day, data_interval_start.strftime("%Y-%m-%dT%H:%M:%S"),
+                         data_interval_end.strftime("%Y-%m-%dT%H:%M:%S")))
+        rows = con.execute("SELECT * FROM revenue_daily ORDER BY day").fetchall()
+        con.close()
+        print("interval:", data_interval_start, "->", data_interval_end, "| revenue_daily:", rows)
+
+    rebuild_partition()
+
+
+dag_obj = daily_revenue_rebuild()
+
+if __name__ == "__main__":
+    if os.path.exists(WAREHOUSE):
+        os.remove(WAREHOUSE)
+    # A manual run's interval is inferred by the timetable: for CronDataIntervalTimetable a run
+    # triggered "at" 2026-03-02 00:00 covers the interval that just ended, i.e. 1 March.
+    for _ in range(2):          # run the same interval twice: same end state
+        dag_obj.test(logical_date=datetime(2026, 3, 2, tzinfo=timezone.utc))
+```
+```text
+interval: 2026-03-01 00:00:00+00:00 -> 2026-03-02 00:00:00+00:00 | revenue_daily: [('2026-03-01', 100.0)]
+interval: 2026-03-01 00:00:00+00:00 -> 2026-03-02 00:00:00+00:00 | revenue_daily: [('2026-03-01', 100.0)]
+```
+The second run gives identical output, and the order at exactly midnight on 2 March is left for the next interval. The inferred interval shows why Q527 warns against assuming a manual run's interval equals its logical date.
+
+**Real-World Use Case:**
+A finance team found that a "daily" job used `CURRENT_DATE - 1` in its SQL. After an outage, a three-day backfill reprocessed *yesterday* three times and left a two-day gap. Rewriting the SQL to use `data_interval_start`/`end` with a partition overwrite made every rerun exact. The quarter-end restatement became a routine backfill.
+
+**Common Mistakes / Interviewer Red Flags:**
+- `INSERT INTO ... SELECT` with no delete or overwrite step.
+- Joining to "current" dimension tables when reprocessing history.
+- Reading "the latest file" in the landing bucket instead of the file for the run's interval.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you reprocess one day safely while the daily schedule keeps running? — Clear that run or backfill it with `--reprocess-behavior completed`. Interval-keyed writes can't collide with other days.
+- What if the source isn't replayable? — Land raw data immutably first (an append-only bronze layer), and build every later step from that copy.
+
+---
+
+### Q554. Walk through migrating a real Airflow 2 deployment to Airflow 3. What breaks first?
+**ID:** AF-46
+**Topic:** Airflow > Migration 2 to 3
+**Level:** Advanced
+**Frequency:** Very Common
+**Tags:** `airflow`, `migration`, `airflow-3`, `ruff`
+
+**Short Answer (2–3 lines):**
+Upgrade to the latest 2.x, clean and back up the metadata DB, and fix DAG code with `ruff check --select AIR3` (rules AIR301/302 for breaking changes, AIR311/312 for recommended ones). Install the standard provider and remove direct DB access from tasks. Run `airflow config update --fix` and `airflow db migrate`, then start the new components, including a separate DAG processor. The first things to break are removed imports, removed context keys and changed scheduling defaults.
+
+**Detailed Explanation:**
+Q47 lists what changed, and the site has a migration guide. This question is the *runbook*, with the traps that show up in practice:
+
+| Step | Detail |
+|---|---|
+| 1. Prerequisites | On 2.7+ (latest 2.x recommended). Supported Python. No SubDAGs, SLAs or SequentialExecutor |
+| 2. DB | `airflow db clean` to shrink the history (migrations on large tables are slow). Back up. `airflow dags reserialize` must show no errors |
+| 3. Code | `ruff check dags/ --select AIR3 --fix` (`--unsafe-fixes` for import moves, plus `F401` to drop dead imports) |
+| 4. Providers | Install `apache-airflow-providers-standard` (Bash, Python and Empty operators, sensors) |
+| 5. DB access | Rewrite tasks that use `Session`, `DagRun.find` or `TaskInstance` queries to use the context or the REST API (see Q547) |
+| 6. Config | `airflow config update`, then `--fix`. `webserver` settings move to `api` / `apiServer` in the Helm chart |
+| 7. Components | `airflow api-server`, `airflow dag-processor` (now required), scheduler, triggerer |
+| 8. Plugins | Flask-AppBuilder views need the FAB provider or a rewrite as FastAPI/React plugins |
+
+Behaviour changes that pass CI but break at run time:
+- **Removed context keys.** `execution_date`, `next_ds`, `prev_ds`, `yesterday_ds`, `conf` and others are gone. A callable that takes `execution_date` fails with `TypeError` when it runs (output below).
+- **`catchup_by_default=False`**, and **cron strings use `CronTriggerTimetable`**. Decide `create_cron_data_intervals` *before* upgrading (see Q525).
+- **Manual and asset runs can have `logical_date=None`** (see Q527).
+- `airflow.datasets` can no longer be imported in 3.3, even though ruff labels the move AIR311 ("still works").
+- SLAs are replaced by Deadline Alerts (see Q541). CeleryKubernetesExecutor is replaced by multiple executors (see Q543).
+
+Plan the switch as blue/green: run a new Airflow 3 environment next to the old one on a copy of the DB, compare the next few days of runs, and then move schedules over by pausing DAGs in one environment and unpausing them in the other.
+
+**Example / Code:**
+```python
+# Runtime: Airflow 2-style DAG file, before migration (legacy/old_style.py)
+from datetime import datetime
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from airflow.datasets import Dataset
+from airflow.models import Variable
+
+orders = Dataset("s3://lake/orders")
+
+def _load(execution_date, **context):
+    bucket = Variable.get("bucket")
+    print(execution_date, bucket)
+
+with DAG("old_style", schedule_interval="@daily", start_date=datetime(2024, 1, 1)) as dag:
+    PythonOperator(task_id="load", python_callable=_load, outlets=[orders])
+```
+```bash
+# Runtime: ruff 0.17, Apache Airflow 3.3
+ruff check legacy/ --select AIR3 --fix --unsafe-fixes   # rewrites imports, schedule_interval, Dataset
+ruff check legacy/ --select AIR3,F401 --fix             # drops the now-unused old import
+python run_test.py                                      # DagBag(...) then dag.test()
+```
+```text
+# Before the fixes, on Airflow 3.3:
+import error: ModuleNotFoundError: No module named 'airflow.datasets'
+# After ruff: the file parses, but the removed context key only fails when the task runs:
+import errors: {}
+TypeError: _load() missing 1 required positional argument: 'execution_date'
+run: failed
+```
+After ruff, the imports read `from airflow.sdk import Asset, DAG, Variable` and `from airflow.providers.standard.operators.python import PythonOperator`. Changing `execution_date` to `logical_date`, or to `data_interval_start`, completes the fix. That last step is why `dag.test()` belongs in the migration CI as well as linting.
+
+**Real-World Use Case:**
+A team with about 600 DAGs ran ruff's fixes in one pull request, which handled about 80% of the changes. The remaining failures came from `dag.test()` runs in CI: removed context keys and three tasks that queried `TaskInstance` directly. They also set `create_cron_data_intervals=True` for the first month to keep the old interval semantics, then moved DAGs one at a time to explicit timetables.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Upgrading in place without a DB backup or a cleanup first.
+- Treating a clean ruff run as "migration done" without running the DAGs.
+- Forgetting to deploy the DAG processor, so no DAGs appear after the upgrade.
+
+**Follow-up Questions Interviewers Ask:**
+- Can Airflow 2 and 3 share a metadata DB? — No. The migration is one-way. Run them side by side on separate DBs.
+- What about REST API clients? — `/api/v1` is gone. Move to `/api/v2` (FastAPI) or `airflowctl`, and update authentication to JWT-based tokens.
+
+---
+
+### Q555. MWAA, Cloud Composer or Astronomer: what are the trade-offs of managed Airflow?
+**ID:** AF-47
+**Topic:** Airflow > Managed Airflow
+**Level:** Intermediate
+**Frequency:** Common
+**Tags:** `airflow`, `mwaa`, `cloud-composer`, `astronomer`
+
+**Short Answer (2–3 lines):**
+All three run the scheduler, DB, API server and workers for you. Amazon MWAA fits deeply into AWS: IAM, S3 for DAGs, VPC. Google Cloud Composer does the same for GCP, with GKE and GCS behind it. Astronomer (Astro) is an Airflow-focused platform on several clouds, with a CLI and image-based deploys, and it tends to offer new Airflow releases soonest. The trade-off is control versus convenience: version lag, limits on configuration and plugins, scaling knobs and cost model.
+
+**Detailed Explanation:**
+| Dimension | MWAA (AWS) | Cloud Composer (GCP) | Astronomer Astro | Self-managed (Helm/K8s) |
+|---|---|---|---|---|
+| DAG deploy | S3 bucket sync | GCS bucket sync | `astro deploy` (image or DAG-only) | Your choice: Git bundle, git-sync, image |
+| Dependencies | `requirements.txt` and plugins zip, startup script | PyPI packages in the environment config | Your Dockerfile | Your image |
+| Scaling | Environment class plus min/max workers | Environment size, worker autoscaling | Worker queues, autoscaling | Anything you build |
+| Identity | IAM execution role | Service accounts | Cloud identities per deployment | You wire it up |
+| Config access | Allow-listed overrides | Most overrides | Wide (env vars, image) | Full |
+| New Airflow versions | Usually lag upstream | Usually lag upstream | Typically fastest | Immediate |
+| Best when | All-AWS shop, small platform team | All-GCP shop, BigQuery-heavy | Many teams, multi-cloud, want Airflow expertise as a service | Strict control or cost needs, strong K8s team |
+
+How to evaluate one:
+- **Version support.** Which Airflow 3.x minor versions, and how quickly they arrive. Features from 3.2/3.3 such as asset partitioning, retry policies and deadline callbacks depend on it. *Product behaviour changes; checked October 2026. Confirm on each provider's supported-versions page before deciding.*
+- **Executor choice.** Some services fix the executor (for example Celery on MWAA). KubernetesPodOperator or the services' own container operators give isolation.
+- **Networking.** Private IPs, VPC peering, and the path to on-premises sources.
+- **Cost model.** Always-on environment fees versus usage-based pricing, plus the worker minimums when idle.
+- **Escape hatch.** Keep DAGs portable: standard providers, no service-only imports, config from env vars and secrets backends. Then moving between services is mostly redeploying.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 — run inside each environment (local, MWAA/Composer/Astro
+# image) and diff the output before moving DAGs between them.
+import sys
+import airflow
+from airflow.configuration import conf
+from airflow.providers_manager import ProvidersManager
+
+print("airflow", airflow.__version__, "| python", sys.version.split()[0])
+print("executor:", conf.get("core", "executor"))
+for name, info in sorted(ProvidersManager().providers.items()):
+    print(f"  {name}=={info.version}")
+```
+```text
+airflow 3.3.2 | python 3.11.15
+executor: LocalExecutor
+  apache-airflow-providers-common-compat==1.20.0
+  apache-airflow-providers-common-io==1.10.0
+  apache-airflow-providers-common-sql==2.2.0
+  apache-airflow-providers-smtp==3.1.0
+  apache-airflow-providers-standard==1.20.0
+```
+
+**Real-World Use Case:**
+A startup on AWS with one data engineer picked MWAA for IAM integration and zero cluster work. Two years later, now with five teams and GCP sources, they moved to a multi-cloud managed platform for per-team deployments and faster Airflow upgrades. Because their DAGs used only standard providers and secrets backends, the move took weeks rather than months.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Assuming every Airflow config option or plugin works on every managed service.
+- Using service-specific hacks, such as reading the S3 DAG bucket from task code, that lock you in.
+- Ignoring idle cost and version lag in the decision.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you test locally against a managed service? — Use the provider's local runner or CLI image (for example `astro dev start`, or the MWAA local runner) with the same requirements.
+- When does self-managed win? — When you need full config control, specific executors or networking, or very large scale with a team that can operate Kubernetes and Postgres.
+
+---
+
+### Q556. What do the task instance states mean, and which ones signal a problem?
+**ID:** AF-48
+**Topic:** Airflow > Task Lifecycle
+**Level:** Beginner
+**Frequency:** Very Common
+**Tags:** `airflow`, `task-states`, `debugging`, `lifecycle`
+
+**Short Answer (2–3 lines):**
+A task instance usually moves from no state → `scheduled` (dependencies met) → `queued` (sent to the executor) → `running` → `success` or `failed`, with `up_for_retry` between tries. Other states record decisions: `skipped`, `upstream_failed`, `up_for_reschedule` (a sensor between pokes), `deferred` (waiting in the triggerer), `removed`, `restarting` and, since 3.1, `awaiting_input` for human-in-the-loop tasks. A task that stays in `scheduled` or `queued` points to capacity or executor problems.
+
+**Detailed Explanation:**
+| State | Meaning | Worry when… |
+|---|---|---|
+| *(none)* | Created, dependencies not yet met | Upstream finished long ago (check the trigger rule) |
+| `scheduled` | Ready; waiting for a slot | It lasts for minutes: pools, `max_active_tasks` or `parallelism` are full (see Q539) |
+| `queued` | Handed to the executor | It lasts for minutes: workers down, broker problems, pods pending. `task_queued_timeout` (600 s) eventually fails or retries it |
+| `running` | Executing | Its heartbeat stops (see Q557) or it runs past `execution_timeout` |
+| `deferred` | Waiting in the triggerer | No triggerer is running, or the triggerer is overloaded |
+| `up_for_reschedule` | Sensor between pokes | Its `timeout` is very long |
+| `up_for_retry` | Failed, waiting `retry_delay` | Many tasks at once: a shared dependency is down |
+| `success` / `failed` | Final | — |
+| `skipped` | Branch, short-circuit or skip exception | Unexpected skips: trigger rules (see Q514) |
+| `upstream_failed` | A parent failed | — |
+| `removed` | Task no longer in the DAG version | After deploys that rename tasks |
+| `restarting` | Cleared while running | — |
+| `awaiting_input` | Human-in-the-loop task waiting for a person (3.1+) | Nobody is assigned to respond |
+
+DAG runs have only `queued`, `running`, `success` and `failed`. A run's final state comes from its leaf tasks (teardowns excepted).
+
+Tools for each state: the task-instance details panel in the UI, which lists unmet dependencies; `airflow tasks failed-deps`; `airflow tasks states-for-dag-run`; and the scheduler and executor logs for `queued` problems. For a full triage of slow or stuck tasks, see the site's guide.
+
+**Example / Code:**
+```bash
+# Runtime: Apache Airflow 3.3 CLI — inspect the run from the trigger-rule example (see Q514)
+airflow dags list-runs trigger_rules_demo -o plain
+airflow tasks states-for-dag-run trigger_rules_demo "manual__2026-10-17T13:37:18.923999+00:00"
+```
+```text
+dag_id              run_id                                    state    run_after ...
+trigger_rules_demo  manual__2026-10-17T13:37:18.923999+00:00  failed   2026-10-17T13:37:18.923999+00:00 ...
+dag_id             | logical_date                     | task_id      | state           | start_date ...
+===================+==================================+==============+=================+===========
+trigger_rules_demo | 2026-10-17T13:37:18.718414+00:00 | load_eu      | success         | ...
+trigger_rules_demo | 2026-10-17T13:37:18.718414+00:00 | load_us      | failed          | ...
+trigger_rules_demo | 2026-10-17T13:37:18.718414+00:00 | build_report | upstream_failed | ...
+trigger_rules_demo | 2026-10-17T13:37:18.718414+00:00 | cleanup_tmp  | success         | ...
+trigger_rules_demo | 2026-10-17T13:37:18.718414+00:00 | page_on_call | success         | ...
+```
+
+**Real-World Use Case:**
+Every morning dozens of tasks sat in `queued` for 20 minutes. Their state showed the scheduler had done its part, so the problem was after the hand-off. The Kubernetes events showed pods `Pending` because a node pool had hit its autoscaling maximum. Raising the limit fixed it, with no Airflow configuration change.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Treating `scheduled` and `queued` as the same thing. They point to different bottlenecks.
+- Clearing tasks over and over without reading the unmet dependencies.
+- Not knowing `deferred` needs a running triggerer.
+
+**Follow-up Questions Interviewers Ask:**
+- What does `removed` mean after a deploy? — The task_id no longer exists in the DAG's version. With versioned bundles, old runs still show the old graph.
+- How do you force a stuck task to run again? — Find the cause first, then clear it. Marking it success or failed by hand skips callbacks.
+
+---
+
+### Q557. What are zombie tasks (heartbeat timeouts), and how do you debug them?
+**ID:** AF-49
+**Topic:** Airflow > Debugging
+**Level:** Advanced
+**Frequency:** Common
+**Tags:** `airflow`, `zombie-tasks`, `heartbeat`, `debugging`
+
+**Short Answer (2–3 lines):**
+A "zombie", now called a *task instance heartbeat timeout*, is a task that the database shows as `running` while its process has died: an out-of-memory kill, an evicted pod, a dead node. The scheduler notices that heartbeats stopped for longer than `[scheduler] task_instance_heartbeat_timeout` (300 s). It then fails the task or retries it. The fix is to find out *why* the process died, usually memory, and to make the task safe to rerun.
+
+**Detailed Explanation:**
+How detection works in Airflow 3: the worker's supervisor sends heartbeats through the Execution API. If they stop, the scheduler, checking every `task_instance_heartbeat_timeout_detection_interval` (10 s), marks the task failed, or `up_for_retry` if it has retries left, and records the reason.
+
+Common causes and evidence:
+| Cause | Evidence |
+|---|---|
+| OOM kill | Pod `OOMKilled` in `kubectl describe`; `dmesg` on VMs; the log stops suddenly mid-task |
+| Pod eviction or node scale-down | Kubernetes events; often during cluster-autoscaler downsizing |
+| Worker restart during a deploy | It happens at deploy times; check the Celery warm-shutdown settings |
+| Liveness probe killed the worker | Probe failures in the events |
+| Supervisor can't reach the API server | API server overloaded or network policy; heartbeat errors in the worker logs |
+
+Related timeouts, which people often mix up:
+| Setting | Fires when |
+|---|---|
+| `task_instance_heartbeat_timeout` (300 s) | A running task's heartbeat stops |
+| `[scheduler] task_queued_timeout` (600 s) | A task stays `queued` too long |
+| `execution_timeout` (task) | One try runs too long, even with a healthy heartbeat |
+| `dagrun_timeout` (DAG) | The whole run is too long |
+| `[dag_processor] dag_file_processor_timeout` (50 s) | Parsing one file takes too long |
+
+Prevention: give tasks resource requests and limits, stream data instead of loading it all into memory, use `KubernetesPodOperator` for heavy work, and make tasks idempotent so an automatic retry is harmless (see Q46). The docs give a recipe for reproducing heartbeat timeouts locally: set a long heartbeat interval and a very short timeout.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 — print the timeouts that decide when a task is declared dead/stuck
+from airflow.configuration import conf
+
+for section, key in [("scheduler", "task_instance_heartbeat_timeout"),
+                     ("scheduler", "task_instance_heartbeat_timeout_detection_interval"),
+                     ("scheduler", "task_queued_timeout"),
+                     ("dag_processor", "dag_file_processor_timeout"),
+                     ("sensors", "default_timeout")]:
+    print(f"[{section}] {key} = {conf.get(section, key)}")
+```
+```text
+[scheduler] task_instance_heartbeat_timeout = 300
+[scheduler] task_instance_heartbeat_timeout_detection_interval = 10.0
+[scheduler] task_queued_timeout = 600.0
+[dag_processor] dag_file_processor_timeout = 50
+[sensors] default_timeout = 604800
+```
+```bash
+# Triage a suspected zombie on Kubernetes (KubernetesExecutor / KPO)
+kubectl -n airflow get events --sort-by=.lastTimestamp | grep -E "OOMKilled|Evicted|Killing"
+kubectl -n airflow describe pod <worker-or-task-pod> | grep -A3 "Last State"
+```
+
+**Real-World Use Case:**
+A nightly enrichment task failed about one night in five, with the log stopping abruptly and the task marked failed several minutes later. `kubectl describe` showed `OOMKilled` at the 4 GiB limit when a partner's file was unusually large. The team moved the task to a KubernetesPodOperator with 12 GiB and chunked reads. Those failures stopped, and the retries that remained were harmless because the load overwrites its partition.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Raising `task_instance_heartbeat_timeout` to "fix" zombies. That only hides dead tasks for longer.
+- Confusing `execution_timeout` with the heartbeat timeout.
+- Retrying a non-idempotent task that was killed halfway through its writes.
+
+**Follow-up Questions Interviewers Ask:**
+- What is an "undead" task? — The reverse case: a process still running for a task the DB no longer considers running. Airflow tells it to stop on its next heartbeat.
+- How do you get alerted on zombies? — The failure callback fires as usual. Also watch the zombie or heartbeat-timeout metrics and the Kubernetes OOM events.
+
+---
+
+### Q558. Why is DAG parsing slow, and how do you keep parse time low?
+**ID:** AF-50
+**Topic:** Airflow > Performance
+**Level:** Intermediate
+**Frequency:** Very Common
+**Tags:** `airflow`, `performance`, `parsing`, `top-level-code`
+
+**Short Answer (2–3 lines):**
+Every DAG file is re-imported about every 30 seconds by the DAG processor, and again by workers at each task start. Anything at module level runs every time: API calls, DB queries, `Variable.get`, heavy imports such as pandas or ML libraries. Move that work into tasks, keep imports local to the tasks that need them, measure with `airflow dags report`, and use `.airflowignore` so non-DAG files aren't parsed.
+
+**Detailed Explanation:**
+Why it matters:
+- Slow files delay new DAGs and changes from appearing, and files over `dagbag_import_timeout` (30 s) become import errors, so DAGs "flicker" in and out of the UI.
+- With versioned bundles, every task start parses the file again, so parse time adds to task latency.
+- Parse-time calls multiply quickly: 200 files × 2 lookups each × 2 parses a minute is 800 secrets-backend calls a minute.
+
+Fixes, roughly in order of impact:
+| Fix | How |
+|---|---|
+| No I/O at top level | Move the work into a task. Use dynamic task mapping for lists only known at run time (see Q519) |
+| Lazy heavy imports | `import pandas` inside the task function |
+| Templates instead of Python lookups | `{{ var.value.x }}`, `{{ conn.x.host }}` render at run time |
+| Static config for factories | YAML in the bundle, `yaml.safe_load` once (see Q521) |
+| `get_parsing_context()` | Workers build only the DAG they need |
+| `.airflowignore` | Skip `sql/`, `tests/` and helper packages (glob syntax by default in 3.x) |
+| Processor tuning | `parsing_processes`, `min_file_process_interval`, `refresh_interval`, more DAG processor replicas or separate bundles |
+| `parsing_pre_import_modules = True` (default) | Imports `airflow` modules once in the parent process |
+
+Measure before tuning. `airflow dags report` lists the parse duration per file. The `dag_processing.last_duration` metric, tagged by file, shows trends. A CI parse-time budget stops regressions (see Q550). The official best-practices guide says the same: top-level code is the most common cause of slow schedulers.
+
+**Example / Code:**
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 — dags/slow_top_level.py
+# BAD: work at import time runs on every parse (every ~30 s per file, on every DAG processor)
+import time
+from datetime import datetime
+from airflow.sdk import dag, task
+
+def fetch_tables_from_api():
+    time.sleep(1.5)                                   # stands in for an HTTP call / DB query
+    return ["orders", "customers", "invoices"]
+
+TABLES = fetch_tables_from_api()                      # runs at parse time!
+
+@dag(schedule="@daily", start_date=datetime(2026, 1, 1), catchup=False)
+def slow_top_level():
+    for t in TABLES:
+        @task(task_id=f"load_{t}")
+        def load(table=t):
+            print(table)
+        load()
+
+slow_top_level()
+```
+```python
+# Runtime: Python 3.11, Apache Airflow 3.3 — dags/fast_top_level.py
+# GOOD: the file only declares structure; work happens inside tasks at run time
+from datetime import datetime
+from airflow.sdk import dag, task
+
+@dag(schedule="@daily", start_date=datetime(2026, 1, 1), catchup=False)
+def fast_top_level():
+    @task
+    def list_tables() -> list[str]:
+        import time; time.sleep(1.5)                  # the same API call, now at run time
+        return ["orders", "customers", "invoices"]
+
+    @task
+    def load(table: str):
+        import pandas as pd                           # heavy import only where it is used
+        print(pd.__version__, table)
+
+    load.expand(table=list_tables())
+
+fast_top_level()
+```
+```bash
+# Runtime: Apache Airflow 3.3 CLI, dags_folder pointing at the two files above
+airflow dags report
+```
+```text
+file              | duration       | dag_num | task_num | dags
+==================+================+=========+==========+===============
+slow_top_level.py | 0:00:01.524504 | 1       | 3        | slow_top_level
+fast_top_level.py | 0:00:00.007452 | 1       | 2        | fast_top_level
+```
+The same work costs 1.5 s on *every* parse in the first file, and only once per run, inside a task, in the second.
+
+**Real-World Use Case:**
+A deployment's DAG processor took 9 minutes to work through 800 files, so new DAGs took up to 10 minutes to appear. `airflow dags report` showed 40 files each spending 5 to 8 seconds calling a metadata API at import time. Moving those calls into tasks, and adding `.airflowignore` for the SQL and test folders, brought a full parse pass under 60 seconds.
+
+**Common Mistakes / Interviewer Red Flags:**
+- Raising `dagbag_import_timeout` instead of removing top-level I/O.
+- Assuming the scheduler parses files in Airflow 3. The DAG processor does (see Q509).
+- `datetime.now()` in DAG arguments, which also changes the serialised DAG on every parse and creates needless versions.
+
+**Follow-up Questions Interviewers Ask:**
+- How do you find heavy imports? — `python -X importtime dags/my_dag.py` shows the cost of each import.
+- Does a slow DAG file slow down the others? — It uses one of the `parsing_processes` slots, so many slow files delay every file's next parse.
+
+---
+
 ## Appendix A: Glossary of Key Terms
 
 | Term | Definition |
@@ -29869,13 +37664,15 @@ The content was researched and checked against these general categories of sourc
 | 7. Python for Data Engineering | 50 | Q351–Q400 | 30% / 46% / 24% | PASS |
 | 8. Scenario-Based & System Design | 50 | Q401–Q450 | 28% / 46% / 26% | PASS |
 | 9. Behavioral Questions for Data Engineers | 18 | Q451–Q468 | 28% / 44% / 28% | PASS |
-| **Total** | **468** | Q1–Q468 | All within ±5% of 30/45/25 | **PASS** |
+| 10. Apache Kafka | 40 | Q469–Q508 | 30% / 48% / 22% | PASS |
+| 11. Apache Airflow | 50 | Q509–Q558 | 30% / 46% / 24% | PASS |
+| **Total** | **558** | Q1–Q558 | All within ±5% of 30/45/25 | **PASS** |
 
 **Full-file checks**
 
 | Check | Result | Notes |
 |---|---|---|
-| Structure (6.1) | PASS | Global numbering Q1–Q468 is sequential with no gaps or repeats. Section IDs are unique. Standard questions have all 10 fields in order and scenario questions all 8. Headings use only `#`, `##` and `###`. Every code block is tagged and closed. Every Markdown table has a consistent column count. Every Table of Contents link resolves to a heading (GitHub-style anchors). |
+| Structure (6.1) | PASS | Global numbering Q1–Q558 is sequential with no gaps or repeats. Section IDs are unique. Standard questions have all 10 fields in order and scenario questions all 8. Headings use only `#`, `##` and `###`. Every code block is tagged and closed. Every Markdown table has a consistent column count. Every Table of Contents link resolves to a heading (GitHub-style anchors). |
 | Technical accuracy (6.2) | PASS | High-risk facts checked: Snowflake Time Travel (1 day Standard, up to 90 days Enterprise+), Fail-safe 7 days, cache types, Delta VACUUM 7-day default and 30-day log retention, Spark `spark.sql.shuffle.partitions` = 200, broadcast threshold 10 MB, AQE default since Spark 3.2, dbt incremental strategies per adapter, Python GIL and the free-threaded builds. Renamed features use their current names, with the former names noted. |
 | Code (6.3) | PASS | Snippets were reviewed for syntax, imports, aliases, GROUP BY completeness and window frames. The dialect or runtime is stated for every snippet. Tricky queries include sample inputs and expected outputs. No bare `except:`. Values reach SQL only through parameter binding or validated input. Placeholder hosts in code use reserved `.example` domains. |
 | Duplicates (6.4) | PASS | Global duplicate check run on the approved outline and again on the final titles: no two questions ask the same thing. Intentional overlaps take different angles and carry "See also" cross-references, for example SCD2 (Q12 / Q215 / Q311 / Q411), medallion (Q32 / Q236), skew (Q60 / Q263 / Q264 / Q424), dedupe (Q115 / Q295 / Q388), Spark vs pandas vs Polars (Q300 / Q375) and GDPR (Q85 / Q412). No questions needed to be merged or removed. |
@@ -29894,4 +37691,4 @@ The content was researched and checked against these general categories of sourc
 - **Airflow:** Airflow 3 changes (Task SDK imports, asset-based scheduling) and the Cosmos profile-mapping class names.
 - **Other:** PostgreSQL logical decoding on standbys and slot settings, and Snowflake reader-account billing.
 
-**Final statement:** All Step 6 checks pass across the complete file (468 questions, 9 sections, 3 appendices). Overall result: **PASS**, subject to re-checking the version-sensitive facts listed above before publishing.
+**Final statement:** All Step 6 checks pass across the complete file (558 questions, 11 sections, 3 appendices). Overall result: **PASS**, subject to re-checking the version-sensitive facts listed above before publishing.

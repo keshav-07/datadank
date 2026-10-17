@@ -8,9 +8,9 @@ keyFacts: ["Ordering is guaranteed only within a partition","Consumer groups sca
 whatToLearnFirst: ["articles:kafka/topics-partitions-consumer-groups", "articles:kafka/producers", "articles:kafka/consumers-offsets"]
 relatedTechnologies: ["spark","airflow","data-warehousing"]
 monogram: "Kf"
-lessons: ["articles:kafka/kafka-real-time-data-engineering", "articles:kafka/topics-partitions-consumer-groups", "articles:kafka/log-storage-retention-compaction", "articles:kafka/producers", "articles:kafka/consumers-offsets", "articles:kafka/consumer-groups-rebalancing", "articles:kafka/replication-isr", "articles:kafka/delivery-semantics-exactly-once", "articles:kafka/kafka-connect-debezium", "articles:kafka/schema-registry-schema-evolution", "articles:kafka/kafka-streams-basics", "articles:kafka/kafka-vs-message-queues"]
+lessons: ["articles:kafka/kafka-real-time-data-engineering", "articles:kafka/topics-partitions-consumer-groups", "articles:kafka/log-storage-retention-compaction", "articles:kafka/producers", "articles:kafka/consumers-offsets", "articles:kafka/consumer-groups-rebalancing", "articles:kafka/replication-isr", "articles:kafka/delivery-semantics-exactly-once", "articles:kafka/kafka-connect-debezium", "articles:kafka/schema-registry-schema-evolution", "articles:kafka/kafka-streams-basics", "articles:kafka/kafka-vs-message-queues", "articles:kafka/kafka-interview-questions"]
 cheatSheet: "cheat-sheets:kafka"
-updatedDate: 2026-10-09
+updatedDate: 2026-10-17
 ---
 
 Kafka stores events in partitioned, replicated logs that many consumers can read independently. It decouples producers from consumers and is the backbone of many streaming and change-data-capture designs.

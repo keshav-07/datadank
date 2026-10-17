@@ -8,8 +8,8 @@ keyFacts: ["Workflows are Python-defined DAGs","Retries are only safe if tasks a
 whatToLearnFirst: ["articles:airflow/dag-fundamentals-taskflow", "articles:airflow/dags-scheduling-retries"]
 relatedTechnologies: ["python","kafka","spark"]
 monogram: "Af"
-lessons: ["articles:airflow/dag-fundamentals-taskflow","articles:airflow/operators-hooks-providers","articles:airflow/sensors-deferrable-operators","articles:airflow/dags-scheduling-retries","articles:airflow/xcom-variables-connections","articles:airflow/executors-scaling","articles:airflow/operations-backfills-monitoring","articles:airflow/best-practices-testing-cicd"]
-updatedDate: 2026-10-05
+lessons: ["articles:airflow/dag-fundamentals-taskflow","articles:airflow/operators-hooks-providers","articles:airflow/sensors-deferrable-operators","articles:airflow/dags-scheduling-retries","articles:airflow/xcom-variables-connections","articles:airflow/executors-scaling","articles:airflow/operations-backfills-monitoring","articles:airflow/best-practices-testing-cicd","articles:airflow/airflow-interview-questions"]
+updatedDate: 2026-10-17
 ---
 
 Airflow is a workflow orchestrator: it decides what runs, when, in what order and what happens on failure. It does not process your data itself. It triggers tools that do.

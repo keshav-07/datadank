@@ -73,7 +73,7 @@ practice: { "platform": "LeetCode", "number": 1, "title": "Two Sum", "url": "htt
 
 ### Interview question banks
 
-`docs/question-bank/data-engineering-interview-master.md` holds 468 questions in nine sections. Edit the
+`docs/question-bank/data-engineering-interview-master.md` holds 558 questions in eleven sections. Edit the
 questions there, then run `python3 scripts/import-question-bank.py`. It regenerates one lesson-format article per
 section (never edit those by hand):
 
@@ -83,6 +83,7 @@ section (never edit those by hand):
 | SQL, Snowflake, Databricks, PySpark, Python (50 each) | `/<course>/<course>-interview-questions/` |
 | dbt (50) | `/dbt/dbt-interview-questions/` (dbt course) |
 | Scenario-based (50), Behavioral (18) | `/career/…-interview-questions/` |
+| Kafka (40), Airflow (50) | `/kafka/kafka-interview-questions/`, `/airflow/airflow-interview-questions/` |
 
 Each question is an `<h3>` ("17. ROWS vs RANGE window frames") with its short answer (or scenario) visible and
 the rest in an expandable block. Questions are grouped by level (freshers → experienced) and numbered 1–N per

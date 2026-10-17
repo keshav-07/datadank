@@ -2941,5 +2941,575 @@
         "level": "Advanced"
       }
     ]
+  },
+  {
+    "hub": "kafka",
+    "label": "Kafka",
+    "title": "Top 40 Apache Kafka Interview Questions and Answers",
+    "url": "/kafka/kafka-interview-questions/",
+    "ref": "articles:kafka/kafka-interview-questions",
+    "count": 40,
+    "levels": {
+      "Beginner": 12,
+      "Intermediate": 19,
+      "Advanced": 9
+    },
+    "questions": [
+      {
+        "n": 1,
+        "title": "Walk through the life of one record from producer to consumer",
+        "anchor": "1-walk-through-the-life-of-one-record-from-producer-to-consumer",
+        "level": "Beginner"
+      },
+      {
+        "n": 2,
+        "title": "Create and configure a topic from the CLI",
+        "anchor": "2-create-and-configure-a-topic-from-the-cli",
+        "level": "Beginner"
+      },
+      {
+        "n": 3,
+        "title": "What makes a good message key?",
+        "anchor": "3-what-makes-a-good-message-key",
+        "level": "Beginner"
+      },
+      {
+        "n": 4,
+        "title": "Can you change a topic's partition count, and what breaks when you do?",
+        "anchor": "4-can-you-change-a-topics-partition-count-and-what-breaks-when-you-do",
+        "level": "Beginner"
+      },
+      {
+        "n": 5,
+        "title": "Synchronous vs asynchronous sends, flush() and delivery callbacks",
+        "anchor": "5-synchronous-vs-asynchronous-sends-flush-and-delivery-callbacks",
+        "level": "Beginner"
+      },
+      {
+        "n": 6,
+        "title": "The consumer poll loop: what poll() does and why max.poll.interval.ms matters",
+        "anchor": "6-the-consumer-poll-loop-what-poll-does-and-why-maxpollintervalms-matters",
+        "level": "Beginner"
+      },
+      {
+        "n": 7,
+        "title": "auto.offset.reset: earliest, latest, none and by_duration",
+        "anchor": "7-autooffsetreset-earliest-latest-none-and-by_duration",
+        "level": "Beginner"
+      },
+      {
+        "n": 8,
+        "title": "How is consumer lag measured, and what does the output mean?",
+        "anchor": "8-how-is-consumer-lag-measured-and-what-does-the-output-mean",
+        "level": "Beginner"
+      },
+      {
+        "n": 9,
+        "title": "What happens when a broker fails, and how does leadership recover?",
+        "anchor": "9-what-happens-when-a-broker-fails-and-how-does-leadership-recover",
+        "level": "Beginner"
+      },
+      {
+        "n": 10,
+        "title": "Kafka Connect architecture: workers, connectors, tasks and internal topics",
+        "anchor": "10-kafka-connect-architecture-workers-connectors-tasks-and-internal-topics",
+        "level": "Beginner"
+      },
+      {
+        "n": 11,
+        "title": "Avro vs Protobuf vs JSON Schema for Kafka events",
+        "anchor": "11-avro-vs-protobuf-vs-json-schema-for-kafka-events",
+        "level": "Beginner"
+      },
+      {
+        "n": 12,
+        "title": "KStream vs KTable vs GlobalKTable in Kafka Streams",
+        "anchor": "12-kstream-vs-ktable-vs-globalktable-in-kafka-streams",
+        "level": "Beginner"
+      },
+      {
+        "n": 13,
+        "title": "Running KRaft: controllers, quorum sizing and metadata versions",
+        "anchor": "13-running-kraft-controllers-quorum-sizing-and-metadata-versions",
+        "level": "Intermediate"
+      },
+      {
+        "n": 14,
+        "title": "How the producer picks a partition, and why Python and Java can disagree",
+        "anchor": "14-how-the-producer-picks-a-partition-and-why-python-and-java-can-disagree",
+        "level": "Intermediate"
+      },
+      {
+        "n": 15,
+        "title": "Producer batching, linger.ms and compression: tuning for throughput",
+        "anchor": "15-producer-batching-lingerms-and-compression-tuning-for-throughput",
+        "level": "Intermediate"
+      },
+      {
+        "n": 16,
+        "title": "Producer retries, timeouts and error handling",
+        "anchor": "16-producer-retries-timeouts-and-error-handling",
+        "level": "Intermediate"
+      },
+      {
+        "n": 17,
+        "title": "max.in.flight.requests.per.connection, idempotence and ordering",
+        "anchor": "17-maxinflightrequestsperconnection-idempotence-and-ordering",
+        "level": "Intermediate"
+      },
+      {
+        "n": 18,
+        "title": "Offset commit strategies: auto, sync, async and \"store then commit\"",
+        "anchor": "18-offset-commit-strategies-auto-sync-async-and-store-then-commit",
+        "level": "Intermediate"
+      },
+      {
+        "n": 19,
+        "title": "Replaying data: seek, offsets-for-times and kafka-consumer-groups --reset-offsets",
+        "anchor": "19-replaying-data-seek-offsets-for-times-and-kafka-consumer-groups---reset-offsets",
+        "level": "Intermediate"
+      },
+      {
+        "n": 20,
+        "title": "Consumer fetch tuning: fetch.min.bytes, fetch.max.wait.ms and partition fetch sizes",
+        "anchor": "20-consumer-fetch-tuning-fetchminbytes-fetchmaxwaitms-and-partition-fetch-sizes",
+        "level": "Intermediate"
+      },
+      {
+        "n": 21,
+        "title": "Processing faster than one thread per partition: worker pools and ordering",
+        "anchor": "21-processing-faster-than-one-thread-per-partition-worker-pools-and-ordering",
+        "level": "Intermediate"
+      },
+      {
+        "n": 22,
+        "title": "Partition assignment strategies: range, round-robin, sticky and cooperative-sticky",
+        "anchor": "22-partition-assignment-strategies-range-round-robin-sticky-and-cooperative-sticky",
+        "level": "Intermediate"
+      },
+      {
+        "n": 23,
+        "title": "How replication works: leaders, followers, the ISR and the high watermark",
+        "anchor": "23-how-replication-works-leaders-followers-the-isr-and-the-high-watermark",
+        "level": "Intermediate"
+      },
+      {
+        "n": 24,
+        "title": "How Kafka stores a partition on disk: segments, indexes and deletion",
+        "anchor": "24-how-kafka-stores-a-partition-on-disk-segments-indexes-and-deletion",
+        "level": "Intermediate"
+      },
+      {
+        "n": 25,
+        "title": "Record timestamps: CreateTime vs LogAppendTime, and how they affect retention and replay",
+        "anchor": "25-record-timestamps-createtime-vs-logappendtime-and-how-they-affect-retention-and-replay",
+        "level": "Intermediate"
+      },
+      {
+        "n": 26,
+        "title": "Converters vs SMTs vs serializers in Kafka Connect",
+        "anchor": "26-converters-vs-smts-vs-serializers-in-kafka-connect",
+        "level": "Intermediate"
+      },
+      {
+        "n": 27,
+        "title": "Error handling in Kafka Connect: errors.tolerance and dead letter queues",
+        "anchor": "27-error-handling-in-kafka-connect-errorstolerance-and-dead-letter-queues",
+        "level": "Intermediate"
+      },
+      {
+        "n": 28,
+        "title": "Debezium snapshots, incremental snapshots and replication-slot risks",
+        "anchor": "28-debezium-snapshots-incremental-snapshots-and-replication-slot-risks",
+        "level": "Intermediate"
+      },
+      {
+        "n": 29,
+        "title": "Debezium change events: the envelope, tombstones and flattening with ExtractNewRecordState",
+        "anchor": "29-debezium-change-events-the-envelope-tombstones-and-flattening-with-extractnewrecordstate",
+        "level": "Intermediate"
+      },
+      {
+        "n": 30,
+        "title": "Schema Registry under the hood: wire format, schema IDs and subject naming strategies",
+        "anchor": "30-schema-registry-under-the-hood-wire-format-schema-ids-and-subject-naming-strategies",
+        "level": "Intermediate"
+      },
+      {
+        "n": 31,
+        "title": "Windowing in Kafka Streams: tumbling, hopping, sliding, session windows and grace",
+        "anchor": "31-windowing-in-kafka-streams-tumbling-hopping-sliding-session-windows-and-grace",
+        "level": "Intermediate"
+      },
+      {
+        "n": 32,
+        "title": "The KIP-848 consumer group protocol: what changes with group.protocol=consumer?",
+        "anchor": "32-the-kip-848-consumer-group-protocol-what-changes-with-groupprotocolconsumer",
+        "level": "Advanced"
+      },
+      {
+        "n": 33,
+        "title": "Share groups (Queues for Kafka): how do they differ from consumer groups?",
+        "anchor": "33-share-groups-queues-for-kafka-how-do-they-differ-from-consumer-groups",
+        "level": "Advanced"
+      },
+      {
+        "n": 34,
+        "title": "Unclean leader election and Eligible Leader Replicas (ELR)",
+        "anchor": "34-unclean-leader-election-and-eligible-leader-replicas-elr",
+        "level": "Advanced"
+      },
+      {
+        "n": 35,
+        "title": "Rack awareness and fetching from the closest replica",
+        "anchor": "35-rack-awareness-and-fetching-from-the-closest-replica",
+        "level": "Advanced"
+      },
+      {
+        "n": 36,
+        "title": "Exactly-once from Kafka into an external database",
+        "anchor": "36-exactly-once-from-kafka-into-an-external-database",
+        "level": "Advanced"
+      },
+      {
+        "n": 37,
+        "title": "Write a transactional consume-transform-produce loop",
+        "anchor": "37-write-a-transactional-consume-transform-produce-loop",
+        "level": "Advanced"
+      },
+      {
+        "n": 38,
+        "title": "Tiered storage: how it works and what it changes operationally",
+        "anchor": "38-tiered-storage-how-it-works-and-what-it-changes-operationally",
+        "level": "Advanced"
+      },
+      {
+        "n": 39,
+        "title": "Exactly-once source connectors and what \"exactly-once\" means for sinks",
+        "anchor": "39-exactly-once-source-connectors-and-what-exactly-once-means-for-sinks",
+        "level": "Advanced"
+      },
+      {
+        "n": 40,
+        "title": "Joins in Kafka Streams: stream-table, stream-stream and co-partitioning",
+        "anchor": "40-joins-in-kafka-streams-stream-table-stream-stream-and-co-partitioning",
+        "level": "Advanced"
+      }
+    ]
+  },
+  {
+    "hub": "airflow",
+    "label": "Airflow",
+    "title": "Top 50 Apache Airflow Interview Questions and Answers",
+    "url": "/airflow/airflow-interview-questions/",
+    "ref": "articles:airflow/airflow-interview-questions",
+    "count": 50,
+    "levels": {
+      "Beginner": 15,
+      "Intermediate": 23,
+      "Advanced": 12
+    },
+    "questions": [
+      {
+        "n": 1,
+        "title": "How does a Python file become a DAG in Airflow 3? Explain parsing and the DAG processor",
+        "anchor": "1-how-does-a-python-file-become-a-dag-in-airflow-3-explain-parsing-and-the-dag-processor",
+        "level": "Beginner"
+      },
+      {
+        "n": 2,
+        "title": "TaskFlow API vs classic operators: what does @task actually do?",
+        "anchor": "2-taskflow-api-vs-classic-operators-what-does-task-actually-do",
+        "level": "Beginner"
+      },
+      {
+        "n": 3,
+        "title": "Operators, hooks and providers: how do they fit together?",
+        "anchor": "3-operators-hooks-and-providers-how-do-they-fit-together",
+        "level": "Beginner"
+      },
+      {
+        "n": 4,
+        "title": "Connections and Variables: how should DAGs get credentials and configuration?",
+        "anchor": "4-connections-and-variables-how-should-dags-get-credentials-and-configuration",
+        "level": "Beginner"
+      },
+      {
+        "n": 5,
+        "title": "How do you declare task dependencies, and what do chain and cross_downstream do?",
+        "anchor": "5-how-do-you-declare-task-dependencies-and-what-do-chain-and-cross_downstream-do",
+        "level": "Beginner"
+      },
+      {
+        "n": 6,
+        "title": "What are task groups, and why did they replace SubDAGs?",
+        "anchor": "6-what-are-task-groups-and-why-did-they-replace-subdags",
+        "level": "Beginner"
+      },
+      {
+        "n": 7,
+        "title": "How do partial() and expand() work in dynamic task mapping, and what is a map index?",
+        "anchor": "7-how-do-partial-and-expand-work-in-dynamic-task-mapping-and-what-is-a-map-index",
+        "level": "Beginner"
+      },
+      {
+        "n": 8,
+        "title": "How does Jinja templating work in Airflow, and which macros should you know?",
+        "anchor": "8-how-does-jinja-templating-work-in-airflow-and-which-macros-should-you-know",
+        "level": "Beginner"
+      },
+      {
+        "n": 9,
+        "title": "What can you pass to schedule, and what does each option create?",
+        "anchor": "9-what-can-you-pass-to-schedule-and-what-does-each-option-create",
+        "level": "Beginner"
+      },
+      {
+        "n": 10,
+        "title": "TriggerDagRunOperator, ExternalTaskSensor or assets: how do you choose for cross-DAG dependencies?",
+        "anchor": "10-triggerdagrunoperator-externaltasksensor-or-assets-how-do-you-choose-for-cross-dag-dependencies",
+        "level": "Beginner"
+      },
+      {
+        "n": 11,
+        "title": "How do TaskFlow tasks pass values: return values, multiple_outputs and named XComs?",
+        "anchor": "11-how-do-taskflow-tasks-pass-values-return-values-multiple_outputs-and-named-xcoms",
+        "level": "Beginner"
+      },
+      {
+        "n": 12,
+        "title": "What are pools, and how do you use them to protect a shared system?",
+        "anchor": "12-what-are-pools-and-how-do-you-use-them-to-protect-a-shared-system",
+        "level": "Beginner"
+      },
+      {
+        "n": 13,
+        "title": "How do callbacks and notifiers work, and where do they run?",
+        "anchor": "13-how-do-callbacks-and-notifiers-work-and-where-do-they-run",
+        "level": "Beginner"
+      },
+      {
+        "n": 14,
+        "title": "How do you write DAG integrity tests that catch broken DAGs before merge?",
+        "anchor": "14-how-do-you-write-dag-integrity-tests-that-catch-broken-dags-before-merge",
+        "level": "Beginner"
+      },
+      {
+        "n": 15,
+        "title": "What do the task instance states mean, and which ones signal a problem?",
+        "anchor": "15-what-do-the-task-instance-states-mean-and-which-ones-signal-a-problem",
+        "level": "Beginner"
+      },
+      {
+        "n": 16,
+        "title": "What are trigger rules, and which ones do you actually use?",
+        "anchor": "16-what-are-trigger-rules-and-which-ones-do-you-actually-use",
+        "level": "Intermediate"
+      },
+      {
+        "n": 17,
+        "title": "How does branching work in Airflow, and why is the join task often skipped?",
+        "anchor": "17-how-does-branching-work-in-airflow-and-why-is-the-join-task-often-skipped",
+        "level": "Intermediate"
+      },
+      {
+        "n": 18,
+        "title": "Short-circuit, branch or AirflowSkipException: how do you skip work cleanly?",
+        "anchor": "18-short-circuit-branch-or-airflowskipexception-how-do-you-skip-work-cleanly",
+        "level": "Intermediate"
+      },
+      {
+        "n": 19,
+        "title": "What are setup and teardown tasks, and how are they different from an all_done cleanup?",
+        "anchor": "19-what-are-setup-and-teardown-tasks-and-how-are-they-different-from-an-all_done-cleanup",
+        "level": "Intermediate"
+      },
+      {
+        "n": 20,
+        "title": "Generating many DAGs from config vs dynamic task mapping: when do you use each?",
+        "anchor": "20-generating-many-dags-from-config-vs-dynamic-task-mapping-when-do-you-use-each",
+        "level": "Intermediate"
+      },
+      {
+        "n": 21,
+        "title": "How do Params work, and how do you trigger a DAG with validated inputs?",
+        "anchor": "21-how-do-params-work-and-how-do-you-trigger-a-dag-with-validated-inputs",
+        "level": "Intermediate"
+      },
+      {
+        "n": 22,
+        "title": "CronTriggerTimetable vs CronDataIntervalTimetable: what changed in Airflow 3, and when do you write a custom timetable?",
+        "anchor": "22-crontriggertimetable-vs-crondataintervaltimetable-what-changed-in-airflow-3-and-when-do-you-write-a-custom-timetable",
+        "level": "Intermediate"
+      },
+      {
+        "n": 23,
+        "title": "How do scheduler-managed backfills work in Airflow 3?",
+        "anchor": "23-how-do-scheduler-managed-backfills-work-in-airflow-3",
+        "level": "Intermediate"
+      },
+      {
+        "n": 24,
+        "title": "Manual and API-triggered runs in Airflow 3: why can logical_date be None?",
+        "anchor": "24-manual-and-api-triggered-runs-in-airflow-3-why-can-logical_date-be-none",
+        "level": "Intermediate"
+      },
+      {
+        "n": 25,
+        "title": "How does asset-aware scheduling work, and how do you combine asset conditions?",
+        "anchor": "25-how-does-asset-aware-scheduling-work-and-how-do-you-combine-asset-conditions",
+        "level": "Intermediate"
+      },
+      {
+        "n": 26,
+        "title": "What do the @asset decorator, Metadata and AssetAlias add on top of plain asset outlets?",
+        "anchor": "26-what-do-the-asset-decorator-metadata-and-assetalias-add-on-top-of-plain-asset-outlets",
+        "level": "Intermediate"
+      },
+      {
+        "n": 27,
+        "title": "Which sensor settings matter, and how do you write a sensor with @task.sensor?",
+        "anchor": "27-which-sensor-settings-matter-and-how-do-you-write-a-sensor-with-tasksensor",
+        "level": "Intermediate"
+      },
+      {
+        "n": 28,
+        "title": "How do priority weights and weight_rule decide what runs first?",
+        "anchor": "28-how-do-priority-weights-and-weight_rule-decide-what-runs-first",
+        "level": "Intermediate"
+      },
+      {
+        "n": 29,
+        "title": "How do you configure retries, backoff, timeouts and the 3.3 retry policies?",
+        "anchor": "29-how-do-you-configure-retries-backoff-timeouts-and-the-33-retry-policies",
+        "level": "Intermediate"
+      },
+      {
+        "n": 30,
+        "title": "SLAs were removed in Airflow 3. How do Deadline Alerts replace them?",
+        "anchor": "30-slas-were-removed-in-airflow-3-how-do-deadline-alerts-replace-them",
+        "level": "Intermediate"
+      },
+      {
+        "n": 31,
+        "title": "How do multiple executors work, and how do you route a task to a specific one?",
+        "anchor": "31-how-do-multiple-executors-work-and-how-do-you-route-a-task-to-a-specific-one",
+        "level": "Intermediate"
+      },
+      {
+        "n": 32,
+        "title": "KubernetesPodOperator vs KubernetesExecutor vs virtualenv tasks: how do you isolate dependencies?",
+        "anchor": "32-kubernetespodoperator-vs-kubernetesexecutor-vs-virtualenv-tasks-how-do-you-isolate-dependencies",
+        "level": "Intermediate"
+      },
+      {
+        "n": 33,
+        "title": "What are DAG bundles and DAG versioning in Airflow 3?",
+        "anchor": "33-what-are-dag-bundles-and-dag-versioning-in-airflow-3",
+        "level": "Intermediate"
+      },
+      {
+        "n": 34,
+        "title": "How do secrets backends work in Airflow 3, and what is the lookup order?",
+        "anchor": "34-how-do-secrets-backends-work-in-airflow-3-and-what-is-the-lookup-order",
+        "level": "Intermediate"
+      },
+      {
+        "n": 35,
+        "title": "How do you test task logic and run a DAG end to end with dag.test()?",
+        "anchor": "35-how-do-you-test-task-logic-and-run-a-dag-end-to-end-with-dagtest",
+        "level": "Intermediate"
+      },
+      {
+        "n": 36,
+        "title": "What does a good CI/CD pipeline for Airflow DAGs look like?",
+        "anchor": "36-what-does-a-good-cicd-pipeline-for-airflow-dags-look-like",
+        "level": "Intermediate"
+      },
+      {
+        "n": 37,
+        "title": "MWAA, Cloud Composer or Astronomer: what are the trade-offs of managed Airflow?",
+        "anchor": "37-mwaa-cloud-composer-or-astronomer-what-are-the-trade-offs-of-managed-airflow",
+        "level": "Intermediate"
+      },
+      {
+        "n": 38,
+        "title": "Why is DAG parsing slow, and how do you keep parse time low?",
+        "anchor": "38-why-is-dag-parsing-slow-and-how-do-you-keep-parse-time-low",
+        "level": "Intermediate"
+      },
+      {
+        "n": 39,
+        "title": "How do you map a whole task group, filter inputs and limit fan-out?",
+        "anchor": "39-how-do-you-map-a-whole-task-group-filter-inputs-and-limit-fan-out",
+        "level": "Advanced"
+      },
+      {
+        "n": 40,
+        "title": "How do AssetWatcher and event-driven scheduling work?",
+        "anchor": "40-how-do-assetwatcher-and-event-driven-scheduling-work",
+        "level": "Advanced"
+      },
+      {
+        "n": 41,
+        "title": "What is asset partitioning in Airflow 3.2+, and when would you use it?",
+        "anchor": "41-what-is-asset-partitioning-in-airflow-32-and-when-would-you-use-it",
+        "level": "Advanced"
+      },
+      {
+        "n": 42,
+        "title": "How does the triggerer work, and how would you write a deferrable operator?",
+        "anchor": "42-how-does-the-triggerer-work-and-how-would-you-write-a-deferrable-operator",
+        "level": "Advanced"
+      },
+      {
+        "n": 43,
+        "title": "How do custom and object-storage XCom backends work?",
+        "anchor": "43-how-do-custom-and-object-storage-xcom-backends-work",
+        "level": "Advanced"
+      },
+      {
+        "n": 44,
+        "title": "How do Airflow's concurrency limits stack, from parallelism down to a single task?",
+        "anchor": "44-how-do-airflows-concurrency-limits-stack-from-parallelism-down-to-a-single-task",
+        "level": "Advanced"
+      },
+      {
+        "n": 45,
+        "title": "What is the Edge Executor, and when would you use it?",
+        "anchor": "45-what-is-the-edge-executor-and-when-would-you-use-it",
+        "level": "Advanced"
+      },
+      {
+        "n": 46,
+        "title": "How do you scale and make the scheduler highly available?",
+        "anchor": "46-how-do-you-scale-and-make-the-scheduler-highly-available",
+        "level": "Advanced"
+      },
+      {
+        "n": 47,
+        "title": "What are the Task SDK and the Task Execution API, and why do they matter?",
+        "anchor": "47-what-are-the-task-sdk-and-the-task-execution-api-and-why-do-they-matter",
+        "level": "Advanced"
+      },
+      {
+        "n": 48,
+        "title": "How do you design DAGs so any past interval can be reprocessed safely?",
+        "anchor": "48-how-do-you-design-dags-so-any-past-interval-can-be-reprocessed-safely",
+        "level": "Advanced"
+      },
+      {
+        "n": 49,
+        "title": "Walk through migrating a real Airflow 2 deployment to Airflow 3. What breaks first?",
+        "anchor": "49-walk-through-migrating-a-real-airflow-2-deployment-to-airflow-3-what-breaks-first",
+        "level": "Advanced"
+      },
+      {
+        "n": 50,
+        "title": "What are zombie tasks (heartbeat timeouts), and how do you debug them?",
+        "anchor": "50-what-are-zombie-tasks-heartbeat-timeouts-and-how-do-you-debug-them",
+        "level": "Advanced"
+      }
+    ]
   }
 ]

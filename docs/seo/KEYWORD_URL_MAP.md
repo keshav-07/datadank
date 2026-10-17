@@ -39,9 +39,9 @@ CTR, average position, indexing status, last substantive update.
 | top data engineering interview questions | `/career/data-engineering-interview-questions/` | Top 100 Data Engineer Interview Questions & Answers |
 | scenario based data engineering interview questions | `/career/scenario-based-data-engineering-interview-questions/` | 50 Scenario-Based Data Engineer Interview Questions |
 | behavioral interview questions for data engineers | `/career/behavioral-interview-questions/` | Behavioral Interview Questions for Data Engineers |
-| Kafka interview questions | `/interview/kafka/` | Kafka Interview Questions for Data Engineers |
-| Airflow interview questions | `/interview/airflow/` | Airflow Interview Questions for Data Engineers |
-| (practice trackers: SQL, Snowflake, Databricks, PySpark, Python, Data Engineering) | `/interview/<topic>/` | "<Topic> Interview Practice: In-Depth Answers" — retitled so they do not compete with the Top-N articles; each links its article first |
+| Kafka interview questions | `/kafka/kafka-interview-questions/` | Top 40 Kafka Interview Questions and Answers |
+| Airflow interview questions | `/airflow/airflow-interview-questions/` | Top 50 Airflow Interview Questions and Answers |
+| (practice trackers: SQL, Snowflake, Databricks, PySpark, Python, Kafka, Airflow, Data Engineering) | `/interview/<topic>/` | "<Topic> Interview Practice: In-Depth Answers" — retitled so they do not compete with the Top-N articles; each links its article first |
 | list of all data engineer interview questions | `/interview/questions/` | All 819 Data Engineer Interview Questions by Topic — the index: every bank question (linked to its heading) and every in-depth page, filterable; targets "all / list" intent, while the Top 100 article targets "top … with answers" |
 | data engineering system design interview | `/data-engineering/system-design/` | Data Engineering System Design Interview Case Studies |
 | data engineering projects for beginners | `/projects/` | Data Engineering Projects: Step-by-Step Guides |
@@ -54,12 +54,12 @@ CTR, average position, indexing status, last substantive update.
 "data engineering", "data engineer", "data engineering course": homepage `/` and `/data-engineering/`. Not a
 success criterion on their own; they follow from the clusters above.
 
-## Question banks (16 Oct 2026)
+## Question banks (16 Oct 2026; Kafka and Airflow added 17 Oct)
 
-The 468-question master file (`docs/question-bank/`) is published as nine lesson-format "Top N … interview
+The 558-question master file (`docs/question-bank/`) is published as eleven lesson-format "Top N … interview
 questions" articles (see `docs/CONTENT.md`). Each question is an `<h3>` with its short answer visible, grouped
 by level with "freshers" / "experienced" section headings. Where a bank answer overlaps a single-question page
-(48 cases, `DEEP` in `scripts/import-question-bank.py`), it links there ("In depth") and the article's
+(70 cases, `DEEP` in `scripts/import-question-bank.py`), it links there ("In depth") and the article's
 `related` list links back, so the deeper page stays the target for the specific long-tail query. The
 `/interview/<topic>/` pages became practice trackers. `/interview/dbt/`, `/interview/scenario-based/` and
 `/interview/behavioral/` 301 to the articles.

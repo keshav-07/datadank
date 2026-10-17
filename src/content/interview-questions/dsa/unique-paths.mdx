@@ -26,12 +26,12 @@ At each move it goes one cell right or one cell down. Count the distinct routes.
 
 This is widely known as LeetCode 62, "Unique Paths".
 
-Assume both dimensions are between 1 and 100 and the answer fits in a 64-bit integer for the tested sizes.
+Both dimensions are at least 1; for moderate grids the count fits in a 64-bit integer, and Python integers never overflow anyway.
 
 ## Examples
 
 ```text
-rows 2, cols 3  -> 3   (RRD, RDR, DRR)
+rows 2, cols 4  -> 4   (RRRD, RRDR, RDRR, DRRR)
 rows 3, cols 3  -> 6
 rows 1, cols 9  -> 1   (a single row: only rights)
 rows 4, cols 5  -> 35
@@ -131,7 +131,7 @@ def unique_paths_formula(rows, cols):
 
 ```python
 for fn in (unique_paths, unique_paths_table, unique_paths_memo, unique_paths_formula, unique_paths_recursive):
-    assert fn(2, 3) == 3
+    assert fn(2, 4) == 4
     assert fn(3, 3) == 6
     assert fn(1, 9) == 1                      # single row
     assert fn(9, 1) == 1                      # single column

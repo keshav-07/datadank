@@ -1003,7 +1003,7 @@ Call `.expand()` on a `@task_group` function, and Airflow creates a copy of the 
 | `a.zip(b)` / `a.concat(b)` | Pre-processing | Pairing or joining lists |
 
 **Limits and back-pressure.**
-- `[core] max_map_length` (1024 by default) is a hard ceiling. If a run would create more instances, the mapped task fails, so chunk the input upstream.
+- `[core] max_map_length` (1024 by default) is a hard ceiling. If an upstream task returns a longer list, *that upstream task* fails when it pushes the XCom, and the mapped task becomes `upstream_failed`. Chunk the input upstream.
 - `max_active_tis_per_dagrun` limits running copies within one run. `max_active_tis_per_dag` limits them across all runs.
 - A pool (see Q547) protects a shared external system across DAGs.
 - Each instance is a full task: it is scheduled, logged and has its own XCom. Ten thousand instances can slow the scheduler and the UI. Batching 100 items per instance is often better.
@@ -1070,7 +1070,7 @@ A media company processed each partner's daily delivery with download, virus-sca
 
 **Common Mistakes / Interviewer Red Flags:**
 - Passing an Airflow task to `.map()`. It must be a plain function.
-- Not knowing that going over `max_map_length` fails the task, and assuming it truncates the list.
+- Assuming Airflow truncates a list longer than `max_map_length`. It fails the task that produced the list.
 - Calling `list()` on the lazy sequence many times inside a loop, which pulls every XCom each time.
 
 **Follow-up Questions Interviewers Ask:**

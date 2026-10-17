@@ -2218,7 +2218,7 @@ A partition is a directory of **segments**. Each segment is a `.log` file of rec
 **Rolling.** The active segment closes ("rolls") when it reaches `segment.bytes` (1 GiB) or `segment.ms` (7 days) old, or when its index fills up. The output below shows the index pre-allocated at 10 MB for the active segment and trimmed when the segment rolls.
 
 **Why segments matter in interviews**
-- **Retention lags.** A segment is deleted only when it's closed *and* wholly past `retention.ms` (judged by its largest timestamp), or the partition exceeds `retention.bytes`. On a low-traffic topic with 1 GiB segments, a "7-day" topic can keep months of data, because the active segment never rolls by size. Lower `segment.ms` for those topics.
+- **Retention lags.** A segment is deleted only when it's closed *and* wholly past `retention.ms` (judged by its largest timestamp), or when deleting it would still leave the partition at or above `retention.bytes`. On a low-traffic topic with 1 GiB segments, a "7-day" topic can keep months of data, because the active segment never rolls by size. Lower `segment.ms` for those topics.
 - **Retention is checked periodically**, every `log.retention.check.interval.ms` (5 minutes), and files are removed after `file.delete.delay.ms`.
 - **Compaction never touches the active segment** (see Q71).
 - **Reads are cheap**: a fetch binary-searches the sparse index, then streams bytes straight from the page cache to the socket (zero-copy).

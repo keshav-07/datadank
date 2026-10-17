@@ -1,7 +1,7 @@
 ---
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-09"
+reviewedDate: "2026-10-09"
 title: "Valid Parenthesis String: Track a Range of Open Counts Greedily"
 seoTitle: "Valid Parenthesis String: Greedy Range"
 description: "Check a string of parentheses and wildcards that can be either bracket or empty by tracking the lowest and highest possible open count, with DP and tests."
@@ -26,13 +26,13 @@ some choice for the stars makes the string a balanced bracket sequence (every op
 
 This is widely known as LeetCode 678, "Valid Parenthesis String".
 
-Assume up to 100 characters.
+Strings are short (around a hundred characters), so even the O(n^2) DP is fast; the greedy is the elegant answer.
 
 ## Examples
 
 ```text
-"(*)"     -> True    (star as empty)
-"(*))"    -> True    (star as an opening bracket)
+"(*"      -> True    (star as a closing bracket)
+"(**))"   -> True    (one star opens, the other is empty)
 "*)("     -> False   (the final opening bracket can never close)
 "((*"     -> False   (one star cannot close two brackets)
 ""        -> True
@@ -99,8 +99,8 @@ def check_valid_string(s):
     return lo == 0
 ```
 
-Trace for `"(*))"`: after `(` the range is 1..1; after `*` it is 0..2; after `)` it is 0..1 (lo clamped from -1);
-after `)` it is 0..0. `lo == 0`, so it is valid.
+Trace for `"(**))"`: after `(` the range is 1..1; after `*` it is 0..2; after the second `*` it is 0..3 (lo clamped
+from -1); after `)` it is 0..2; after the last `)` it is 0..1. `lo == 0`, so it is valid.
 
 ### Complexity
 
@@ -110,8 +110,8 @@ O(n) time, O(1) space.
 
 ```python
 for fn in (check_valid_string, check_valid_dp):
-    assert fn("(*)")
-    assert fn("(*))")
+    assert fn("(*")
+    assert fn("(**))")
     assert not fn("*)(")
     assert not fn("((*")
     assert fn("")                         # empty string

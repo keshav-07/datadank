@@ -23,7 +23,7 @@ next: "interview-questions:dsa/move-zeroes"
 
 Given a string, decide whether it is a palindrome once you keep only letters and digits and treat uppercase and lowercase as equal. An empty result counts as a palindrome. This is widely known as LeetCode 125, Valid Palindrome.
 
-Assume printable ASCII input up to about 2 × 10^5 characters.
+Assume printable ASCII input, possibly long, with any mix of letters, digits, spaces and punctuation.
 
 ## Examples
 
@@ -32,7 +32,7 @@ Assume printable ASCII input up to about 2 × 10^5 characters.
 "Data, a tad!"       ->  True     (cleaned: "dataatad")
 "Lazy data"          ->  False    (cleaned: "lazydata")
 "  ,."               ->  True     (nothing left)
-"0P"                 ->  False    (the digit 0 is not the letter p)
+"1L"                 ->  False    (the digit 1 is not the letter l)
 ```
 
 ## Approach 1: brute force
@@ -89,7 +89,7 @@ for f in (is_palindrome, is_palindrome_copy):
     assert f("  ,.") is True                 # only punctuation
     assert f("") is True                     # empty
     assert f("x") is True                    # single character
-    assert f("0P") is False                  # digits are kept
+    assert f("1L") is False                  # digits are kept
     assert f("A1b1a") is True
     assert f("ab" * 100_000 + "a") is True   # long input
 

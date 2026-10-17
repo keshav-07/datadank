@@ -24,7 +24,7 @@ next: "interview-questions:dsa/contiguous-array"
 
 You are given a list of integers `nums`, which may contain negatives and zeros, and a positive integer `k`. Count the non-empty contiguous subarrays whose sum is divisible by `k` (a sum of 0 counts). This is LeetCode 974, Subarray Sums Divisible by K.
 
-The list has up to about 3 · 10^4 elements and `k` is at least 2, up to about 10^4.
+The list can be long and `k` can be large, so an O(n²) scan over all subarrays is too slow.
 
 ## Examples
 

@@ -78,7 +78,6 @@ export const FOOTER_COLUMNS: { title: string; links: { label: string; href: stri
 export const EXTRA_TECHNOLOGY_TERMS = [
   "databricks",
   "snowflake",
-  "dbt",
   "aws",
   "azure",
   "gcp",

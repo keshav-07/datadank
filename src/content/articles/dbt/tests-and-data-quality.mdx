@@ -1,0 +1,370 @@
+---
+publishedDate: "2026-10-16"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
+title: "dbt Tests and Data Quality: Generic, Singular and Unit Tests, Contracts and Freshness"
+seoTitle: "dbt Tests: Data Tests, Unit Tests, Contracts"
+description: "dbt tests explained with real runs: generic and singular data tests, custom tests, severity and store_failures, unit tests, model contracts and source freshness."
+technology: ["dbt", "etl-elt", "sql"]
+topic: ["testing", "data-quality", "contracts"]
+difficulty: "Intermediate"
+learningObjectives:
+  - "Declare the four built-in generic tests and write a custom generic test"
+  - "Write a singular test and store its failing rows for debugging"
+  - "Tune severity, warn_if and error_if so the right failures block a build"
+  - "Write unit tests with dict and SQL fixtures, including for incremental logic"
+  - "Enforce a model contract and check source freshness"
+prerequisites: ["articles:dbt/incremental-models", "articles:etl-elt/data-quality-checks-contracts"]
+related: ["interview-questions:data-engineering/data-quality-checks", "articles:etl-elt/testing-data-pipelines-cicd", "interview-questions:data-engineering/test-a-data-pipeline"]
+previous: "articles:dbt/incremental-models"
+next: "articles:dbt/snapshots-scd-type-2"
+versionContext: "Run on dbt Core 1.12.6 with dbt-duckdb 1.11.0 (DuckDB 1.5.6, Python 3.11) on 16 October 2026. The plain SQL block runs on DuckDB. Output is trimmed and timestamps are removed."
+sources:
+  - { label: "dbt documentation: Add data tests to your DAG", url: "https://docs.getdbt.com/docs/build/data-tests" }
+  - { label: "dbt documentation: Unit tests", url: "https://docs.getdbt.com/docs/build/unit-tests" }
+  - { label: "dbt documentation: Unit test properties", url: "https://docs.getdbt.com/reference/resource-properties/unit-tests" }
+  - { label: "dbt documentation: severity, error_if and warn_if", url: "https://docs.getdbt.com/reference/resource-configs/severity" }
+  - { label: "dbt documentation: store_failures", url: "https://docs.getdbt.com/reference/resource-configs/store_failures" }
+  - { label: "dbt documentation: Model contracts", url: "https://docs.getdbt.com/docs/mesh/govern/model-contracts" }
+  - { label: "dbt documentation: Constraints", url: "https://docs.getdbt.com/reference/resource-properties/constraints" }
+  - { label: "dbt documentation: freshness", url: "https://docs.getdbt.com/reference/resource-configs/freshness" }
+---
+
+dbt gives you four different safety nets, and interviews often check that you know which one catches which problem:
+
+| Tool | Checks | Runs against | When it fails |
+|---|---|---|---|
+| **Data tests** (generic and singular) | Properties of the real data: keys unique, values valid, references resolve | The built model in the warehouse | After the model builds, before its children |
+| **Unit tests** | That your SQL logic turns given inputs into expected outputs | Small fixtures you write | Before the model builds |
+| **Model contracts** | The model's column names and types (and some constraints) | The model's DDL | While the model builds |
+| **Source freshness** | That raw data arrived recently | Source tables | When you run `dbt source freshness` |
+
+## A data test is a query that returns bad rows
+
+Every data test compiles to a `select` that should return zero rows. Any row it returns is a failure. You can see the idea without dbt; this is the same shape as dbt's `relationships` test, run on a few inline rows:
+
+```sql
+create table customers (customer_id integer);
+insert into customers values (1), (2), (3);
+
+create table orders (order_id integer, customer_id integer);
+insert into orders values (101, 1), (102, 2), (106, 5);
+
+-- relationships test: child rows whose key has no parent
+with child as (
+    select customer_id as from_field
+    from orders
+    where customer_id is not null
+),
+parent as (
+    select customer_id as to_field
+    from customers
+)
+select from_field
+from child
+left join parent on child.from_field = parent.to_field
+where parent.to_field is null;
+```
+
+The query returns one row (`5`), so the test "fails 1". That is exactly what dbt reported on day two of the course data, after customer 5 was hard-deleted from the source while their order remained.
+
+## Generic tests in YAML
+
+dbt ships four generic tests: `unique`, `not_null`, `accepted_values` and `relationships`. You attach them to columns in YAML. Since dbt 1.10.5, test parameters go under `arguments:`:
+
+```yaml
+  - name: stg_shop__orders
+    description: One row per order.
+    columns:
+      - name: order_id
+        data_tests:
+          - unique
+          - not_null
+      - name: status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['placed', 'shipped', 'completed', 'cancelled']
+      - name: customer_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_shop__customers')
+                field: customer_id
+              config:
+                warn_if: ">0"
+                error_if: ">10"
+```
+
+dbt generates the SQL. The `relationships` test above compiled to:
+
+{/* noexec */}
+```sql
+with child as (
+    select customer_id as from_field
+    from "shop"."dbt_dev"."stg_shop__orders"
+    where customer_id is not null
+),
+
+parent as (
+    select customer_id as to_field
+    from "shop"."dbt_dev"."stg_shop__customers"
+)
+
+select
+    from_field
+
+from child
+left join parent
+    on child.from_field = parent.to_field
+
+where parent.to_field is null
+```
+
+Where to put which test: `unique` and `not_null` on every model's primary key, `accepted_values` on status and type columns, `relationships` on foreign keys in staging or marts. Test early (staging) so bad data is caught before expensive models run, and test the grain of every mart.
+
+## Custom generic tests
+
+A generic test is a `test` block with `model` and `column_name` parameters, saved under `tests/generic/` (or `macros/`):
+
+{/* noexec */}
+```sql
+{% test not_negative(model, column_name) %}
+
+select {{ column_name }}
+from {{ model }}
+where {{ column_name }} < 0
+
+{% endtest %}
+```
+
+It is then used like a built-in test:
+
+```yaml
+      - name: amount
+        data_tests:
+          - not_negative
+```
+
+and compiles to `select amount from "shop"."dbt_dev"."fct_orders" where amount < 0`. Packages such as `dbt_utils` add many more (lesson 7 uses `dbt_utils.unique_combination_of_columns`).
+
+## Singular tests
+
+A singular test is a one-off `.sql` file in `tests/` for a rule that is specific to one model. This one says shipped or completed orders must have been paid:
+
+{/* noexec */}
+```sql
+{{ config(severity='warn', store_failures=true) }}
+
+-- Shipped or completed orders should have at least one payment.
+select order_id, status, amount
+from {{ ref('fct_orders') }}
+where status in ('shipped', 'completed')
+  and amount = 0
+```
+
+## Severity, thresholds and stored failures
+
+By default a test errors if it returns any rows. The dbt docs define three knobs: `severity` (`error` or `warn`, default `error`), and `error_if` and `warn_if` (default `!=0`). With `severity: error`, dbt checks `error_if` first, then `warn_if`.
+
+On day two, both tests above found a problem. Neither blocked the build, because the relationships test only errors above 10 orphans and the singular test is a warning:
+
+```text
+12 of 28 WARN 1 relationships_stg_shop__orders_customer_id__customer_id__ref_stg_shop__customers_  [WARN 1 in 0.02s]
+...
+19 of 28 WARN 1 assert_shipped_orders_are_paid ................................. [WARN 1 in 0.03s]
+...
+[WARNING]: in test assert_shipped_orders_are_paid (tests/assert_shipped_orders_are_paid.sql)
+[WARNING]: Got 1 result, configured to warn if != 0
+
+  See test failures:
+  -------------------------------------------------------------------------------
+  select * from "shop"."dbt_dev_dbt_test__audit"."assert_shipped_orders_are_paid"
+  -------------------------------------------------------------------------------
+
+Done. PASS=25 WARN=2 ERROR=0 SKIP=0 NO-OP=1 REUSED=0 TOTAL=28
+```
+
+Before the thresholds were added, the same orphan made the relationships test **fail**, and `dbt build` skipped `dim_customers` and the exposure that depends on it. Decide deliberately: block on problems that would make the output wrong (duplicate keys, invalid amounts), warn on problems you will investigate but can live with for a day (a handful of orphaned rows from a hard delete).
+
+`store_failures: true` saved the failing rows to a table in an audit schema (by default `<target schema>_dbt_test__audit`), so the investigation starts with data rather than a count:
+
+```text
+│ order_id │ status  │ amount │
+│      108 │ shipped │   0.00 │
+```
+
+Order 108 is the late order from the previous lesson; it shipped but no payment has arrived yet.
+
+## Unit tests (dbt 1.8+)
+
+Data tests check today's data. Unit tests check your **logic** against inputs you control, before the model is built. They are YAML: `given` lists mocked inputs for each `ref` or `source`, `expect` lists the rows the model should return. You only include the columns that matter.
+
+```yaml
+unit_tests:
+  - name: test_dim_customers_excludes_cancelled_orders
+    description: Cancelled orders must not count towards order_count or lifetime_value.
+    model: dim_customers
+    versions:
+      include: [1]
+    given:
+      - input: ref('stg_shop__customers')
+        rows:
+          - {customer_id: 1, first_name: Asha, last_name: Rao, email: asha@example.com, country_code: IN}
+          - {customer_id: 2, first_name: Ben, last_name: Okafor, email: ben@example.com, country_code: NG}
+      - input: ref('fct_orders')
+        rows:
+          - {order_id: 1, customer_id: 1, order_date: 2026-10-01, status: completed, amount: 10.00}
+          - {order_id: 2, customer_id: 1, order_date: 2026-10-02, status: cancelled, amount: 99.00}
+    expect:
+      rows:
+        - {customer_id: 1, order_count: 1, lifetime_value: 10.00}
+        - {customer_id: 2, order_count: 0, lifetime_value: 0}
+```
+
+This one pins down two rules at once: cancelled orders are excluded, and a customer with no orders still appears with zeros. (`versions: include: [1]` is there because `dim_customers` has two versions; see lesson 8.) When the expectation is wrong, or the logic breaks, dbt prints a diff of actual against expected. Here the expectation was deliberately changed to count the cancelled order:
+
+```text
+1 of 2 FAIL 1 dim_customers::test_dim_customers_excludes_cancelled_orders_v1 ... [FAIL 1 in 0.18s]
+
+actual differs from expected:
+@@,customer_id,order_count,lifetime_value
+→ ,1          ,2→1        ,109.00→10.00
+  ,2          ,0          ,0.00
+```
+
+### Unit testing incremental logic
+
+You can unit test the incremental branch by overriding `is_incremental()` and mocking `this`, the model's existing table:
+
+```yaml
+  - name: test_fct_orders_incremental_lookback
+    description: On an incremental run, rows older than the lookback window are not reprocessed.
+    model: fct_orders
+    overrides:
+      macros:
+        is_incremental: true
+    given:
+      - input: this
+        format: sql
+        rows: |
+          select 1 as order_id, timestamp '2026-10-10 00:00:00' as updated_at
+      - input: ref('stg_shop__orders')
+        rows:
+          - {order_id: 1, customer_id: 1, status: shipped, updated_at: "2026-10-10 00:00:00"}
+          - {order_id: 2, customer_id: 1, status: placed, updated_at: "2026-10-01 00:00:00"}
+      - input: ref('int_order_payments')
+        format: sql
+        rows: |
+          select 1 as order_id, 1 as payment_count, cast(5.00 as decimal(18, 2)) as total_amount
+    expect:
+      rows:
+        - {order_id: 1, status: shipped, amount: 5.00, payment_count: 1}
+```
+
+Order 2 changed nine days before the newest existing row, outside the three-day lookback, so it must not be selected. Two practical details came out of running this:
+
+- **Ephemeral inputs need `format: sql`.** `int_order_payments` is ephemeral, so there is no table for dbt to read column types from; a SQL fixture supplies them.
+- **Inputs given as `dict` rows need the real relation to exist**, because dbt reads its columns from the warehouse. The dbt docs say incremental models must exist before their unit tests run. When `this` was mocked with dict rows, a CI run against an empty schema failed with `Not able to get columns for unit test 'fct_orders' from relation "shop"."dbt_ci"."fct_orders" because the relation doesn't exist`. Mocking `this` with `format: sql`, as above, let the same build run from an empty schema in this project.
+
+The expected output above checks the result of the model's `select`. It does not check how the merge applied it; the docs note there is no way to unit test that dbt merged records correctly.
+
+dbt Labs recommends running unit tests in development and CI only, since their inputs are static. In production, exclude them with `--exclude-resource-type unit_test`.
+
+## Model contracts
+
+A contract makes a model's shape part of its interface. With `contract: {enforced: true}`, every column must be declared with a `data_type`, and dbt checks the query's columns against the list before building:
+
+```yaml
+  - name: dim_customers
+    description: One row per customer with lifetime order metrics.
+    latest_version: 1
+    config:
+      group: commerce
+      access: public
+      contract:
+        enforced: true
+    columns:
+      - name: customer_id
+        data_type: integer
+        constraints:
+          - type: not_null
+        data_tests:
+          - unique
+      - name: first_name
+        data_type: varchar
+      - name: order_count
+        data_type: bigint
+      # ...one entry per column
+```
+
+dbt then creates the table with explicit column definitions (the not-null constraint goes into the DDL) and inserts into it:
+
+{/* noexec */}
+```sql
+    create  table
+      "shop"."dbt_dev"."dim_customers_v1__dbt_tmp"
+  (
+    customer_id integer not null,
+    first_name varchar,
+    last_name varchar,
+    email varchar,
+    country_code varchar,
+    first_order_date date,
+    most_recent_order_date date,
+    order_count bigint,
+    lifetime_value decimal(38, 2)
+    )
+ ;
+```
+
+If the SQL changes a type, the build stops before anything is replaced. Declaring `order_count` as `integer` when `count(*)` returns `bigint`:
+
+```text
+1 of 2 ERROR creating sql table model dbt_dev.dim_customers_v1 ................. [ERROR in 0.08s]
+
+  Compilation Error in model dim_customers (models/marts/dim_customers.sql)
+  This model has an enforced contract that failed.
+  Please ensure the name, data_type, and number of columns in your contract match the columns in your model's definition.
+  | column_name | definition_type | contract_type | mismatch_reason    |
+  | ----------- | --------------- | ------------- | ------------------ |
+  | order_count | BIGINT          | INTEGER       | data type mismatch |
+```
+
+Contracts are for models other people depend on. Per the docs they work on `table` and `incremental` models, not views or ephemeral models. Constraints beyond `not_null` (`unique`, `primary_key`, `foreign_key`, `check`) are enforced on some platforms and only informational on most analytical warehouses, so keep the matching data tests.
+
+## Source freshness
+
+Freshness is configured on the source (lesson 2) with a `loaded_at_field` and thresholds. `dbt source freshness` compares the newest `_loaded_at` to the current time:
+
+```text
+1 of 1 START freshness of shop.orders .......................................... [RUN]
+1 of 1 PASS freshness of shop.orders ........................................... [PASS in 0.02s]
+```
+
+Run it at the start of the production job, before `dbt build`, so stale inputs are flagged before models are rebuilt from them. The loaded-at column should be written by the loader, not taken from the business data.
+
+## A test strategy that scales
+
+- **Sources and staging:** keys `unique` + `not_null`, `accepted_values` on enums, freshness on every source the business depends on.
+- **Intermediate:** test the grain whenever a model re-grains (one row per order after aggregation).
+- **Marts:** primary key tests, `relationships` to dimensions, business-rule singular tests, contracts on models with external consumers.
+- **Logic:** unit tests for tricky SQL (case statements, window functions, incremental filters, date logic), run in CI.
+- **Severity:** errors for problems that make outputs wrong, warnings with thresholds for known data issues, `store_failures` for anything you will need to investigate.
+
+## Common mistakes
+
+- **Testing only marts.** Bad data has already flowed through every layer by then.
+- **Everything at `error`.** One noisy test blocks every downstream model, and people start deleting tests. Use thresholds.
+- **Everything at `warn`.** Warnings nobody reads are the same as no tests.
+- **Confusing contracts with tests.** A contract checks shape (names and types), not values.
+- **Unit testing the warehouse** (that `sum()` works). Test your logic, not the platform's functions.
+- **No row-count or freshness checks.** Most data tests pass on an empty table.
+
+## In an interview
+
+"How do you test a dbt project?" Separate the layers: data tests for the data (four built-ins, custom generic and singular tests, run by `dbt build` after each model), unit tests for logic on fixtures (dev and CI only), contracts for shape on public models, and source freshness for arrival. Then mention operational choices: severity and thresholds so the right failures block downstream models, `store_failures` for debugging, and slim CI so tests run on every pull request. A strong answer ends with an example: "an orphaned customer key from a hard delete warns, a duplicate order key errors."
+
+## Key takeaway
+
+Each dbt test type answers a different question: is the data right (data tests), is my logic right (unit tests), is the shape stable (contracts), and did the data arrive (freshness). Put cheap tests early, block only on failures that make outputs wrong, and store failures so investigations start from the bad rows.

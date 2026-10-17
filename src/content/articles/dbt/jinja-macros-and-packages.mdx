@@ -1,0 +1,264 @@
+---
+publishedDate: "2026-10-16"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
+title: "dbt Jinja, Macros and Packages: dbt_utils, Custom Macros and When Not to Template"
+seoTitle: "dbt Jinja, Macros and Packages"
+description: "dbt Jinja and macros with real compiled output: loops, variables, whitespace control, a custom macro, generate_schema_name, dbt_utils and avoiding over-templating."
+technology: ["dbt", "sql"]
+topic: ["jinja", "macros", "packages"]
+difficulty: "Intermediate"
+learningObjectives:
+  - "Read and write dbt Jinja: expressions, statements, comments, loops and variables"
+  - "Write a macro, control its whitespace and check the compiled SQL"
+  - "Use target, this, var() and env_var() to make code environment-aware"
+  - "Override generate_schema_name for production schemas"
+  - "Install and use dbt_utils, and decide when templating hurts readability"
+prerequisites: ["articles:dbt/snapshots-scd-type-2"]
+related: ["articles:dbt/models-ref-and-sources", "cheat-sheets:dbt"]
+previous: "articles:dbt/snapshots-scd-type-2"
+next: "articles:dbt/deployment-ci-cd-and-governance"
+versionContext: "Run on dbt Core 1.12.6 with dbt-duckdb 1.11.0 (DuckDB 1.5.6, Python 3.11) and dbt_utils 1.4.1 on 16 October 2026. Compiled SQL is copied from target/compiled; output is trimmed and timestamps are removed."
+sources:
+  - { label: "dbt documentation: Jinja and macros", url: "https://docs.getdbt.com/docs/build/jinja-macros" }
+  - { label: "dbt documentation: Packages", url: "https://docs.getdbt.com/docs/build/packages" }
+  - { label: "dbt documentation: Custom schemas", url: "https://docs.getdbt.com/docs/build/custom-schemas" }
+  - { label: "dbt_utils on the dbt package hub", url: "https://hub.getdbt.com/dbt-labs/dbt_utils/latest/" }
+---
+
+Every dbt model is a Jinja template. dbt renders the template into plain SQL, then sends that SQL to the warehouse. `{{ ref('stg_shop__orders') }}` is Jinja; so are `is_incremental()`, `var()` and every macro. Knowing Jinja well lets you remove real repetition. Knowing when to stop keeps models readable for the next person.
+
+## Three kinds of Jinja tags
+
+The dbt docs describe three delimiters:
+
+- **Expressions** output a string into the SQL: `{{ ref('payment_methods') }}`, `{{ var('order_lookback_days') }}`.
+- **Statements** control flow and output nothing: `{% set ... %}`, `{% if ... %}`, `{% for ... %}`, `{% macro ... %}`.
+- **Comments** are removed before the SQL is sent: `{# ... #}`. A SQL `--` comment, by contrast, is sent to the warehouse, and Jinja inside it is still rendered.
+
+## Variables and loops
+
+`int_order_payments` builds one column per payment method group with a loop:
+
+{/* noexec */}
+```sql
+{%- set method_groups = ['card', 'bank', 'voucher'] -%}
+
+with payments as (
+    select * from {{ ref('stg_shop__payments') }}
+),
+
+methods as (
+    select * from {{ ref('payment_methods') }}
+)
+
+select
+    payments.order_id,
+    count(*)            as payment_count,
+    sum(payments.amount) as total_amount,
+    {%- for group in method_groups %}
+    sum(case when methods.method_group = '{{ group }}' then payments.amount else 0 end) as {{ group }}_amount
+    {%- if not loop.last %},{% endif %}
+    {%- endfor %}
+from payments
+left join methods using (payment_method)
+group by payments.order_id
+```
+
+It compiles to three ordinary `sum(case ...)` columns (lesson 3 shows the full output):
+
+{/* noexec */}
+```sql
+    sum(case when methods.method_group = 'card' then payments.amount else 0 end) as card_amount,
+    sum(case when methods.method_group = 'bank' then payments.amount else 0 end) as bank_amount,
+    sum(case when methods.method_group = 'voucher' then payments.amount else 0 end) as voucher_amount
+```
+
+Three details make this clean:
+
+- `{% set %}` at the top of the file puts the list in one visible place, as the dbt docs recommend.
+- `loop.last` avoids a trailing comma after the final column.
+- The `-` in `{%-` and `-%}` strips whitespace next to the tag, so the loop does not leave blank lines in the compiled SQL.
+
+## Writing a macro
+
+A macro is a reusable Jinja function, saved in `macros/`. This project converts integer cents to a decimal amount in one place:
+
+{/* noexec */}
+```sql
+{% macro cents_to_dollars(column_name, scale=2) -%}
+    cast({{ column_name }} / 100.0 as decimal(18, {{ scale }}))
+{%- endmacro %}
+```
+
+The first version had no whitespace control (`{% macro ... %}` and `{% endmacro %}`). It worked, but the compiled staging model came out with the cast split across three lines:
+
+{/* noexec */}
+```sql
+        payment_method,
+        
+    cast(amount_cents / 100.0 as decimal(18, 2))
+ as amount,
+        created_at
+```
+
+With `-%}` and `{%-` the call compiles to one line, which is what you want to read in `target/compiled/` when debugging:
+
+{/* noexec */}
+```sql
+        payment_method,
+        cast(amount_cents / 100.0 as decimal(18, 2)) as amount,
+        created_at
+```
+
+`dbt show --inline` previews a macro against real data without creating a model:
+
+```text
+$ dbt show --inline "select {{ cents_to_dollars('amount_cents') }} as amount, amount_cents from {{ source('shop', 'payments') }}" --limit 3
+Previewing inline node:
+| amount | amount_cents |
+| ------ | ------------ |
+|  25.99 |         2599 |
+|  12.50 |         1250 |
+|  40.00 |         4000 |
+```
+
+## Context you can use: target, this, var, env_var
+
+- **`target`** describes the active connection: `target.name` (`dev`, `ci`, `prod`), `target.schema`, `target.type`. Use it for environment differences such as schema naming or limiting data in development.
+- **`this`** is the relation of the model being built; incremental filters use it to read the existing table.
+- **`var('name')`** reads project variables from `dbt_project.yml` (`order_lookback_days: 3` here), overridable per run with `--vars '{order_lookback_days: 7}'`.
+- **`env_var('NAME')`** reads environment variables, mainly for credentials in `profiles.yml`. Never write secrets into the project.
+
+## Overriding a built-in macro: generate_schema_name
+
+dbt decides each model's schema with a macro called `generate_schema_name`. By default, a custom schema is appended to the target schema, which is why the snapshots configured with `schema: snapshots` landed in `dbt_dev_snapshots`. Many teams want the custom name as-is in production, so a project-level macro with the same name replaces the default:
+
+{/* noexec */}
+```sql
+{% macro generate_schema_name(custom_schema_name, node) -%}
+    {%- if custom_schema_name is none -%}
+        {{ target.schema }}
+    {%- elif target.name == 'prod' -%}
+        {{ custom_schema_name | trim }}
+    {%- else -%}
+        {{ target.schema }}_{{ custom_schema_name | trim }}
+    {%- endif -%}
+{%- endmacro %}
+```
+
+After a dev run and a prod run, the warehouse had these schemas (query output, with notes added on the right; the empty `main` schema is omitted):
+
+```text
+│ analytics               │   prod target schema
+│ dbt_dev                 │   dev target schema
+│ dbt_dev_dbt_test__audit │   dev stored test failures
+│ dbt_dev_snapshots       │   dev snapshots (target schema + custom)
+│ dbt_test__audit         │   prod stored test failures (custom name as-is)
+│ raw                     │   loader-owned sources
+│ snapshots               │   prod snapshots (custom name as-is)
+```
+
+Developers still get isolated schemas, and production gets clean names. dbt also ships a ready-made variant called `generate_schema_name_for_env`, which ignores custom schemas outside production entirely. Be careful when introducing either on an existing project: every model with a custom schema moves, and snapshots start a new, empty history in the new schema (see lesson 6).
+
+## Packages and dbt_utils
+
+Packages are dbt projects you install into yours: macros, tests and sometimes models. `dbt_utils` from dbt Labs is the most common. The dbt docs recommend installing from the package hub with a version range, in this form: `package: dbt-labs/dbt_utils` with `version: [">=1.4.0", "<2.0.0"]`. The sandbox used for this course could not reach the hub, so the project installs the same release from Git, which `packages.yml` also supports:
+
+```yaml
+packages:
+  - git: "https://github.com/dbt-labs/dbt-utils.git"
+    revision: 1.4.1
+```
+
+```text
+$ dbt deps
+Installing https://github.com/dbt-labs/dbt-utils.git
+Installed from revision 49b932cb1f6fd0f7dfbf9048512db6415f570b20
+```
+
+`dbt deps` also wrote `package-lock.yml`, pinning the exact commit. Commit the lock file so every environment installs the same code:
+
+```yaml
+packages:
+  - git: https://github.com/dbt-labs/dbt-utils.git
+    name: dbt_utils
+    revision: 49b932cb1f6fd0f7dfbf9048512db6415f570b20
+sha1_hash: e92d3b3428a98a68548ee3f33719753589025884
+```
+
+Package macros are called with the package name as a prefix. `agg_daily_events` builds a surrogate key from two columns:
+
+{/* noexec */}
+```sql
+select
+    {{ dbt_utils.generate_surrogate_key(['event_date', 'event_type']) }} as daily_event_key,
+    event_date,
+    event_type,
+    count(*)                    as event_count,
+    count(distinct customer_id) as customer_count
+from {{ ref('fct_events') }}
+group by event_date, event_type
+```
+
+and dbt_utils expanded it into a null-safe hash for DuckDB:
+
+{/* noexec */}
+```sql
+    md5(cast(coalesce(cast(event_date as TEXT), '_dbt_utils_surrogate_key_null_') || '-' || coalesce(cast(event_type as TEXT), '_dbt_utils_surrogate_key_null_') as TEXT)) as daily_event_key,
+```
+
+Package tests work like built-in ones. This checks the model's grain:
+
+```yaml
+  - name: agg_daily_events
+    description: Event counts per day and event type.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: ['event_date', 'event_type']
+```
+
+```text
+PASS dbt_utils_unique_combination_of_columns_agg_daily_events_event_date__event_type
+```
+
+The value of a package macro like `generate_surrogate_key` is that it is cross-database: dbt_utils uses dbt's adapter dispatch to emit the right SQL for each warehouse, which is hard to get right by hand.
+
+## Macros that query the warehouse
+
+Some macros run SQL at compile time. `dbt_utils.get_column_values` reads distinct values from a table:
+
+```text
+$ dbt compile --inline "{{ dbt_utils.get_column_values(ref('payment_methods'), 'method_group', order_by='method_group') }}"
+Compiled inline node is:
+['bank', 'card', 'voucher']
+```
+
+You could replace the hard-coded `method_groups` list in `int_order_payments` with it, so a new group in the seed automatically becomes a column. Weigh the trade-off before doing so: the model's columns now depend on data, the referenced table must exist before compiling, every compile runs an extra query, and a downstream contract or BI report can break when a column appears. For three stable values, the literal list is easier to read and review.
+
+## When not to template
+
+The dbt docs advise favouring readability over DRY-ness. Practical limits:
+
+- **Template repetition, not logic.** A loop that writes ten similar columns is good. A macro that hides a join and three filters makes every model that calls it harder to read.
+- **If a reviewer must compile the model to understand it, it is too clever.** `dbt compile` should rarely be necessary to read a model.
+- **Keep business rules in SQL models,** where they are tested and visible in lineage; keep macros for mechanics (casting, keys, schema names, cross-database syntax).
+- **Prefer a package over your own macro** for solved problems (surrogate keys, date spines, pivot helpers).
+- **Test macros indirectly** through unit tests on models that use them.
+
+## Common mistakes
+
+- **Missing whitespace control** in macros, producing compiled SQL that is hard to read.
+- **Using `--` to "comment out" Jinja.** The Jinja still runs; use `{# ... #}`.
+- **Hard-coding schema names or environments** instead of `target` and `ref()`.
+- **Installing packages without a version pin** or without committing `package-lock.yml`.
+- **Compile-time queries everywhere,** slowing parsing and making models depend on data that may not exist yet.
+
+## In an interview
+
+"What are macros for, and when have you written one?" Give a concrete example (unit conversion, a custom `generate_schema_name`, a custom generic test), mention whitespace control and that you check `target/compiled/`, and name `dbt_utils` macros you have used (`generate_surrogate_key`, `unique_combination_of_columns`, `get_column_values`). Interviewers often follow up with "how do you avoid over-engineering with Jinja?": readability over DRY, macros for mechanics, business logic in models.
+
+## Key takeaway
+
+Jinja turns repetition into a few lines and makes code environment-aware through `ref`, `target` and `var`. Use macros for mechanics, packages for solved problems, whitespace control for readable output, and always read the compiled SQL before you trust a template.

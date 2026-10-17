@@ -27,8 +27,8 @@ Given the head of a singly linked list, swap each pair of neighbouring nodes (th
 ## Examples
 
 ```text
-1 -> 2 -> 3 -> 4         ->  2 -> 1 -> 4 -> 3
-1 -> 2 -> 3              ->  2 -> 1 -> 3
+6 -> 3 -> 8 -> 5         ->  3 -> 6 -> 5 -> 8
+6 -> 3 -> 8              ->  3 -> 6 -> 8
 5                        ->  5
 (empty)                  ->  (empty)
 ```
@@ -63,13 +63,13 @@ def swap_pairs_list(head):
 
 **Idea in plain English.** Work pair by pair with a pointer `prev` to the node just before the pair. Call the pair `first` and `second`. After the swap, `prev` must point to `second`, `second` must point to `first`, and `first` must point to whatever followed the pair. Do those three updates, then step `prev` forward to `first`, which now sits just before the next pair. The dummy node gives the first pair a `prev` too.
 
-Walkthrough on `1 -> 2 -> 3 -> 4`:
+Walkthrough on `6 -> 3 -> 8 -> 5`:
 
 | Step | `prev` | Pair | List after |
 |---|---|---|---|
-| 1 | dummy | 1, 2 | 2 -> 1 -> 3 -> 4 |
-| 2 | 1 | 3, 4 | 2 -> 1 -> 4 -> 3 |
-| 3 | 3 | none left | stop |
+| 1 | dummy | 6, 3 | 3 -> 6 -> 8 -> 5 |
+| 2 | 6 | 8, 5 | 3 -> 6 -> 5 -> 8 |
+| 3 | 8 | none left | stop |
 
 ```python
 def swap_pairs(head):
@@ -128,8 +128,8 @@ def expected(values):
     return out
 
 for f in (swap_pairs, swap_pairs_list, swap_pairs_recursive):
-    assert to_list(f(build([1, 2, 3, 4]))) == [2, 1, 4, 3]
-    assert to_list(f(build([1, 2, 3]))) == [2, 1, 3]
+    assert to_list(f(build([6, 3, 8, 5]))) == [3, 6, 5, 8]
+    assert to_list(f(build([6, 3, 8]))) == [3, 6, 8]
     assert to_list(f(build([5]))) == [5]
     assert f(None) is None
     for n in range(0, 12):

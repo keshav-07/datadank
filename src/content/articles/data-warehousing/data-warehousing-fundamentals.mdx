@@ -1,7 +1,7 @@
 ---
 publishedDate: "2026-10-04"
-updatedDate: "2026-10-04"
-reviewedDate: "2026-10-04"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
 title: "Data Warehousing for Data Engineers"
 seoTitle: "Data Warehousing for Data Engineers"
 description: "Data warehousing fundamentals: dimensional modelling, grain, facts and dimensions, slowly changing dimensions, data layout, ELT and trustworthy reporting."
@@ -11,54 +11,166 @@ topic: ["fundamentals"]
 difficulty: "Beginner"
 pillar: true
 featured: false
-related: ["articles:data-warehousing/star-schema", "articles:data-warehousing/slowly-changing-dimensions", "articles:data-warehousing/partitioning-clustering-data-layout", "system-designs:cloud-data-warehouse-platform"]
-sources: [{"label": "Kimball Group: Dimensional Modeling Techniques", "url": "https://www.kimballgroup.com/data-warehouse-business-intelligence-resources/kimball-techniques/dimensional-modeling-techniques/"}]
-versionContext: "Concepts are platform-neutral; examples in the linked guides were verified on SQLite 3.45"
+next: "articles:data-warehousing/star-schema"
+related: ["articles:data-warehousing/star-schema", "articles:data-warehousing/slowly-changing-dimensions", "articles:data-warehousing/partitioning-clustering-data-layout", "articles:data-warehousing/lake-vs-warehouse-vs-lakehouse", "system-designs:cloud-data-warehouse-platform", "articles:career/data-engineering-interview-questions"]
+sources:
+  - {"label": "Kimball Group: Dimensional Modeling Techniques", "url": "https://www.kimballgroup.com/data-warehouse-business-intelligence-resources/kimball-techniques/dimensional-modeling-techniques/"}
+  - {"label": "PostgreSQL documentation: generate_series and set returning functions", "url": "https://www.postgresql.org/docs/16/functions-srf.html"}
+versionContext: "Concepts are platform-neutral. The star-schema example on this page was executed on PostgreSQL 16 with scripts/verify-examples.py; the linked lessons run on PostgreSQL 16 as well."
 ---
 
-A data warehouse organises data for **answering questions**, not for running transactions. Its value comes from good modelling, reliable loading and trustworthy definitions more than from any particular product.
+A **data warehouse** is a database organised for **answering questions** across the whole business, not for running transactions. The shop's order database is built to insert one order quickly and safely; the warehouse is built to answer "revenue by month, category and customer segment for the last three years" quickly and consistently. Its value comes from good modelling, reliable loading and trusted definitions far more than from any particular product.
 
-## 1. Dimensional modelling
+This page is the course map. It explains where a warehouse sits in a data platform, the core ideas of dimensional modelling with a runnable PostgreSQL example, how a warehouse model differs from the normalised operational model it is built from, the lessons in order, common beginner mistakes, and what interviewers ask. Every lesson uses the same fictional online shop, Kestrel Market.
 
-Separate **facts** (measurements of events, at a stated grain) from **dimensions** (the descriptive context you filter and group by). Arranged as a star schema, every query follows the same simple pattern: join the fact to a few dimensions, group and aggregate.
+## Where the warehouse fits in a data platform
 
-Read: [Facts, dimensions and the star schema](/data-warehousing/star-schema/)
+1. **Sources** are operational systems: the shop database, payments, CRM, web events.
+2. **Ingestion** copies their data, in batch or through change data capture, into a **raw** (or bronze) layer, unchanged so you can rebuild.
+3. **Transformation** cleans and conforms it (**staging** or silver) and then builds **marts** (gold): fact and dimension tables modelled for analysis. In ELT this happens inside the warehouse with SQL, often managed by dbt.
+4. **Serving**: BI dashboards, ad hoc SQL, a semantic layer of certified metrics, reverse ETL and ML features all read the marts.
 
-## 2. Grain first
+The "warehouse" can be a cloud data warehouse (Snowflake, BigQuery, Redshift), a lakehouse (Delta or Iceberg tables queried by Databricks, Trino or Spark), or even PostgreSQL for small volumes. The modelling ideas are the same on all of them; only the physical layout and cost model change.
 
-The **grain** is what one fact row means: one order line, one account per day. Decide it before designing columns. Mixed grains cause double counting.
+## Core concepts
 
-## 3. History: slowly changing dimensions
+- **OLTP vs OLAP.** Operational (OLTP) systems handle many small reads and writes of individual rows and are normalised to avoid update anomalies. Analytical (OLAP) workloads scan millions of rows, aggregate and filter, and favour fewer, wider tables and columnar storage.
+- **Facts** are measurements of a business event: an order line's quantity and amount, a payment, a page view. They are mostly numeric and additive.
+- **Dimensions** are the descriptive context you filter and group by: date, customer, product, store. They are wide, denormalised and relatively small.
+- **Grain** is what one fact row means, stated in business terms: "one row per order line", "one row per account per day". Decide the grain before choosing any columns; mixing grains in one table is the most common cause of double counting.
+- **Star schema.** A fact table in the middle, with foreign keys to each dimension around it. Every query follows the same shape: join the fact to a few dimensions, filter, group, aggregate.
+- **Surrogate keys.** Dimensions get warehouse-generated integer keys instead of the source's ids, so history can be versioned and sources can change without breaking joins.
+- **Slowly changing dimensions (SCDs).** When an attribute changes, either overwrite it (Type 1) or add a new version with validity dates (Type 2), so old facts still report against the attribute value that was true at the time.
+- **Additivity.** Quantities and amounts can be summed across every dimension; balances and inventory levels (semi-additive) cannot be summed over time; ratios (non-additive) must be recomputed from their parts.
+- **Conformed dimensions.** One `dim_customer` and one `dim_date` shared by every fact table, so "revenue per customer" and "tickets per customer" can be compared.
 
-When attributes change, overwrite (Type 1) or version (Type 2) them. Type 2 needs surrogate keys, validity ranges and a rerunnable load.
+## A worked example: from normalised source to star schema
 
-Read: [Slowly changing dimensions](/data-warehousing/slowly-changing-dimensions/)
+The example builds a tiny star from normalised source tables, then answers a business question and reconciles the result with the source. It runs on PostgreSQL 16.
 
-## 4. Loading: ELT and idempotency
+First, the operational model as the shop database stores it: normalised, with one fact (the line) spread across three tables.
 
-Most modern warehouses load raw data first and transform with SQL in layers (raw, staging, marts). Every load must be safe to rerun.
+```sql
+CREATE TABLE src_customers (customer_id TEXT PRIMARY KEY, name TEXT NOT NULL, segment TEXT NOT NULL);
+CREATE TABLE src_products  (sku TEXT PRIMARY KEY, product_name TEXT NOT NULL, category TEXT NOT NULL);
+CREATE TABLE src_orders    (order_id TEXT PRIMARY KEY, customer_id TEXT, order_date DATE NOT NULL);
+CREATE TABLE src_order_lines (
+  order_id TEXT NOT NULL REFERENCES src_orders, line_number INT NOT NULL,
+  sku TEXT NOT NULL REFERENCES src_products, quantity INT NOT NULL, unit_price NUMERIC(10,2) NOT NULL,
+  PRIMARY KEY (order_id, line_number));
 
-Read: [ETL vs ELT](/etl-elt/etl-vs-elt/) · [Idempotency in pipelines](/etl-elt/idempotency-in-data-pipelines/)
+INSERT INTO src_customers VALUES ('C-1', 'Asha Rao', 'Consumer'), ('C-2', 'Brightside Cafe', 'Business');
+INSERT INTO src_products VALUES ('SKU-10', 'Trail runner', 'Footwear'), ('SKU-20', 'Chef knife', 'Kitchen'),
+                                ('SKU-30', 'Cast-iron pan', 'Kitchen');
+INSERT INTO src_orders VALUES ('O-1', 'C-1', '2026-03-02'), ('O-2', 'C-2', '2026-03-15'),
+                              ('O-3', 'C-1', '2026-04-03'), ('O-4', NULL, '2026-04-20');
+INSERT INTO src_order_lines VALUES
+  ('O-1', 1, 'SKU-10', 1, 120.00), ('O-1', 2, 'SKU-20', 2, 45.00),
+  ('O-2', 1, 'SKU-30', 4, 60.00),
+  ('O-3', 1, 'SKU-20', 1, 45.00),
+  ('O-4', 1, 'SKU-10', 2, 110.00);
+```
 
-## 5. Physical layout
+Now the dimensional model. The date dimension is generated, the customer and product dimensions get surrogate keys plus an **Unknown** member (key 0) so that order `O-4`, which has no customer, is not silently dropped by inner joins.
 
-Partition large tables by their main filter (usually date), cluster by the next most common filters, and keep files large.
+```sql
+CREATE TABLE dim_date AS
+SELECT to_char(d, 'YYYYMMDD')::INT AS date_key, d::DATE AS full_date,
+       EXTRACT(YEAR FROM d)::INT AS year, EXTRACT(MONTH FROM d)::INT AS month_num,
+       to_char(d, 'FMMonth') AS month_name
+FROM generate_series(DATE '2026-01-01', DATE '2026-12-31', INTERVAL '1 day') AS g(d);
+ALTER TABLE dim_date ADD PRIMARY KEY (date_key);
 
-Read: [Partitioning, clustering and data layout](/data-warehousing/partitioning-clustering-data-layout/)
+CREATE TABLE dim_customer (customer_key INT PRIMARY KEY, customer_id TEXT NOT NULL UNIQUE,
+                           customer_name TEXT NOT NULL, segment TEXT NOT NULL);
+INSERT INTO dim_customer VALUES (0, 'UNKNOWN', 'Unknown', 'Unknown');
+INSERT INTO dim_customer
+SELECT ROW_NUMBER() OVER (ORDER BY customer_id), customer_id, name, segment FROM src_customers;
 
-## 6. Platforms
+CREATE TABLE dim_product (product_key INT PRIMARY KEY, sku TEXT NOT NULL UNIQUE,
+                          product_name TEXT NOT NULL, category TEXT NOT NULL);
+INSERT INTO dim_product
+SELECT ROW_NUMBER() OVER (ORDER BY sku), sku, product_name, category FROM src_products;
 
-Cloud warehouses separate storage from compute; lakehouses add warehouse guarantees to lake storage. Learn one platform well.
+-- Grain: one row per order line
+CREATE TABLE fact_order_line (
+  order_id TEXT NOT NULL, line_number INT NOT NULL,
+  date_key INT NOT NULL REFERENCES dim_date,
+  customer_key INT NOT NULL REFERENCES dim_customer,
+  product_key INT NOT NULL REFERENCES dim_product,
+  quantity INT NOT NULL, net_amount NUMERIC(12,2) NOT NULL,
+  PRIMARY KEY (order_id, line_number));
 
-Read: [Lake vs warehouse vs lakehouse](/data-warehousing/lake-vs-warehouse-vs-lakehouse/) · [Snowflake architecture](/snowflake/architecture-virtual-warehouses/)
+INSERT INTO fact_order_line
+SELECT l.order_id, l.line_number,
+       to_char(o.order_date, 'YYYYMMDD')::INT,
+       COALESCE(c.customer_key, 0),
+       p.product_key,
+       l.quantity, l.quantity * l.unit_price
+FROM src_order_lines l
+JOIN src_orders o        ON o.order_id = l.order_id
+LEFT JOIN dim_customer c ON c.customer_id = o.customer_id
+JOIN dim_product p       ON p.sku = l.sku;
+```
 
-## 7. Trust
+The business question, "revenue by month and customer segment", is now one fact joined to two dimensions:
 
-Tests on keys and relationships, reconciliation with sources, certified metric definitions and visible freshness are what make people believe the numbers.
+```sql
+SELECT d.year, d.month_name, c.segment, SUM(f.net_amount) AS revenue, SUM(f.quantity) AS units
+FROM fact_order_line f
+JOIN dim_date d     ON d.date_key = f.date_key
+JOIN dim_customer c ON c.customer_key = f.customer_key
+GROUP BY d.year, d.month_num, d.month_name, c.segment
+ORDER BY d.year, d.month_num, c.segment;
+```
 
-Read: [Data quality checks and contracts](/etl-elt/data-quality-checks-contracts/) · Case study: [Reporting and analytics platform](/data-engineering/system-design/reporting-analytics-platform/)
+| year | month_name | segment | revenue | units |
+|---|---|---|---|---|
+| 2026 | March | Business | 240.00 | 4 |
+| 2026 | March | Consumer | 210.00 | 3 |
+| 2026 | April | Consumer | 45.00 | 1 |
+| 2026 | April | Unknown | 220.00 | 2 |
 
-## Checkpoints
+Finally, a reconciliation check: the fact table must contain every source line and the same total. This query divides by zero, and so fails, if either check does not match, which is a cheap way to make a test fail loudly in plain SQL:
+
+```sql
+SELECT 1 / (CASE WHEN (SELECT COUNT(*) FROM fact_order_line) = (SELECT COUNT(*) FROM src_order_lines)
+                  AND (SELECT SUM(net_amount) FROM fact_order_line)
+                    = (SELECT SUM(quantity * unit_price) FROM src_order_lines)
+                 THEN 1 ELSE 0 END) AS reconciled;
+```
+
+Three design choices carry the lesson: the grain (one order line) is stated before the columns; descriptive text lives in dimensions, so the fact table is narrow; and the Unknown member keeps the April total honest. If `O-4` had been dropped by an inner join, April revenue would be understated by 220.00 and nobody would notice until finance did.
+
+## Dimensional model vs normalised (3NF) model
+
+| | Normalised operational model (3NF) | Dimensional model (star schema) |
+|---|---|---|
+| Optimised for | Many small inserts and updates, integrity of each transaction | Large scans, filters and aggregations |
+| Tables | Many narrow tables; each fact spread across several | One fact table per business process plus a few wide dimensions |
+| Joins per typical question | Many, and they differ by question | Few, always the same pattern |
+| History | Usually current state only | Kept deliberately (SCD Type 2, snapshots) |
+| Who uses it | Applications | Analysts, BI tools, data scientists |
+
+The Inmon approach builds a normalised enterprise warehouse first and dimensional marts from it; Data Vault adds a highly auditable integration layer; and many lakehouse teams use medallion layers with a dimensional or wide-table gold layer. These are complementary, and the [methodologies lesson](/data-warehousing/modeling-methodologies/) compares them. For the storage side (warehouse vs data lake vs lakehouse), see [Lake vs warehouse vs lakehouse](/data-warehousing/lake-vs-warehouse-vs-lakehouse/).
+
+## What this course covers
+
+1. **Data Warehousing for Data Engineers** (this page): the map, core ideas and a runnable star schema.
+2. [Star, Snowflake and Galaxy Schemas and the Grain](/data-warehousing/star-schema/): designing a star, declaring the grain, snowflaked dimensions and multiple fact tables.
+3. [Normalization, Denormalization and Wide Tables](/data-warehousing/normalization-denormalization/): normal forms, when to denormalise, and one-big-table designs.
+4. [Fact Tables: Measures, Snapshots and Late-Arriving Facts](/data-warehousing/fact-tables/): transaction, periodic and accumulating snapshot facts, additivity, late data.
+5. [Dimension Tables: Keys, Conformed, Junk, Degenerate and Role-Playing Dimensions](/data-warehousing/dimension-tables/): surrogate keys and the special dimension types.
+6. [Bridge Tables, Many-to-Many Relationships and Hierarchies](/data-warehousing/bridge-tables-hierarchies/): multivalued dimensions, weighting factors and ragged hierarchies.
+7. [Slowly Changing Dimensions: Types 0 to 6](/data-warehousing/slowly-changing-dimensions/): every SCD type, and a rerunnable Type 2 load.
+8. [Data Modeling Methodologies](/data-warehousing/modeling-methodologies/): Kimball, Inmon, Data Vault, Anchor and medallion.
+9. [Modern Data Modeling](/data-warehousing/modern-modeling-practice/): streaming models, semantic layers, dbt and incremental models.
+10. [Data Lake vs Data Warehouse vs Lakehouse](/data-warehousing/lake-vs-warehouse-vs-lakehouse/): storage architectures and how to choose.
+11. [Partitioning, Clustering and Data Layout](/data-warehousing/partitioning-clustering-data-layout/): partition pruning, clustering, file sizes and how platforms differ.
+
+Related courses: [ETL vs ELT](/etl-elt/etl-vs-elt/), [idempotent pipelines](/etl-elt/idempotency-in-data-pipelines/), [data quality checks and contracts](/etl-elt/data-quality-checks-contracts/), and the system design case studies for a [cloud data warehouse platform](/data-engineering/system-design/cloud-data-warehouse-platform/) and a [reporting and analytics platform](/data-engineering/system-design/reporting-analytics-platform/). Practise with the [e-commerce analytics platform project](/projects/ecommerce-analytics-platform/).
+
+### Checkpoints
 
 | Skill | Checkpoint |
 |-------|------------|
@@ -67,4 +179,30 @@ Read: [Data quality checks and contracts](/etl-elt/data-quality-checks-contracts
 | Loading | Explain your layers and how each is tested |
 | Layout | Choose partition and clustering keys from query patterns |
 
-Practise with the [e-commerce analytics platform project](/projects/ecommerce-analytics-platform/).
+## Common beginner mistakes
+
+1. **Starting from the source tables instead of the business process.** Ask which events the business measures and at what grain, then design facts; do not copy the OLTP schema and call it a warehouse.
+2. **Mixing grains in one fact table**, for example order-level shipping fees on order-line rows. Summing them counts the fee once per line. Allocate it to lines or keep an order-grain fact.
+3. **NULL foreign keys in facts.** Inner joins drop those rows. Use Unknown or Not Applicable dimension members.
+4. **Using source ids as dimension keys.** It breaks as soon as you need Type 2 history or a second source with overlapping ids.
+5. **Summing semi-additive measures over time**, such as account balances or stock levels. Take the period-end value or an average instead.
+6. **Joining two fact tables directly.** Rows multiply. Aggregate each fact to a common grain first, then join on conformed dimensions.
+7. **Loads that cannot be rerun.** A retried append doubles a day's revenue. Make each load replace or merge a bounded slice.
+8. **No reconciliation.** Row counts and totals compared with the source catch most loading bugs before users do.
+
+## What interviewers ask
+
+Warehousing questions appear in almost every data engineering loop, usually as a modelling exercise:
+
+- "Design a data model for an e-commerce (or ride-sharing, or subscription) business. What is the grain of your fact table?"
+- "Facts vs dimensions; star vs snowflake schema; when would you denormalise?"
+- "How do you track changes to a customer's address? Walk me through an SCD Type 2 load." ([SCD Type 2 with MERGE](/interview/sql/scd-type-2-merge-sql/))
+- "Why are revenue numbers doubled in this report?" ([Join fan-out and double counting](/interview/sql/join-fan-out-double-counting/))
+- "Data lake, warehouse or lakehouse for this company?" ([Lake vs warehouse vs lakehouse](/interview/data-engineering/lake-warehouse-lakehouse/))
+- "How would you partition a large fact table?" ([Partition a large table](/interview/data-engineering/partition-large-table/))
+
+Modelling and warehousing questions are also collected in [Top 100 Data Engineering Interview Questions](/career/data-engineering-interview-questions/), and the SQL you will be asked to write against a star schema is in [Top 50 SQL Interview Questions](/sql/sql-interview-questions/). In a modelling round, say the grain out loud first, name the dimensions and measures, then talk about history, late data and how you would test the load.
+
+## Key takeaway
+
+Model the business process, not the source system: declare the grain, put measurements in facts and context in dimensions with surrogate keys, keep history deliberately, make every load rerunnable, and reconcile with the source. The platform matters less than these decisions.

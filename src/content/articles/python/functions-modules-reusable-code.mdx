@@ -1,22 +1,29 @@
 ---
 seoTitle: "Reusable Python Pipeline Code: Functions & Modules"
 publishedDate: "2026-10-04"
-updatedDate: "2026-10-10"
-reviewedDate: "2026-10-10"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
 title: "Python Functions, Modules and Reusable Data Pipeline Code"
 description: "Structure Python pipeline code as small pure functions, clear modules and a thin entry point so it is testable, reusable and safe to run from any scheduler."
 inventoryId: "TECH-06"
 technology: ["python"]
 topic: ["functions", "modules", "code-structure"]
 difficulty: "Beginner"
-related: ["articles:python/idempotent-csv-loader", "articles:python/iterators-generators", "interview-questions:python/mutable-default-arguments", "articles:python/testing-with-pytest"]
+learningObjectives:
+  - "Write functions with positional, keyword-only, *args and **kwargs parameters and know when each fits"
+  - "Avoid the mutable default argument trap and default values that read the clock"
+  - "Model records and configuration with dataclasses and read configuration from environment variables once"
+  - "Organise code into a package, import it correctly and guard the entry point with __name__"
+  - "Build a small reusable pipeline module and test it without files, databases or the network"
+prerequisites: ["articles:python/python-for-data-engineering"]
+related: ["articles:python/idempotent-csv-loader", "articles:python/iterators-generators", "interview-questions:python/mutable-default-arguments", "articles:python/testing-with-pytest", "articles:python/python-interview-questions"]
 previous: "articles:python/python-for-data-engineering"
 next: "articles:python/data-structures-for-interviews"
-sources: [{"label": "Python documentation: Modules", "url": "https://docs.python.org/3/tutorial/modules.html"}, {"label": "Python documentation: Defining functions", "url": "https://docs.python.org/3/tutorial/controlflow.html#defining-functions"}, {"label": "Python documentation: typing", "url": "https://docs.python.org/3/library/typing.html"}]
-versionContext: "Examples run on Python 3.11"
+sources: [{"label": "Python documentation: Defining functions", "url": "https://docs.python.org/3/tutorial/controlflow.html#defining-functions"}, {"label": "Python documentation: Modules", "url": "https://docs.python.org/3/tutorial/modules.html"}, {"label": "Python documentation: dataclasses", "url": "https://docs.python.org/3/library/dataclasses.html"}, {"label": "Python documentation: typing", "url": "https://docs.python.org/3/library/typing.html"}, {"label": "Python documentation: __main__ (top-level code environment)", "url": "https://docs.python.org/3/library/__main__.html"}, {"label": "Python documentation: os.environ", "url": "https://docs.python.org/3/library/os.html#os.environ"}]
+versionContext: "Every example was run with CPython 3.11.15 (/usr/bin/python3) through scripts/verify-examples.py. The worked example writes a real package to a temporary directory, runs it with python -m and runs its test functions; the same test file also passes under pytest 9.1."
 ---
 
-Most pipeline scripts start as one long file that reads, transforms and writes in a single block. That works once and is painful afterwards: you cannot test the transformation without a database, and you cannot reuse it in another job. The fix is structure, not cleverness.
+Most pipeline scripts start as one long file that reads, transforms and writes in a single block. That works once and is painful afterwards: you cannot test the transformation without a database, and you cannot reuse it in another job. The fix is structure, not cleverness. This lesson covers the function and module features you need for that structure, then builds a small reusable pipeline package with tests.
 
 ## Separate reading, transforming and writing
 
@@ -38,11 +45,137 @@ print(normalise_order({"order_id": "7", "customer": "  asha ", "amount": "19.999
 {'order_id': 7, 'customer': 'Asha', 'amount': 20.0}
 ```
 
-Because `normalise_order` touches no files or databases, it is trivial to test and safe to reuse in a batch job, a streaming consumer or a notebook.
+Because `normalise_order` touches no files or databases, it is trivial to test and safe to reuse in a batch job, a streaming consumer or a notebook. (For money, the worked example below switches to `Decimal`, because `float` cannot represent most decimal amounts exactly.)
 
-## Pass configuration in, do not reach out for it
+## Parameters: positional, keyword, *args and **kwargs
 
-Functions that read global variables or environment variables deep inside are hard to test and surprising to call. Pass what they need as arguments, and read configuration once at the entry point.
+Python matches arguments to parameters by position first, then by name. Defaults make a parameter optional. Two collectors catch the rest: `*args` gathers extra positional arguments into a tuple and `**kwargs` gathers extra keyword arguments into a dict.
+
+```python
+def describe(table, *columns, schema="public", **options):
+    return f"{schema}.{table} cols={columns} options={options}"
+
+print(describe("orders"))
+print(describe("orders", "id", "amount", schema="sales", format="parquet"))
+
+row = ("orders", "id")
+opts = {"schema": "raw", "compression": "zstd"}
+print(describe(*row, **opts))            # unpack a tuple and a dict into the call
+```
+
+```text
+public.orders cols=() options={}
+sales.orders cols=('id', 'amount') options={'format': 'parquet'}
+raw.orders cols=('id',) options={'compression': 'zstd'}
+```
+
+In pipeline code, `*args` and `**kwargs` earn their place mainly in **wrappers** that must pass arguments through unchanged, such as a decorator that logs how long any task took:
+
+```python
+import functools
+import time
+
+def timed(func):
+    @functools.wraps(func)                    # keep the wrapped function's name and docstring
+    def wrapper(*args, **kwargs):             # accept whatever the real function accepts
+        start = time.perf_counter()
+        try:
+            return func(*args, **kwargs)      # and pass it all through
+        finally:
+            elapsed = time.perf_counter() - start
+            print(f"{func.__name__} finished in {'under' if elapsed < 1 else 'over'} 1s")
+    return wrapper
+
+@timed
+def load_partition(table, day, *, dry_run=False):
+    return f"{'would load' if dry_run else 'loaded'} {table} for {day}"
+
+print(load_partition("orders", "2026-10-05", dry_run=True))
+print(load_partition.__name__)
+```
+
+```text
+load_partition finished in under 1s
+would load orders for 2026-10-05
+load_partition
+```
+
+Outside wrappers, prefer explicit parameters. A function that takes `**kwargs` and reads `kwargs["batch_size"]` hides its interface: callers cannot see what it accepts, typos are silently ignored, and type checkers cannot help.
+
+## Keyword-only and positional-only arguments
+
+A bare `*` in the signature makes every parameter after it **keyword-only**. Use it for flags and tuning options, so call sites stay readable and nobody passes `True` in the wrong slot. A `/` makes the parameters before it **positional-only**, which lets you rename them later without breaking callers.
+
+```python
+def load(table, rows, /, *, batch_size=1000, truncate_first=False):
+    return f"{table}: {len(rows)} rows, batch_size={batch_size}, truncate_first={truncate_first}"
+
+print(load("orders", [1, 2, 3], truncate_first=True))
+
+try:
+    load("orders", [1, 2, 3], 500, True)      # what do 500 and True mean? Python refuses to guess.
+except TypeError as exc:
+    print("TypeError:", exc)
+```
+
+```text
+orders: 3 rows, batch_size=1000, truncate_first=True
+TypeError: load() takes 2 positional arguments but 4 were given
+```
+
+A rule of thumb: required data goes in positionally, anything with a default that changes behaviour (`dry_run`, `truncate_first`, `full_refresh`) is keyword-only.
+
+## Mutable default arguments
+
+Default values are evaluated **once**, when `def` runs. A list or dict default is therefore shared by every call:
+
+```python
+def add_row(row, batch=[]):          # bug: one list for every call
+    batch.append(row)
+    return batch
+
+print(add_row(1), add_row(2))
+
+def add_row_fixed(row, batch=None):
+    batch = [] if batch is None else batch
+    batch.append(row)
+    return batch
+
+print(add_row_fixed(1), add_row_fixed(2))
+```
+
+```text
+[1, 2] [1, 2]
+[1] [2]
+```
+
+In a long-lived worker process this leaks rows from one run into the next. The same "evaluated once" rule catches defaults that read the clock:
+
+```python
+from datetime import datetime
+import time
+
+def stamp_bad(event, loaded_at=datetime.now()):      # frozen at import time
+    return loaded_at
+
+def stamp_good(event, loaded_at=None):
+    return loaded_at if loaded_at is not None else datetime.now()
+
+first = stamp_bad("a"); time.sleep(0.01); second = stamp_bad("b")
+assert first == second                                # every call gets the same "now"
+assert stamp_good("a", loaded_at=first) == first          # callers (and tests) can pin the time
+print("stamp_bad returns the same timestamp on every call:", first == second)
+```
+
+```text
+stamp_bad returns the same timestamp on every call: True
+```
+
+See the [interview question on mutable defaults](/interview/python/mutable-default-arguments/) for more cases.
+
+## Dataclasses for records and configuration
+
+Functions that read global variables or environment variables deep inside are hard to test and surprising to call. Pass what they need as arguments, and read configuration once at the entry point. A dataclass gives that configuration a name, a type for every field and a readable `repr`:
 
 ```python
 from dataclasses import dataclass
@@ -64,37 +197,96 @@ print(plan_batches(2500, config))
 3
 ```
 
-A frozen dataclass documents every setting in one place and cannot be modified by accident halfway through a run.
-
-## Organise into modules
-
-A small pipeline package might look like this:
-
-```text
-orders_pipeline/
-  __init__.py
-  config.py        # LoadConfig, reading env vars or CLI args
-  extract.py       # read files / APIs (I/O)
-  transform.py     # pure functions such as normalise_order
-  load.py          # write to the database (I/O)
-  main.py          # wires them together
-tests/
-  test_transform.py
-```
-
-Each module has one reason to change. Tests import `transform` directly without touching files or credentials.
-
-## A thin entry point
+A frozen dataclass documents every setting in one place and cannot be modified by accident halfway through a run. Three more features cover most pipeline needs: `field(default_factory=...)` for mutable defaults (the dataclass version of the `None` fix above), `__post_init__` for validation, and `dataclasses.replace` to derive a changed copy of a frozen object.
 
 ```python
-def run(rows: list[dict]) -> list[dict]:
-    return [normalise_order(r) for r in rows]
+from dataclasses import FrozenInstanceError, dataclass, field, replace
 
-if __name__ == "__main__":
-    print(run([{"order_id": "1", "customer": "ben", "amount": "5"}]))
+@dataclass(frozen=True)
+class JobConfig:
+    table: str
+    batch_size: int = 500
+    required_columns: tuple[str, ...] = ("order_id", "amount")
+    tags: dict[str, str] = field(default_factory=dict)       # a new dict for each instance
+
+    def __post_init__(self):
+        if self.batch_size < 1:
+            raise ValueError(f"batch_size must be positive, got {self.batch_size}")
+
+cfg = JobConfig("orders")
+print(cfg)
+try:
+    cfg.batch_size = 10
+except FrozenInstanceError:
+    print("frozen: use replace() instead")
+print(replace(cfg, batch_size=10).batch_size, cfg.batch_size)
+try:
+    JobConfig("orders", batch_size=0)
+except ValueError as exc:
+    print("ValueError:", exc)
 ```
 
-The `if __name__ == "__main__":` guard means importing the module (from a test or an orchestrator) does not start the job. Only running it as a script does.
+```text
+JobConfig(table='orders', batch_size=500, required_columns=('order_id', 'amount'), tags={})
+frozen: use replace() instead
+10 500
+ValueError: batch_size must be positive, got 0
+```
+
+Writing `tags: dict = {}` without `default_factory` is rejected by `dataclass` with a `ValueError`, precisely to stop the shared-default bug. Use a dataclass (or a `NamedTuple`) for records you create yourself; use `TypedDict` to describe dict-shaped data you receive, such as JSON payloads.
+
+## Configuration from environment variables
+
+Schedulers, containers and CI pass settings through environment variables. Read them **once**, at the entry point, into a typed config object, and fail fast with a message that names the missing variable. Accepting the environment as a parameter makes this testable without touching the real process environment:
+
+```python
+import os
+from collections.abc import Mapping
+from dataclasses import dataclass
+
+class ConfigError(Exception):
+    pass
+
+@dataclass(frozen=True)
+class Settings:
+    database_url: str
+    target_table: str
+    batch_size: int = 1000
+    dry_run: bool = False
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
+        env = os.environ if env is None else env
+        missing = [k for k in ("ORDERS_DATABASE_URL", "ORDERS_TARGET_TABLE") if not env.get(k)]
+        if missing:
+            raise ConfigError(f"missing required environment variables: {', '.join(missing)}")
+        try:
+            batch_size = int(env.get("ORDERS_BATCH_SIZE", "1000"))
+        except ValueError:
+            raise ConfigError(f"ORDERS_BATCH_SIZE must be an integer, got {env['ORDERS_BATCH_SIZE']!r}") from None
+        return cls(
+            database_url=env["ORDERS_DATABASE_URL"],
+            target_table=env["ORDERS_TARGET_TABLE"],
+            batch_size=batch_size,
+            dry_run=env.get("ORDERS_DRY_RUN", "false").lower() in {"1", "true", "yes"},
+        )
+
+print(Settings.from_env({"ORDERS_DATABASE_URL": "postgresql://localhost/dw",
+                         "ORDERS_TARGET_TABLE": "orders", "ORDERS_DRY_RUN": "true"}))
+for bad in ({}, {"ORDERS_DATABASE_URL": "x", "ORDERS_TARGET_TABLE": "t", "ORDERS_BATCH_SIZE": "ten"}):
+    try:
+        Settings.from_env(bad)
+    except ConfigError as exc:
+        print("ConfigError:", exc)
+```
+
+```text
+Settings(database_url='postgresql://localhost/dw', target_table='orders', batch_size=1000, dry_run=True)
+ConfigError: missing required environment variables: ORDERS_DATABASE_URL, ORDERS_TARGET_TABLE
+ConfigError: ORDERS_BATCH_SIZE must be an integer, got 'ten'
+```
+
+Environment variables are always strings, so convert and validate them: `bool("false")` is `True`, which is why `dry_run` is parsed by comparing text. Secrets such as passwords also arrive this way (filled from a secret manager by the platform); never print the whole config object if it holds one, or give that field `field(repr=False)`.
 
 ## Pass dependencies in, too
 
@@ -116,7 +308,7 @@ print(build_report(fake_fetch, date(2026, 10, 5)))
 {'date': '2026-10-05', 'orders': 2, 'revenue': 15.5}
 ```
 
-Note that the run date is a parameter too. A function that calls `date.today()` inside gives a different answer on a rerun next week, which breaks retries and backfills.
+Note that the run date is a parameter too. A function that calls `date.today()` inside gives a different answer on a rerun next week, which breaks retries and backfills. When one argument is always the same in a given context, `functools.partial(build_report, real_fetch)` binds it once and returns a function that only needs the date.
 
 ## Type hints
 
@@ -150,49 +342,256 @@ dict[str, int | str | float]
 Useful conventions for pipeline code:
 
 - Built-in generics (`list[str]`, `dict[str, int]`) and `X | None` work without imports on Python 3.10 and later.
+- Accept the most general type you need (`Iterable[dict]` from `collections.abc` rather than `list[dict]`), so callers can pass a generator; return the concrete type you produce.
+- `Callable[[date], list[dict]]` documents a dependency such as `fetch_orders` above.
 - `TypedDict` describes dict-shaped records such as JSON payloads; a frozen `dataclass` suits records and configuration you create yourself.
 - Annotate public functions at module boundaries first; that is where mistakes between team members happen.
 - Run the type checker in CI next to the tests.
 
 A one-line docstring that states what the function guarantees ("returns amounts in cents; never None") is more useful than a comment that repeats the code.
 
-## Mutable default arguments
+## Modules, packages and imports
 
-Default values are evaluated **once**, when `def` runs. A list or dict default is therefore shared by every call:
+A **module** is one `.py` file; a **package** is a directory of modules with an `__init__.py`. A small pipeline package might look like this:
+
+```text
+orders_pipeline/
+  __init__.py      # marks the package; keep it empty or re-export the public API
+  config.py        # Settings.from_env: environment -> typed config
+  transform.py     # pure functions such as normalise_order
+  pipeline.py      # run(): wires read -> transform -> write, with counts
+  __main__.py      # entry point for `python -m orders_pipeline`
+tests/
+  test_transform.py
+  test_pipeline.py
+```
+
+Each module has one reason to change. Tests import `transform` directly without touching files or credentials. How imports behave:
+
+- `import orders_pipeline.transform` runs that file **once per process** and caches it in `sys.modules`; later imports reuse the cached module. Any code at the top level of a module (opening connections, reading files, starting the job) therefore runs on import, which is why module top levels should only define things.
+- Python finds packages through `sys.path`, which starts with the directory of the script being run (or the current directory for `python -m`). Run code as `python -m orders_pipeline` from the project root, or install the project (`pip install -e .`), rather than editing `sys.path` in code.
+- Use **absolute imports** (`from orders_pipeline.transform import normalise_order`) in application code; relative imports (`from .transform import ...`) only work inside a package and fail when the file is run as a plain script.
+- Two modules that import each other at the top level create a **circular import**, usually seen as `ImportError: cannot import name ... (most likely due to a circular import)`. Move the shared piece into a third module.
+
+## A thin entry point and `__name__ == "__main__"`
 
 ```python
-def add_row(row, batch=[]):          # bug: one list for every call
-    batch.append(row)
-    return batch
+def run(rows: list[dict]) -> list[dict]:
+    return [normalise_order(r) for r in rows]
 
-print(add_row(1), add_row(2))
-
-def add_row_fixed(row, batch=None):
-    batch = [] if batch is None else batch
-    batch.append(row)
-    return batch
-
-print(add_row_fixed(1), add_row_fixed(2))
+if __name__ == "__main__":
+    print(run([{"order_id": "1", "customer": "ben", "amount": "5"}]))
 ```
 
 ```text
-[1, 2] [1, 2]
-[1] [2]
+[{'order_id': 1, 'customer': 'Ben', 'amount': 5.0}]
 ```
 
-In a long-lived worker process this leaks rows from one run into the next. See the [interview question on mutable defaults](/interview/python/mutable-default-arguments/) for more cases, including defaults that read the clock.
+Every module has a `__name__`. It is the module's import name (`"orders_pipeline.transform"`) when imported, and `"__main__"` when the file is executed directly (`python job.py`) or as `python -m package.module`. The guard therefore means importing the module (from a test or an orchestrator) does not start the job; only running it as a script does. For a package, a `__main__.py` file is what `python -m orders_pipeline` runs. The worked example below shows both behaviours on a real package.
+
+## Worked example: a small reusable pipeline package with tests
+
+This block writes a real package into a temporary project, runs it the way a scheduler would, imports it the way a test or orchestrator would, and runs its tests. Read it file by file: each `write(...)` call is one file in the layout above.
+
+```python
+import os
+import subprocess
+import sys
+import tempfile
+import textwrap
+from pathlib import Path
+
+project = Path(tempfile.mkdtemp())
+
+def write(rel_path, source):
+    path = project / rel_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(textwrap.dedent(source).lstrip(), encoding="utf-8")
+
+write("orders_pipeline/__init__.py", "")
+
+write("orders_pipeline/config.py", '''
+    import os
+    from collections.abc import Mapping
+    from dataclasses import dataclass
+
+    class ConfigError(Exception):
+        pass
+
+    @dataclass(frozen=True)
+    class Settings:
+        source_path: str
+        batch_size: int = 2
+
+        @classmethod
+        def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
+            env = os.environ if env is None else env
+            if not env.get("ORDERS_SOURCE_PATH"):
+                raise ConfigError("missing required environment variable: ORDERS_SOURCE_PATH")
+            return cls(source_path=env["ORDERS_SOURCE_PATH"], batch_size=int(env.get("ORDERS_BATCH_SIZE", "2")))
+''')
+
+write("orders_pipeline/transform.py", '''
+    from decimal import Decimal, InvalidOperation
+
+    def normalise_order(raw: dict) -> dict:
+        """Pure: raises ValueError for a row that cannot be loaded."""
+        try:
+            order_id = int(raw["order_id"])
+            amount = Decimal(raw["amount"].strip())
+        except (KeyError, ValueError, InvalidOperation, AttributeError) as exc:
+            raise ValueError(f"unparseable order: {raw!r}") from exc
+        if amount < 0:
+            raise ValueError(f"negative amount for order {order_id}")
+        return {"order_id": order_id, "customer": raw.get("customer", "").strip().title(),
+                "amount_cents": int(amount * 100)}
+''')
+
+write("orders_pipeline/pipeline.py", '''
+    from collections.abc import Callable, Iterable
+    from dataclasses import dataclass
+    from itertools import islice
+
+    from orders_pipeline.transform import normalise_order
+
+    @dataclass
+    class RunStats:
+        read: int = 0
+        loaded: int = 0
+        rejected: int = 0
+
+    def batched(items, size):
+        it = iter(items)
+        while chunk := list(islice(it, size)):
+            yield chunk
+
+    def run(rows: Iterable[dict], write_batch: Callable[[list[dict]], None], *, batch_size: int) -> RunStats:
+        """Read -> transform -> write in batches. I/O is whatever the caller passes in."""
+        stats = RunStats()
+
+        def good_rows():
+            for raw in rows:
+                stats.read += 1
+                try:
+                    yield normalise_order(raw)
+                except ValueError:
+                    stats.rejected += 1
+
+        for batch in batched(good_rows(), batch_size):
+            write_batch(batch)
+            stats.loaded += len(batch)
+        return stats
+''')
+
+write("orders_pipeline/__main__.py", '''
+    import csv
+    import json
+
+    from orders_pipeline.config import Settings
+    from orders_pipeline.pipeline import run
+
+    def main() -> int:
+        settings = Settings.from_env()                      # read configuration once, at the edge
+        written = []
+        with open(settings.source_path, newline="", encoding="utf-8") as f:
+            stats = run(csv.DictReader(f), written.extend, batch_size=settings.batch_size)
+        print(json.dumps({"read": stats.read, "loaded": stats.loaded, "rejected": stats.rejected}))
+        return 1 if stats.rejected > stats.read // 2 else 0  # many rejects: fail the run loudly
+
+    if __name__ == "__main__":
+        raise SystemExit(main())
+''')
+
+write("tests/__init__.py", "")
+write("tests/test_pipeline.py", '''
+    from orders_pipeline.config import ConfigError, Settings
+    from orders_pipeline.pipeline import run
+    from orders_pipeline.transform import normalise_order
+
+    def test_normalise_uses_exact_cents():
+        assert normalise_order({"order_id": "1", "customer": " asha ", "amount": "19.99"}) == \\
+            {"order_id": 1, "customer": "Asha", "amount_cents": 1999}
+
+    def test_bad_rows_are_counted_not_loaded():
+        written = []
+        rows = [{"order_id": "1", "amount": "5"}, {"order_id": "x", "amount": "1"},
+                {"order_id": "3", "amount": "-2"}, {"order_id": "4", "amount": "7.50"}]
+        stats = run(rows, written.extend, batch_size=10)
+        assert (stats.read, stats.loaded, stats.rejected) == (4, 2, 2)
+        assert [r["order_id"] for r in written] == [1, 4]
+
+    def test_writes_in_batches():
+        batches = []
+        run(({"order_id": str(i), "amount": "1"} for i in range(5)), batches.append, batch_size=2)
+        assert [len(b) for b in batches] == [2, 2, 1]
+
+    def test_missing_setting_fails_fast():
+        try:
+            Settings.from_env({})
+        except ConfigError as exc:
+            assert "ORDERS_SOURCE_PATH" in str(exc)
+        else:
+            raise AssertionError("expected ConfigError")
+''')
+
+write("data/orders.csv", "order_id,customer,amount\n1,asha,19.99\n2,ben,abc\n3,chen,5\n")
+
+# 1. Run it the way a scheduler would: as a module, configured by environment variables.
+env = {**os.environ, "ORDERS_SOURCE_PATH": str(project / "data/orders.csv"), "ORDERS_BATCH_SIZE": "2"}
+result = subprocess.run([sys.executable, "-m", "orders_pipeline"], cwd=project, env=env,
+                        capture_output=True, text=True)
+print("python -m orders_pipeline ->", result.stdout.strip(), "exit code", result.returncode)
+
+# 2. Import it the way a test or an orchestrator would: nothing runs on import.
+sys.path.insert(0, str(project))          # stands in for `pip install -e .` in this demo only
+import orders_pipeline.__main__ as entry
+print("imported, __name__ is", entry.__name__)
+
+# 3. Run the tests. `pytest tests/` collects the same functions; here we call them directly.
+import tests.test_pipeline as t
+names = sorted(n for n in dir(t) if n.startswith("test_"))
+for name in names:
+    getattr(t, name)()
+print(f"{len(names)} tests passed")
+```
+
+```text
+python -m orders_pipeline -> {"read": 3, "loaded": 2, "rejected": 1} exit code 0
+imported, __name__ is orders_pipeline.__main__
+4 tests passed
+```
+
+What makes this reusable:
+
+- **`transform.py` is pure.** It raises `ValueError` for a bad row and knows nothing about files, batches or counting. It can be reused in a streaming consumer unchanged.
+- **`pipeline.run` takes its I/O as arguments.** Rows are any iterable (a `csv.DictReader`, a database cursor, an API generator) and the writer is any callable that takes a list. Tests pass a list's `extend` or `append`; production passes a function that inserts into a database. Keyword-only `batch_size` keeps call sites readable.
+- **Configuration is read once**, in `__main__.py`, and the exit code tells the scheduler whether the run failed. Raising `SystemExit(main())` turns the return value into the process exit code.
+- **Importing has no side effects**, which the second step proves: `__name__` is the module's import name, so `main()` did not run.
+
+The tests run in milliseconds because nothing touches a real database. The [pytest lesson](/python/testing-with-pytest/) adds fixtures, `parametrize` and `monkeypatch` on top of exactly this structure, and the [idempotent CSV loader](/python/idempotent-csv-loader/) plugs a PostgreSQL writer into the same shape.
 
 ## Common mistakes
 
 1. Mixing database calls into transformation logic, so nothing can be tested offline.
-2. Mutable default arguments: `def f(rows=[])` shares one list across calls. Use `None` and create the list inside.
-3. Reading environment variables inside deep helper functions.
-4. Putting job execution at module import time without a `__main__` guard.
+2. Mutable default arguments: `def f(rows=[])` shares one list across calls. Use `None` and create the list inside, or `field(default_factory=list)` in a dataclass.
+3. Defaults that call `datetime.now()` or `date.today()`, which are frozen at import time.
+4. Reading environment variables inside deep helper functions, or treating the string `"false"` as falsy.
+5. Putting job execution at module import time without a `__main__` guard.
+6. Boolean flags passed positionally (`load(t, rows, True, False)`); make them keyword-only.
+7. Hiding a function's real parameters behind `**kwargs`.
+8. Editing `sys.path` in application code or relying on relative imports in files that are also run as scripts.
 
-## Interview relevance
+## In an interview
 
-Interviewers often ask you to "clean up" a script or explain how you would test a pipeline. Talk about pure functions, I/O at the edges, configuration and dependencies passed in, type hints at module boundaries, and tests for the transformation layer (see [testing with pytest](/python/testing-with-pytest/)).
+Interviewers often ask you to "clean up" a script or explain how you would test a pipeline. Talk about pure functions, I/O at the edges, configuration and dependencies passed in, type hints at module boundaries, and tests for the transformation layer (see [testing with pytest](/python/testing-with-pytest/)). Short questions that come up a lot:
+
+- **What are `*args` and `**kwargs`?** Collectors for extra positional and keyword arguments; most useful in decorators and wrappers that forward arguments.
+- **What does `if __name__ == "__main__":` do?** It runs code only when the file is executed, not when it is imported.
+- **Why is `def f(x=[])` a bug?** Defaults are evaluated once at definition time, so the list is shared across calls. See [mutable default arguments](/interview/python/mutable-default-arguments/).
+- **How do you handle configuration?** Environment variables read once at the entry point into a validated, frozen object; secrets from a secret manager; nothing read deep inside helpers.
+
+More in the [top 50 Python interview questions](/python/python-interview-questions/).
 
 ## Key takeaway
 
-Keep transformations pure, push I/O to the edges, pass configuration in, and give the job a thin entry point. Testability and reuse follow.
+Keep transformations pure, push I/O to the edges, pass configuration and dependencies in, make flags keyword-only, and give the job a thin entry point behind a `__main__` guard. Testability and reuse follow.

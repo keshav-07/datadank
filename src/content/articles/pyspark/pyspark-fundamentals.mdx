@@ -1,7 +1,7 @@
 ---
 publishedDate: "2026-10-04"
-updatedDate: "2026-10-04"
-reviewedDate: "2026-10-04"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
 title: "PySpark Fundamentals for Data Engineers"
 seoTitle: "PySpark Fundamentals for Data Engineers"
 description: "PySpark fundamentals in one guide: DataFrames and schemas, lazy evaluation, joins, window functions, UDF alternatives, partitions, shuffles and debugging."
@@ -11,58 +11,137 @@ topic: ["fundamentals"]
 difficulty: "Beginner"
 pillar: true
 featured: false
-related: ["articles:pyspark/dataframes-and-schemas", "articles:pyspark/transformations-vs-actions", "articles:pyspark/joins-and-join-strategy", "cheat-sheets:pyspark"]
-sources: [{"label": "PySpark documentation", "url": "https://spark.apache.org/docs/latest/api/python/index.html"}]
-versionContext: "Examples in the linked guides run on PySpark 4.2"
+next: "articles:pyspark/dataframes-and-schemas"
+related: ["articles:pyspark/dataframes-and-schemas", "articles:pyspark/transformations-vs-actions", "articles:pyspark/joins-and-join-strategy", "articles:pyspark/pyspark-interview-questions", "cheat-sheets:pyspark", "articles:spark/apache-spark-architecture"]
+sources:
+  - {"label": "PySpark documentation", "url": "https://spark.apache.org/docs/latest/api/python/index.html"}
+  - {"label": "Apache Spark documentation: Spark SQL, DataFrames and Datasets guide", "url": "https://spark.apache.org/docs/latest/sql-programming-guide.html"}
+  - {"label": "Apache Spark documentation: ANSI compliance", "url": "https://spark.apache.org/docs/latest/sql-ref-ansi-compliance.html"}
+  - {"label": "Apache Spark documentation: Spark Connect overview", "url": "https://spark.apache.org/docs/latest/spark-connect-overview.html"}
+versionContext: "The worked example runs on PySpark 4.2.0 in local mode (Python 3, Java 17), verified with scripts/verify-examples.py. Linked lessons also run on PySpark 4.2."
 ---
 
-PySpark lets you write distributed data processing in Python. The API looks like SQL or pandas, but code runs lazily across a cluster, so correctness and performance depend on understanding a few core ideas.
+**PySpark** is the Python API for **Apache Spark**, a distributed engine that processes data in parallel across many machines. You write code that looks like SQL or pandas (`select`, `filter`, `groupBy`, `join`), and Spark turns it into an optimised plan that runs on a cluster of executors. Because the code runs lazily and in parallel, correctness and performance depend on a few ideas that pandas never forces you to think about: schemas, lazy evaluation, partitions and shuffles.
 
-## 1. DataFrames and schemas
+This page is the course map: where PySpark fits, the core concepts with a runnable example, how it compares with pandas and SQL engines, the lessons in order, the mistakes beginners make and what interviewers ask.
 
-A DataFrame is a distributed table with a schema. Define schemas explicitly in pipelines, choose a parse mode for malformed records deliberately, and remember that Spark 4 enables ANSI mode by default, so invalid casts raise errors.
+## Where PySpark fits in a data platform
 
-Read: [DataFrames and schemas](/pyspark/dataframes-and-schemas/)
+In most data platforms PySpark is the **batch and streaming transformation engine** between raw storage and curated tables:
 
-## 2. Lazy evaluation
+- **Input:** files in object storage (Parquet, JSON, CSV, Avro), lakehouse tables (Delta Lake, Iceberg), databases over JDBC, Kafka topics.
+- **Processing:** cleaning, deduplication, joins, aggregations, sessionisation, feature engineering, usually written as DataFrame code or Spark SQL.
+- **Output:** partitioned Parquet or Delta tables that a warehouse, BI tool or ML job reads.
+- **Runs on:** Databricks, Amazon EMR, AWS Glue, Google Dataproc, Kubernetes, or a laptop in local mode. An orchestrator such as Airflow or Lakeflow Jobs schedules it.
 
-Transformations build a plan; actions run it. Spark optimises the whole chain before executing. Narrow transformations stay within a partition; wide ones shuffle data and start a new stage.
+Use it when data is too large for one machine, when the same code must scale from gigabytes to terabytes, or when you need Spark's streaming, connectors and lakehouse integration. For data that fits comfortably in memory, a single-node tool is simpler and faster.
 
-Read: [Transformations vs actions](/pyspark/transformations-vs-actions/) · Practise: [Transformation vs action](/interview/spark/transformation-vs-action/), [What causes a shuffle](/interview/spark/what-causes-a-shuffle/)
+## Core concepts
 
-## 3. Joins
+- **SparkSession** is the entry point: `spark.read`, `spark.createDataFrame`, `spark.sql`. On Databricks it already exists as `spark`.
+- **DataFrame**: an immutable, distributed table with a **schema** (column names and types). Every transformation returns a new DataFrame. Define schemas explicitly for production reads; inference is slow on large inputs and guesses wrong.
+- **Transformations vs actions.** `select`, `filter`, `withColumn`, `join` and `groupBy().agg()` are **transformations**: they only add steps to a logical plan. **Actions** such as `count`, `collect`, `show` and `write` run the plan. Spark's **Catalyst** optimiser rewrites the whole plan first (pushing filters down, pruning columns, choosing join strategies).
+- **Partitions** are the chunks of data that tasks process in parallel. **Narrow** transformations (`filter`, `select`) work within a partition; **wide** ones (`groupBy`, `join`, `orderBy`, `distinct`) need a **shuffle** that moves rows across the network and starts a new stage. Shuffles and **skew** (a few keys holding most rows) cause most performance problems.
+- **Driver and executors.** Your Python program runs on the **driver**, which plans the job; **executors** run the tasks. `collect()` pulls every row back to the driver, which is how small laptops and large clusters both run out of memory.
+- **ANSI mode is on by default in Spark 4.** Invalid casts and arithmetic overflow raise errors instead of silently producing `NULL`. Use `try_cast` (or the `try_*` functions) when bad values are expected and should become `NULL`.
+- **Built-in functions before UDFs.** Functions in `pyspark.sql.functions` run inside the JVM engine. Python UDFs move every row to a Python worker and hide logic from the optimiser; when you need custom Python, prefer vectorised pandas UDFs.
+- **Spark Connect.** Spark 4 clients can talk to a remote Spark server through Spark Connect (serverless Databricks uses it). The DataFrame and SQL APIs are the same; low-level `sparkContext` and RDD access are not available there.
 
-Join on column names to avoid ambiguous columns, use `left_anti` and `left_semi` for existence checks, verify key uniqueness, and let small tables be broadcast.
+## A worked example you can run
 
-Read: [Joins and join strategy](/pyspark/joins-and-join-strategy/) · Practise: [Broadcast joins](/interview/pyspark/broadcast-join/)
+This example reads a small CSV with an explicit schema, handles a bad value safely, joins to a small dimension, computes revenue per category, ranks products within each category with a window function, and prints the physical plan. Install PySpark 4.x with `pip install pyspark` (Java 17 or 21 is required) and run it as a script.
 
-## 4. Window functions
+```python
+import os, tempfile
+from pyspark.sql import SparkSession, Window, functions as F
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType
 
-Ranking, previous-row comparisons and running totals work as in SQL. Always `partitionBy`, or Spark moves all data to one partition.
+spark = (SparkSession.builder.master("local[2]").appName("pyspark-fundamentals")
+         .config("spark.sql.shuffle.partitions", "4")      # small data: avoid 200 tiny tasks
+         .getOrCreate())
 
-Read: [PySpark window functions](/pyspark/window-functions/)
+# 1. Raw input: a CSV file with one malformed price
+path = os.path.join(tempfile.mkdtemp(), "orders.csv")
+with open(path, "w") as f:
+    f.write("order_id,product_id,qty,price\n"
+            "1,p1,2,10.00\n2,p2,1,25.50\n3,p1,1,10.00\n4,p3,5,3.20\n5,p2,2,oops\n6,p4,1,99.00\n")
 
-## 5. Built-ins before UDFs
+# 2. Explicit schema: price is read as a string so a bad value cannot fail the read
+schema = StructType([
+    StructField("order_id", IntegerType(), False),
+    StructField("product_id", StringType(), False),
+    StructField("qty", IntegerType(), True),
+    StructField("price", StringType(), True),
+])
+orders = spark.read.csv(path, header=True, schema=schema)
 
-Built-in functions run inside Spark's engine and are optimised; Python UDFs add serialisation and hide logic from the optimiser. Prefer built-ins, then pandas UDFs.
+# 3. Transformations (lazy): parse safely, derive revenue, drop rows that failed to parse
+clean = (orders
+         .withColumn("price", F.expr("try_cast(price AS DECIMAL(10,2))"))
+         .withColumn("revenue", F.col("qty") * F.col("price"))
+         .filter(F.col("price").isNotNull()))
 
-Read: [UDFs and safer alternatives](/pyspark/udfs-and-safer-alternatives/) · Practise: [When to avoid Python UDFs](/interview/pyspark/avoid-python-udfs/)
+products = spark.createDataFrame(
+    [("p1", "books"), ("p2", "books"), ("p3", "toys"), ("p4", "toys")],
+    ["product_id", "category"])
 
-## 6. Partitions, shuffles and skew
+# 4. Join on the column name (no duplicate key column); hint that products is small
+enriched = clean.join(F.broadcast(products), "product_id", "left")
 
-Partitions decide parallelism; shuffles are the main cost; skew makes a few tasks run far longer than the rest. Adaptive Query Execution helps with partition sizes, join strategy and skewed joins.
+per_product = enriched.groupBy("category", "product_id").agg(F.sum("revenue").alias("revenue"))
+w = Window.partitionBy("category").orderBy(F.col("revenue").desc())
+ranked = per_product.withColumn("rank", F.row_number().over(w))
 
-Read: [Partitions, shuffles and skew](/spark/partitions-shuffles-skew/) · [Adaptive Query Execution](/spark/adaptive-query-execution/)
+# 5. Actions: nothing ran until here
+rows = ranked.orderBy("category", "rank").collect()
+for r in rows:
+    print(r.category, r.product_id, str(r.revenue), r.rank)
 
-## 7. Debugging with the Spark UI
+assert orders.count() == 6 and clean.count() == 5          # 'oops' became NULL and was filtered
+assert [(r.category, r.product_id, r.rank) for r in rows] == [
+    ("books", "p1", 1), ("books", "p2", 2), ("toys", "p4", 1), ("toys", "p3", 2)]
 
-Find the slow stage, compare median and maximum task times, check shuffle sizes and spills, and read the executed plan.
+# 6. Read the physical plan: look for BroadcastHashJoin and Exchange (shuffle) nodes
+ranked.explain(mode="formatted")
+spark.stop()
+```
 
-Read: [Jobs, stages and tasks](/spark/execution-model-jobs-stages-tasks/)
+What to notice:
 
-## Learning order and checkpoints
+- Steps 3 and 4 return instantly; Spark only builds a plan. The first `collect()` runs everything, and `count()` runs the plan again (cache a DataFrame only when several actions reuse it and it is expensive to recompute).
+- `try_cast` turned `oops` into `NULL`. A plain `cast` would raise an error under ANSI mode, which is often what you want in a strict pipeline; decide deliberately and quarantine bad rows rather than silently dropping them in production.
+- The plan shows a `BroadcastHashJoin` (no shuffle for the join, because `products` is sent to every executor) and `Exchange` nodes for the `groupBy` and the window's `partitionBy`. Counting `Exchange` nodes is how you count shuffles; the `BroadcastExchange` under the join is the broadcast, not a shuffle.
+- `collect()` is fine here because the result is four rows. On real data, write the result to storage instead.
 
-| Step | You are ready to move on when you can… |
+## PySpark vs pandas (and other alternatives)
+
+| | PySpark | pandas | Polars / DuckDB |
+|---|---|---|---|
+| Scale | Many machines; terabytes | One machine; data must fit in memory | One machine; larger-than-memory with streaming or out-of-core execution |
+| Execution | Lazy, optimised plan, distributed | Eager, row by row operations in memory | Lazy (Polars lazy API) or SQL with a query optimiser |
+| Startup cost | Seconds (JVM, cluster) | None | None |
+| Best for | Large batch and streaming pipelines, lakehouse tables | Small data, notebooks, quick analysis | Single-node ETL and analytics up to tens or hundreds of gigabytes |
+
+The other common question is **DataFrame API vs Spark SQL**: they compile to the same plans and run at the same speed, so choose by readability and testability. Many teams write SQL for set-based transforms and the DataFrame API for reusable, parameterised logic. The [pandas API on Spark](/pyspark/udfs-and-safer-alternatives/) exists for porting pandas code, but idiomatic DataFrame code is usually clearer and faster.
+
+## What this course covers
+
+1. **PySpark Fundamentals for Data Engineers** (this page): the map, core ideas and a runnable example.
+2. [PySpark DataFrames, Columns and Schemas](/pyspark/dataframes-and-schemas/): creating DataFrames, column expressions, explicit schemas, parse modes, nulls and ANSI casts.
+3. [PySpark Transformations vs Actions](/pyspark/transformations-vs-actions/): lazy evaluation, narrow and wide transformations, and where jobs and stages come from.
+4. [PySpark Aggregations, Pivot and Temporary Views](/pyspark/aggregations-pivot-views/): `groupBy`, `agg`, pivots, and mixing SQL with DataFrames.
+5. [PySpark Joins and Join Strategy](/pyspark/joins-and-join-strategy/): join types, semi and anti joins, duplicate keys, broadcast versus sort-merge.
+6. [PySpark Window Functions](/pyspark/window-functions/): ranking, `lag` and `lead`, running totals and frames.
+7. [PySpark UDFs, pandas UDFs and the Pandas API on Spark](/pyspark/udfs-and-safer-alternatives/): when custom Python is worth it and how to keep it fast.
+8. [Nested and Complex Types in PySpark](/pyspark/nested-data-explode/): structs, arrays, maps, `explode` and JSON.
+9. [Reading and Writing Data in PySpark](/pyspark/reading-writing-data/): Parquet, CSV, JSON, ORC, Avro and JDBC sources and sinks.
+10. [Writing Efficient Output](/pyspark/writing-efficient-output/): file sizes, small files, partitioned writes and dynamic partition overwrite.
+
+The engine underneath is its own course: [Spark architecture](/spark/apache-spark-architecture/), [jobs, stages and tasks](/spark/execution-model-jobs-stages-tasks/), [partitions, shuffles and skew](/spark/partitions-shuffles-skew/), [Adaptive Query Execution](/spark/adaptive-query-execution/) and [Structured Streaming](/spark/structured-streaming/). Practise end to end with the [large-scale batch processing project](/projects/large-scale-batch-processing/) and revise with the [PySpark cheat sheet](/resources/cheat-sheets/pyspark/).
+
+### Checkpoints
+
+| Step | You are ready to move on when you can... |
 |------|-----------------------------------------|
 | DataFrames | Read a file with an explicit schema and explain the parse mode |
 | Laziness | Point to where the shuffles are in a job |
@@ -70,4 +149,32 @@ Read: [Jobs, stages and tasks](/spark/execution-model-jobs-stages-tasks/)
 | Windows | Write top-N-per-group in PySpark |
 | Performance | Diagnose skew from the Spark UI |
 
-Practise end to end with the [large-scale batch processing project](/projects/large-scale-batch-processing/) and revise with the [PySpark cheat sheet](/resources/cheat-sheets/pyspark/).
+## Common beginner mistakes
+
+1. **Calling `collect()` or `toPandas()` on large DataFrames.** Everything lands on the driver. Aggregate or write to storage instead.
+2. **Relying on schema inference in production.** Inference reads the data an extra time and can change types between runs. Declare the schema.
+3. **Using Python UDFs for things built-in functions already do** (string cleanup, date parsing, `CASE` logic). It is slower and blocks optimisation.
+4. **Looping with `withColumn` in a Python loop over hundreds of columns.** Each call adds a plan node; build the column list and use one `select`.
+5. **Leaving `spark.sql.shuffle.partitions` at 200 for tiny data, or for huge data.** With AQE enabled (the default) Spark coalesces small partitions, but very large shuffles may still need a higher setting.
+6. **A window with no `partitionBy`.** All rows go to one partition and one task.
+7. **Calling `count()` everywhere for debugging.** Each action re-runs the plan from the source.
+8. **Writing thousands of tiny files.** Control output partitions before writing, and partition by low-cardinality columns only.
+
+## What interviewers ask
+
+PySpark rounds combine concepts, live coding and debugging:
+
+- "What is lazy evaluation, and what is the difference between a transformation and an action?" ([Q3](/pyspark/pyspark-interview-questions/#3-lazy-evaluation), [Q4](/pyspark/pyspark-interview-questions/#4-transformations-vs-actions), [Transformation vs action](/interview/spark/transformation-vs-action/))
+- "Narrow vs wide transformations; what causes a shuffle?" ([Q5](/pyspark/pyspark-interview-questions/#5-narrow-vs-wide-transformations), [What causes a shuffle](/interview/spark/what-causes-a-shuffle/))
+- "`repartition` vs `coalesce`?" ([Q7](/pyspark/pyspark-interview-questions/#7-repartition-vs-coalesce))
+- "Keep the latest record per key" and "top N per group" as live coding ([Q13](/pyspark/pyspark-interview-questions/#13-coding-deduplicate-to-keep-the-latest-record-per-key), [Q37](/pyspark/pyspark-interview-questions/#37-coding-top-n-per-group-and-running-totals))
+- "When is a broadcast join used, and what are its limits?" ([Q20](/pyspark/pyspark-interview-questions/#20-broadcast-joins-threshold-hints-and-limits), [Broadcast join](/interview/pyspark/broadcast-join/))
+- "Why avoid Python UDFs?" ([Avoid Python UDFs](/interview/pyspark/avoid-python-udfs/))
+- "A job is slow and one task takes far longer than the others. What do you do?" ([Q21](/pyspark/pyspark-interview-questions/#21-how-do-you-detect-data-skew), [Data skew](/interview/spark/data-skew/))
+- "Spark, pandas or Polars?" ([Q38](/pyspark/pyspark-interview-questions/#38-spark-vs-pandas-vs-polars-when-to-use-each))
+
+All 50 are in [Top 50 PySpark Interview Questions and Answers](/pyspark/pyspark-interview-questions/). When you answer, mention the plan (`explain()`), the stage boundaries and the Spark UI evidence you would check; that is what separates working knowledge from memorised definitions.
+
+## Key takeaway
+
+PySpark is Python on a distributed, lazily evaluated engine. Declare schemas, prefer built-in functions, know where your shuffles are, keep data off the driver, and read the plan before you tune anything.

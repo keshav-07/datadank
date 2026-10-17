@@ -1,7 +1,7 @@
 ---
 publishedDate: "2026-10-04"
-updatedDate: "2026-10-10"
-reviewedDate: "2026-10-10"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
 title: "Python for Data Engineering"
 seoTitle: "Python for Data Engineering: Complete Guide"
 description: "Python for Data Engineering: structuring pipeline code, data structures, generators and batching, error handling, idempotent loads, testing and orchestration."
@@ -12,79 +12,112 @@ difficulty: "Beginner"
 pillar: true
 featured: false
 learningObjectives:
+  - "Know what Python does in a Data Engineering job, and what it should hand off to SQL or Spark"
   - "Know which Python skills a Data Engineer uses daily and in what order to learn them"
   - "See how the pieces combine in one small, runnable ingestion job"
   - "Use the checkpoints to decide when you are ready for the next lesson"
-related: ["articles:python/functions-modules-reusable-code", "articles:python/iterators-generators", "articles:python/idempotent-csv-loader", "cheat-sheets:python-for-data-engineers", "articles:python/file-io-csv-json", "articles:python/error-handling-logging", "articles:python/working-with-apis", "articles:python/pandas-for-data-engineers", "articles:python/testing-with-pytest"]
+related: ["articles:python/functions-modules-reusable-code", "articles:python/data-structures-for-interviews", "articles:python/file-io-csv-json", "articles:python/iterators-generators", "articles:python/error-handling-logging", "articles:python/working-with-apis", "articles:python/pandas-for-data-engineers", "articles:python/testing-with-pytest", "articles:python/idempotent-csv-loader", "articles:python/python-interview-questions", "interview-questions:python/when-not-to-use-pandas", "cheat-sheets:python-for-data-engineers"]
 next: "articles:python/functions-modules-reusable-code"
-sources: [{"label": "Python documentation", "url": "https://docs.python.org/3/"}]
-versionContext: "The example on this page and those in the linked guides run on Python 3.11"
+sources: [{"label": "Python documentation", "url": "https://docs.python.org/3/"}, {"label": "Python documentation: venv", "url": "https://docs.python.org/3/library/venv.html"}, {"label": "Python developer guide: status of Python versions", "url": "https://devguide.python.org/versions/"}]
+versionContext: "The mini example was run with CPython 3.11.15 (/usr/bin/python3) and its bundled SQLite through scripts/verify-examples.py; the output shown is from that run. The linked lessons record their own versions."
 ---
 
-Data Engineers use Python less for algorithms and more for **reliable plumbing**: reading from sources, validating, transforming, loading, and calling tools such as Spark, warehouses and orchestrators. This guide covers the skills in the order they pay off, then shows them working together in one small job.
+Data Engineers use Python less for algorithms and more for **reliable plumbing**: reading from sources, validating, transforming, loading, and calling tools such as Spark, warehouses and orchestrators. This guide explains where Python fits in the job, walks through the course lesson by lesson in the order the skills pay off, then shows them working together in one small job.
 
-## 1. Structure code for reuse and testing
+## What Python does in a Data Engineering job
+
+Python is the language most data platforms expose first, so it ends up as the glue between systems. Typical work, roughly in order of how often it comes up:
+
+| Work | What the Python looks like | Lessons |
+|------|---------------------------|---------|
+| **Ingestion** | Pull from REST APIs, SFTP drops, object storage or databases; land raw files; load into a warehouse | [File I/O](/python/file-io-csv-json/), [APIs](/python/working-with-apis/), [idempotent loader](/python/idempotent-csv-loader/) |
+| **Orchestration** | Airflow DAGs, Dagster assets or Prefect flows are Python files that schedule and retry tasks | [Functions and modules](/python/functions-modules-reusable-code/), then [Airflow](/airflow/dags-scheduling-retries/) |
+| **Distributed processing** | PySpark jobs: Python drives Spark's engine, which does the heavy lifting | [PySpark fundamentals](/pyspark/pyspark-fundamentals/) |
+| **Validation and data quality** | Schema checks, row-level rules, reconciliation counts, quarantine of bad records | [Error handling and logging](/python/error-handling-logging/), [testing](/python/testing-with-pytest/) |
+| **Small transformations** | pandas, Polars or DuckDB on data that fits one machine | [pandas](/python/pandas-for-data-engineers/) |
+| **Automation** | Cloud SDKs (for example `boto3`), CLI tools, backfill scripts, housekeeping jobs | [Functions and modules](/python/functions-modules-reusable-code/) |
+
+What Python usually should **not** do: large joins and aggregations row by row in a Python loop. When data lives in a warehouse, push set-based work down to SQL; when it is too big for one machine, use Spark. A good Data Engineer uses Python to move data and coordinate work, and lets the engines that are built for it do the bulk transformation. Interviewers often probe exactly this judgement ("would you do this in pandas or in SQL?").
+
+## Set up a working environment
+
+Use a supported Python version (3.11 or later is a safe baseline in 2026; check the [status of Python versions](https://devguide.python.org/versions/) for end-of-life dates), one virtual environment per project, and pinned dependencies:
+
+```bash
+python3 -m venv .venv            # an isolated environment for this project
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install pytest "psycopg[binary]" requests pandas
+pip freeze > requirements.txt    # pin exact versions so the scheduler runs what you tested
+```
+
+Add a linter and formatter (`ruff`), a type checker (`mypy` or `pyright`) and `pytest` to CI. Never install packages into the system Python that your operating system or scheduler uses.
+
+## The course, lesson by lesson
+
+The lessons are ordered so that each one uses the previous ones. The order also matches how the skills show up in interviews: structure and data structures first, then I/O, streaming and failure handling, then tools and testing.
+
+### 1. Structure code for reuse and testing
 
 Keep transformations as pure functions, push file, network and database access to the edges, pass configuration and dependencies in, add type hints at module boundaries, and give each job a thin entry point.
 
 Read: [Functions, modules and reusable pipeline code](/python/functions-modules-reusable-code/) · Practise: [Mutable default arguments](/interview/python/mutable-default-arguments/)
 
-## 2. Choose the right data structure
+### 2. Choose the right data structure
 
-Sets for membership and deduplication, dicts for lookup, grouping and counting, deques for queues and sliding windows, tuples for fixed records and composite keys. These choices turn quadratic loops into linear ones.
+Sets for membership and deduplication, dicts for lookup, grouping and counting, `heapq` for top-N, deques for queues and sliding windows, tuples for fixed records and composite keys. These choices turn quadratic loops into linear ones.
 
 Read: [Python data structures for interviews](/python/data-structures-for-interviews/) · Practise: [List vs tuple vs set](/interview/python/list-tuple-set/), [dict and set complexity](/interview/python/dict-set-complexity/), [Shallow vs deep copy](/interview/python/shallow-vs-deep-copy/)
 
-## 3. Read and write files safely
+### 3. Read and write files safely
 
 Set encodings, let the csv module handle quoting, serialise dates and Decimals explicitly, stream JSON Lines and gzip, and write outputs atomically.
 
 Read: [File I/O: CSV, JSON, JSON Lines and gzip](/python/file-io-csv-json/)
 
-## 4. Stream data with iterators and generators
+### 4. Stream data with iterators and generators
 
-Generators produce one item at a time, so you can process files, cursors and paginated APIs of any size with flat memory. Chain them and write in batches.
+Generators produce one item at a time, so you can process files, cursors and paginated APIs of any size with flat memory. Chain them, write in batches, and measure memory instead of guessing.
 
 Read: [Iterators and generators](/python/iterators-generators/) · Practise: [Generators for large datasets](/interview/python/generators-large-datasets/), [A 50 GB CSV with 8 GB of RAM](/interview/python/process-large-csv-limited-memory/)
 
-## 5. Handle errors and log like production code
+### 5. Handle errors and log like production code
 
 Classify failures: retry transient ones, quarantine and count bad records, fail fast on systemic errors. Catch specific exceptions, chain causes, log with run context and make failures visible to the scheduler.
 
 Read: [Error handling and logging](/python/error-handling-logging/) · Practise: [Exceptions in production pipelines](/interview/python/exceptions-in-pipelines/)
 
-## 6. Ingest from APIs
+### 6. Ingest from APIs
 
 Sessions with timeouts, pagination as a generator, retries with backoff that honour `Retry-After`, rate limiting, incremental pulls and raw landing.
 
 Read: [Working with APIs](/python/working-with-apis/) · Practise: [Retries with backoff](/interview/python/api-retries-backoff/)
 
-## 7. Use pandas where it fits
+### 7. Use pandas where it fits
 
 Explicit dtypes, keyed deduplication, validated joins and Parquet output, and knowing when DuckDB, Polars, Spark or warehouse SQL is the better tool.
 
 Read: [pandas for Data Engineers](/python/pandas-for-data-engineers/) · Practise: [When not to use pandas](/interview/python/when-not-to-use-pandas/)
 
-## 8. Test what matters
+### 8. Test what matters
 
 Parametrised tests for edge cases, fixtures and `tmp_path`, monkeypatched network calls, and a run-twice idempotency test for every loader.
 
 Read: [Testing with pytest](/python/testing-with-pytest/) · Then: [Testing data pipelines and CI/CD](/etl-elt/testing-data-pipelines-cicd/)
 
-## 9. Make loads idempotent
+### 9. Make loads idempotent
 
-A load that can run twice without changing the result is safe to retry and backfill: a natural key, an upsert and a single transaction, proved with a test.
+A load that can run twice without changing the result is safe to retry and backfill: a natural key, a staging table and an upsert in a single transaction, a checksum and run id for bookkeeping, quarantine for bad rows, and a test that proves a rerun changes nothing. This tutorial uses everything above against PostgreSQL.
 
 Build: [Idempotent CSV loader tutorial](/python/idempotent-csv-loader/) · Read: [Idempotency in data pipelines](/etl-elt/idempotency-in-data-pipelines/)
 
-## 10. Work with the rest of the stack
+### 10. Work with the rest of the stack
 
 - **PySpark** for data too large for one machine: [PySpark fundamentals](/pyspark/pyspark-fundamentals/).
 - **Airflow** to schedule and retry Python tasks: [Airflow DAGs and retries](/airflow/dags-scheduling-retries/).
 
 ## The pieces together
 
-A compact ingestion job uses most of the skills above: a generator over input lines, typed parsing with specific exceptions, counted rejects, batched idempotent writes in a transaction, and a logged summary with run context.
+A compact ingestion job uses most of the skills above: a generator over input lines, typed parsing with specific exceptions, counted rejects, batched idempotent writes in a transaction, and a logged summary with run context. It uses SQLite so it runs anywhere; the [loader tutorial](/python/idempotent-csv-loader/) builds the production version on PostgreSQL.
 
 ```python
 import io
@@ -129,7 +162,9 @@ source = ('{"event_id": 1, "user": "asha", "amount_cents": 1999}\n'
 conn = sqlite3.connect(":memory:")
 conn.execute("CREATE TABLE events (event_id TEXT PRIMARY KEY, user TEXT, amount_cents INTEGER)")
 run(conn, io.StringIO(source), "events__2026-10-05")
+first = conn.execute("SELECT * FROM events ORDER BY event_id").fetchall()
 run(conn, io.StringIO(source), "events__2026-10-05")        # a retry: same final state
+assert conn.execute("SELECT * FROM events ORDER BY event_id").fetchall() == first
 print(conn.execute("SELECT count(*), sum(amount_cents) FROM events").fetchone())
 ```
 
@@ -143,7 +178,30 @@ INFO run=events__2026-10-05 loaded=3
 (2, 2499)
 ```
 
-The duplicate event 1 and the retry both collapse into the same two rows, and both bad lines are reported with their line numbers instead of disappearing.
+The duplicate event 1 and the retry both collapse into the same two rows, and both bad lines are reported with their line numbers instead of disappearing. The `assert` is the idempotency test in one line: the table after the retry equals the table after the first run. Note that `loaded=3` counts rows written, including the duplicate that was upserted onto event 1; a production loader also reports how many rows actually changed.
+
+Which lesson each line comes from: `read_events` is a generator (lesson 4) with specific exceptions and logging (lesson 5); `batches` is the `islice` batching helper (lesson 4); the upsert in one transaction is the idempotency pattern (lesson 9); keeping `run` separate from the data source and connection is the structure from lesson 1, which is what lets the same function run against a file, an API or a test fixture.
+
+## Common mistakes
+
+1. **Writing one long script.** Reading, transforming and writing in one block cannot be tested without real files and databases. Split into pure functions with I/O at the edges.
+2. **Loading everything into memory.** `f.readlines()`, `list(cursor)` or `pd.read_csv` on a file that keeps growing works until the day it does not. Stream and batch.
+3. **Plain inserts.** A retry duplicates every row. Upsert or overwrite on a key, inside one transaction.
+4. **`except Exception: pass`.** Bad data disappears without a trace. Catch specific exceptions, quarantine or count, and fail past a threshold.
+5. **`float` for money and naive datetimes.** Use `Decimal` and timezone-aware timestamps from the moment you parse.
+6. **Row-by-row Python where SQL or Spark belongs.** Push large joins and aggregations to the engine.
+7. **No timeouts on network calls.** A `requests.get` without `timeout=` can hang a scheduled task forever.
+8. **Untested reruns.** Every loader needs a test that runs it twice and compares the result.
+
+## In an interview
+
+Python rounds for Data Engineers usually mix three kinds of questions:
+
+- **Language fundamentals**: mutable vs immutable types, list vs tuple vs set, dict and set complexity, shallow vs deep copy, mutable default arguments, generators, decorators, exceptions and context managers.
+- **Coding**: process a list of records (group, dedupe, top-N, sessionise) with the right data structure and state its complexity. Expect "what if the input does not fit in memory?" as the follow-up.
+- **Pipeline design in Python**: how you would ingest a paginated API with retries, load a file idempotently, handle bad rows, test a pipeline and structure the code.
+
+Answer pipeline questions with the mechanism and the failure mode: not just "I would use a generator", but "a generator keeps one row in memory, so memory is set by the batch size, not the file size; the state I keep, like a set of seen keys, still grows". The [top 50 Python interview questions for Data Engineers](/python/python-interview-questions/) cover all three kinds, from beginner to experienced, and each lesson above ends with the interview angle for its topic.
 
 ## Learning order and checkpoints
 
@@ -152,11 +210,13 @@ The duplicate event 1 and the retry both collapse into the same two rows, and bo
 | Structure | Test a transformation without touching files, databases or the clock |
 | Data structures | Pick a structure and state its average and worst-case cost |
 | Files | Read a CSV with quoted newlines and a BOM correctly, and write a file atomically |
-| Generators | Process a file larger than memory |
+| Generators | Process a file larger than memory, and measure the memory it used |
 | Errors and logging | Explain which failures you retry, which you quarantine and which fail the run |
 | APIs | Pull a paginated API with retries that honour `Retry-After` |
 | pandas | Join with `validate=` and say when you would use DuckDB or Spark instead |
 | Testing | Write a parametrised test and a run-twice idempotency test |
 | Idempotency | Show a test that proves a rerun changes nothing |
 
-Revise with the [Python cheat sheet](/resources/cheat-sheets/python-for-data-engineers/).
+## Key takeaway
+
+Python in Data Engineering is about moving data reliably: structured, testable code that streams instead of loading everything, fails loudly on systemic problems, quarantines bad records, and can be rerun safely. Work through the lessons in order, use each checkpoint, and revise with the [Python cheat sheet](/resources/cheat-sheets/python-for-data-engineers/).

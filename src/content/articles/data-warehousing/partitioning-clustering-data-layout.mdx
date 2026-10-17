@@ -1,25 +1,34 @@
 ---
 publishedDate: "2026-10-04"
-updatedDate: "2026-10-04"
-reviewedDate: "2026-10-04"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
 title: "Partitioning, Clustering and Data Layout"
 description: "How partitioning and clustering let warehouses and lakehouses skip data, how to choose keys, and why too many small partitions or files make queries slower."
 inventoryId: "TECH-20"
 technology: ["data-warehousing", "delta-lake"]
 topic: ["partitioning", "clustering", "performance"]
 difficulty: "Intermediate"
-prerequisites: ["articles:sql/query-optimization-fundamentals"]
-related: ["articles:spark/partitions-shuffles-skew", "articles:delta-lake/transactions-schema-evolution"]
+prerequisites: ["articles:sql/query-optimization-fundamentals", "articles:data-warehousing/fact-tables"]
+related: ["articles:spark/partitions-shuffles-skew", "articles:delta-lake/transactions-schema-evolution", "articles:delta-lake/optimize-zorder-vacuum-liquid-clustering", "articles:snowflake/micro-partitions-clustering-pruning", "articles:sql/partitioning-materialized-views-storage", "articles:pyspark/writing-efficient-output", "interview-questions:data-engineering/partition-large-table"]
 previous: "articles:data-warehousing/lake-vs-warehouse-vs-lakehouse"
-sources: [{"label": "Delta Lake documentation: Optimizations", "url": "https://docs.delta.io/latest/optimizations-oss.html"}, {"label": "Snowflake documentation: Micro-partitions and data clustering", "url": "https://docs.snowflake.com/en/user-guide/tables-clustering-micropartitions"}]
-versionContext: "Conceptual; feature names and limits vary by platform, so check your engine's documentation"
+sources:
+  - {"label": "PostgreSQL documentation: Table partitioning", "url": "https://www.postgresql.org/docs/16/ddl-partitioning.html"}
+  - {"label": "DuckDB documentation: Hive partitioning", "url": "https://duckdb.org/docs/stable/data/partitioning/hive_partitioning"}
+  - {"label": "DuckDB documentation: Querying Parquet metadata", "url": "https://duckdb.org/docs/stable/data/parquet/metadata"}
+  - {"label": "Delta Lake documentation: Optimizations", "url": "https://docs.delta.io/latest/optimizations-oss.html"}
+  - {"label": "Snowflake documentation: Micro-partitions and data clustering", "url": "https://docs.snowflake.com/en/user-guide/tables-clustering-micropartitions"}
+  - {"label": "Apache Iceberg documentation: Partitioning", "url": "https://iceberg.apache.org/docs/latest/partitioning/"}
+  - {"label": "Google Cloud documentation: Introduction to clustered tables", "url": "https://cloud.google.com/bigquery/docs/clustered-tables"}
+versionContext: "PostgreSQL examples executed on PostgreSQL 16.14 and the Parquet example on DuckDB 1.5.6 (Python), both with scripts/verify-examples.py; plans shown are from those runs. Platform features (liquid clustering, Iceberg hidden partitioning, BigQuery and Snowflake clustering) as documented in October 2026."
 ---
 
-Analytical queries are fast when the engine can **skip** most of the data. Partitioning and clustering are two ways to arrange data so that skipping is possible.
+Analytical queries are fast when the engine can **skip** most of the data. A query that reads 2 % of a table finishes sooner and, on pay-per-scan or pay-per-second platforms, costs less than one that reads all of it, whatever the hardware. Partitioning and clustering are the two ways to arrange data so that skipping is possible; compaction keeps the arrangement efficient as data arrives.
+
+This lesson explains how each works, demonstrates both on PostgreSQL and on Parquet files with DuckDB, shows how the main platforms implement them, and ends with a decision table.
 
 ## Partitioning
 
-Partitioning splits a table into separate groups by the value of one column, typically a date:
+Partitioning splits a table into separate physical groups by the value of one column (or an expression of it), typically a date. On a data lake each partition is a folder:
 
 ```text
 events/
@@ -27,37 +36,170 @@ events/
   event_date=2026-10-02/ part-0001.parquet ...
 ```
 
-A query with `WHERE event_date = '2026-10-02'` reads only that folder. This is **partition pruning**. Partitioning also makes maintenance simple: reprocessing a day means overwriting one partition.
+In a database each partition is a separate child table. Either way, a query with `WHERE event_date = '2026-10-02'` reads only that partition. This is **partition pruning**, and it works from metadata alone: the engine knows what each partition can contain without opening it.
+
+Partitioning also makes **maintenance** simple. Reprocessing a day means replacing one partition; retention means dropping old partitions instead of running a large `DELETE`.
+
+### Partitioning in PostgreSQL
+
+PostgreSQL's declarative partitioning shows the mechanics clearly. One parent table, one child per day, and a default partition for anything outside the ranges:
+
+```sql
+CREATE TABLE events (
+  event_id BIGINT NOT NULL, event_date DATE NOT NULL, customer_id INT NOT NULL,
+  event_type TEXT NOT NULL, amount NUMERIC(10,2)
+) PARTITION BY RANGE (event_date);
+
+CREATE TABLE events_2026_10_01 PARTITION OF events FOR VALUES FROM ('2026-10-01') TO ('2026-10-02');
+CREATE TABLE events_2026_10_02 PARTITION OF events FOR VALUES FROM ('2026-10-02') TO ('2026-10-03');
+CREATE TABLE events_2026_10_03 PARTITION OF events FOR VALUES FROM ('2026-10-03') TO ('2026-10-04');
+CREATE TABLE events_default    PARTITION OF events DEFAULT;
+
+INSERT INTO events
+SELECT g, DATE '2026-10-01' + (g % 3), (g * 7919) % 5000,
+       CASE WHEN g % 10 = 0 THEN 'purchase' ELSE 'view' END,
+       CASE WHEN g % 10 = 0 THEN (g % 200) + 0.99 END
+FROM generate_series(1, 30000) AS g;
+ANALYZE events;
+
+SELECT tableoid::regclass AS partition, count(*) FROM events GROUP BY 1 ORDER BY 1;
+```
+
+Each daily partition receives 10,000 rows; rows are routed automatically on insert. Now compare the plans of three queries that ask for the same day:
+
+```sql
+EXPLAIN (COSTS OFF) SELECT count(*) FROM events WHERE event_date = DATE '2026-10-02';
+EXPLAIN (COSTS OFF) SELECT count(*) FROM events
+  WHERE event_date >= DATE '2026-10-02' AND event_date < DATE '2026-10-03';
+EXPLAIN (COSTS OFF) SELECT count(*) FROM events WHERE to_char(event_date, 'YYYY-MM-DD') = '2026-10-02';
+```
+
+The first two plans scan one partition:
+
+```text
+ Aggregate
+   ->  Seq Scan on events_2026_10_02 events
+         Filter: (event_date = '2026-10-02'::date)
+```
+
+The third wraps the partition column in a function, so the planner cannot prove which partitions match and scans all four:
+
+```text
+ Aggregate
+   ->  Append
+         ->  Seq Scan on events_2026_10_01 events_1
+         ->  Seq Scan on events_2026_10_02 events_2
+         ->  Seq Scan on events_2026_10_03 events_3
+         ->  Seq Scan on events_default events_4
+```
+
+That is the most common real-world pruning bug, and it exists in every engine: filter on the raw partition column with a range, not on an expression of it. (Some engines, such as Iceberg with hidden partitioning or BigQuery with partitioning on a timestamp's date, can prune on certain expressions because the partition is defined as that expression; do not rely on it elsewhere.)
+
+Partition-level maintenance is metadata work, which is why a daily reload can be made idempotent cheaply:
+
+```sql
+-- Re-run 2 October: replace exactly one partition, whatever happened before
+BEGIN;
+TRUNCATE events_2026_10_02;
+INSERT INTO events
+SELECT g, DATE '2026-10-02', (g * 7919) % 5000, 'view', NULL
+FROM generate_series(1, 5000) AS g;
+COMMIT;
+
+-- Retention: remove the oldest day without a large DELETE
+ALTER TABLE events DETACH PARTITION events_2026_10_01;
+DROP TABLE events_2026_10_01;
+
+SELECT tableoid::regclass AS partition, count(*) FROM events GROUP BY 1 ORDER BY 1;
+```
 
 ### Choosing a partition column
 
-- It appears in most filters (usually a date).
-- It has **low to moderate cardinality**: hundreds or a few thousand values, not millions.
-- Each partition holds a substantial amount of data. Partitioning a small table by a high-cardinality column produces thousands of tiny files, which is slower than no partitioning at all.
+- It appears in **most filters**, usually a date or month, and in your retention and reprocessing logic.
+- It has **low to moderate cardinality**: hundreds or a few thousand values over the table's life, not millions.
+- Each partition holds a **substantial amount of data**. Partitioning a small table, or partitioning by a high-cardinality column, produces thousands of tiny partitions and files, which is slower than no partitioning: the engine spends its time listing, opening and planning.
+- Its values do not change for a row. Updating a row's partition column means moving it between partitions.
 
 ## Clustering and file statistics
 
-Within (or instead of) partitions, engines keep **statistics per file or block**, such as the minimum and maximum of each column. If data with similar values is stored together, many files can be skipped for a filter like `customer_id = 42`, because 42 falls outside their min/max range.
+Partitioning helps one dominant filter. For the next most common filters, such as `customer_id = 42`, engines rely on **statistics per file or block**: Parquet stores the minimum and maximum of each column per row group, Delta and Iceberg store min/max per file in their metadata, and Snowflake keeps them per micro-partition. If a block's range does not include 42, it is skipped. These are sometimes called **zone maps** or data-skipping statistics.
 
-**Clustering** reorganises data so related values sit in the same files:
+Statistics only help if similar values are stored together. **Clustering** reorganises data so they are. The DuckDB example writes the same 300,000 rows twice, once in arrival order and once sorted by `customer_id`, with 10,000-row row groups, then counts how many row groups could contain customer 42 according to their min/max statistics. It also writes a date-partitioned copy and shows that a date filter reads one partition folder out of three.
 
-- Snowflake stores tables in **micro-partitions** with metadata and supports clustering keys for large tables.
-- Delta Lake supports **Z-ordering** and, in newer versions, **liquid clustering**.
-- BigQuery supports partitioned and clustered tables.
+```python
+import os
+import duckdb
 
-The names differ; the idea is the same: improve the min/max ranges so pruning works on columns other than the partition column.
+con = duckdb.connect()
+con.execute("""
+    CREATE TABLE events AS
+    SELECT g AS event_id, DATE '2026-10-01' + (g % 3)::INT AS event_date,
+           (g * 7919) % 5000 AS customer_id, g % 97 AS amount
+    FROM range(1, 300001) t(g)""")
+
+# Partitioned layout: one folder per event_date
+con.execute("COPY events TO 'events_by_date' (FORMAT parquet, PARTITION_BY (event_date), OVERWRITE_OR_IGNORE)")
+print(sorted(os.listdir("events_by_date")))
+plan = con.execute("""EXPLAIN SELECT count(*)
+    FROM read_parquet('events_by_date/*/*.parquet', hive_partitioning = true)
+    WHERE event_date = DATE '2026-10-02'""").fetchall()[0][1]
+print(plan)
+assert "Scanning Files: 1/3" in plan
+
+# Clustering: same rows, arrival order vs sorted by customer_id
+con.execute("COPY events TO 'unsorted.parquet' (FORMAT parquet, ROW_GROUP_SIZE 10000)")
+con.execute("COPY (SELECT * FROM events ORDER BY customer_id) TO 'sorted.parquet' (FORMAT parquet, ROW_GROUP_SIZE 10000)")
+
+def candidate_row_groups(path, value):
+    return con.execute(f"""
+        SELECT count(*) AS row_groups,
+               count(*) FILTER (WHERE {value} BETWEEN stats_min_value::BIGINT AND stats_max_value::BIGINT)
+        FROM parquet_metadata('{path}') WHERE path_in_schema = 'customer_id'""").fetchone()
+
+unsorted, clustered = candidate_row_groups("unsorted.parquet", 42), candidate_row_groups("sorted.parquet", 42)
+print("unsorted:", unsorted, "sorted:", clustered)
+assert unsorted == (30, 30) and clustered == (30, 1)
+```
+
+In arrival order, every one of the 30 row groups spans almost the whole customer range, so a filter on one customer must read all of them. Sorted, only one row group can contain customer 42 and the other 29 are skipped from their footers alone. The plan for the partitioned copy reports `Scanning Files: 1/3` with the date as a file filter.
+
+Sorting a whole table once is easy; keeping it clustered as new data arrives is the hard part, and that is what platform clustering features do:
+
+- **Snowflake** stores every table in **micro-partitions** with per-column metadata. Data is naturally clustered by load order (usually time); a **clustering key** on a large table makes Automatic Clustering re-sort micro-partitions in the background, which costs credits.
+- **Delta Lake** offers **Z-ordering** (`OPTIMIZE ... ZORDER BY`, a multi-column sort applied on demand) and **liquid clustering** (`CLUSTER BY`), which clusters incrementally, lets you change keys later and is the usual default for new tables. Liquid clustering replaces partitioning and Z-order on a table; it is not combined with them. See [OPTIMIZE, Z-ORDER, VACUUM and liquid clustering](/delta-lake/optimize-zorder-vacuum-liquid-clustering/).
+- **Apache Iceberg** uses **hidden partitioning** with transforms such as `days(event_ts)` or `bucket(16, customer_id)`, so queries filter on the real column and the table maps it to partitions; partition specs can evolve without rewriting old data. Sort orders cluster data within files.
+- **BigQuery** combines **partitioned tables** (by ingestion time, a date or timestamp column, or an integer range) with **clustered tables** on up to four columns, re-clustered automatically.
+- **Amazon Redshift** uses **sort keys** for zone-map skipping and **distribution styles** to place rows across nodes for joins.
+- **PostgreSQL** has no automatic clustering; B-tree indexes (and `BRIN` indexes on naturally ordered columns) do the equivalent job for selective lookups.
+
+The names differ; the idea is the same: make each block's min/max range narrow on the columns people filter by.
 
 ## The small-files problem
 
-Every file has overhead: opening it, reading its footer, scheduling a task. Thousands of small files (from frequent appends, streaming micro-batches or over-partitioning) can make reads slower than one large file. Compact regularly (for example `OPTIMIZE` in Delta Lake) and aim for files in the hundreds of megabytes for large tables.
+Every file has overhead: listing it, opening it, reading its footer and metadata, scheduling a task for it. Thousands of small files, produced by frequent appends, streaming micro-batches or over-partitioning, can make reads slower than one large file holding the same rows. They also bloat table-format metadata.
 
-## How it fits together
+- **Compact** regularly: `OPTIMIZE` in Delta Lake, `rewrite_data_files` in Iceberg, or the platform's automatic compaction.
+- **Control output** in Spark jobs: repartition by the partition column before writing so each partition gets a few large files rather than one file per task (see [Writing efficient output](/pyspark/writing-efficient-output/)).
+- **Aim for files in the hundreds of megabytes** (up to around 1 GB) for large analytical tables on object storage. Managed platforms often tune this automatically.
 
-| Technique | Skips data by | Best for |
-|-----------|---------------|----------|
-| Partitioning | Folder or partition value | One dominant, low-cardinality filter (date) |
-| Clustering / Z-order | File min/max statistics | Additional high-cardinality filters (customer, product) |
-| Compaction | Fewer, larger files | Tables written in small increments |
+## Decision table
+
+| Situation | Layout choice | Why |
+|---|---|---|
+| Large fact or event table, most queries filter on a date range, retention by date | Partition by date (or month for smaller volumes), or a clustering key that starts with the date | Pruning for the dominant filter and cheap partition-level reloads and deletes |
+| The same table is also filtered by customer or product | Add clustering, Z-order, liquid clustering or a sort key on those columns | Partitioning by a high-cardinality column would create millions of tiny partitions |
+| New Delta table on a recent runtime | Liquid clustering on the main filter columns; no partitioning | Incremental, keys can change, avoids small-partition problems |
+| Table under about 1 GB, or rarely filtered | Nothing; maybe one sort on load | Layout features cost compute and complexity that small tables do not repay |
+| Streaming or frequently appended table | Partition or cluster by time, plus scheduled or automatic compaction | Micro-batches produce small files |
+| Many different, unpredictable filters | Clustering on the top one or two; consider search optimisation or indexes for point lookups | No layout helps every filter equally |
+| Tables joined on a key across nodes (Redshift, some Spark designs) | Distribution or bucketing on the join key | Avoids reshuffling large tables for every join |
+
+## Trade-offs
+
+- **Pruning vs file count.** Finer partitions prune more precisely but create more, smaller files. Choose the granularity that leaves each partition large.
+- **Write cost vs read cost.** Clustering and compaction rewrite data. On a table that is read rarely, the rewrite can cost more than it saves.
+- **Fixed vs evolving keys.** Classic partitioning is hard to change once a table is large; liquid clustering, Iceberg partition evolution and warehouse clustering keys can change with less pain.
+- **Concurrency.** Partition boundaries let jobs that write different dates proceed without conflicting; clustered tables rely on the table format's conflict detection instead.
 
 <Callout tone="warning" title="Do not partition by everything">
 
@@ -68,14 +210,17 @@ Partitioning by date *and* customer *and* country multiplies partitions and prod
 ## Common mistakes
 
 1. Partitioning by a high-cardinality column (user id, timestamp to the second).
-2. Filtering on an expression of the partition column, which can prevent pruning in some engines.
-3. Never compacting a streaming table.
-4. Choosing keys without looking at actual query patterns.
+2. Filtering on an expression of the partition column (`to_char(event_date, ...)`, `CAST(ts AS DATE)` on a timestamp partition), which prevents pruning in many engines.
+3. Never compacting a streaming or frequently appended table.
+4. Choosing keys without looking at actual query patterns; check the query history first.
+5. Adding clustering to small tables, then paying for background reclustering that buys nothing.
+6. Forgetting that statistics are collected only on some columns (for example the first 32 columns by default in Delta), so a filter column outside them is never skipped.
+7. Running a large `DELETE` for retention when dropping a partition would be metadata-only.
 
-## Interview relevance
+## In an interview
 
-Expect "How would you lay out a large events table?" and "What is partition pruning?". Discuss the filter pattern, cardinality, file sizes and compaction.
+Expect "How would you lay out a large events table?" and "What is partition pruning?". A strong answer starts from the query pattern ("most queries filter on a date range and some on customer"), picks partitioning or clustering for each filter with a reason (cardinality, data per partition), mentions file sizes and compaction, and names how you would verify it: the plan (`EXPLAIN`, Spark's `PartitionFilters`, Snowflake's partitions scanned versus total in the Query Profile). Follow-ups include "what if the filter is on a column you did not partition by?" (statistics and clustering) and "what happens when a streaming job writes every minute?" (small files and compaction). Practise with [How do you partition a large table?](/interview/data-engineering/partition-large-table/) and [When to use clustering keys in Snowflake](/interview/snowflake/when-to-use-clustering-keys/).
 
 ## Key takeaway
 
-Partition by the most common low-cardinality filter, cluster by the next most common filters, and keep files large enough to read efficiently.
+Partition by the most common low-cardinality filter, cluster by the next most common filters, keep files large enough to read efficiently, filter on raw columns so pruning works, and check the plan to prove data is being skipped.

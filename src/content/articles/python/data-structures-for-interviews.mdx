@@ -1,30 +1,66 @@
 ---
 seoTitle: "Python Data Structures for DE Interviews"
 publishedDate: "2026-10-04"
-updatedDate: "2026-10-10"
-reviewedDate: "2026-10-10"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
 title: "Python Data Structures for Data Engineering Interviews"
 description: "Choose between list, tuple, set, dict, deque and Counter by their operations and costs, with the patterns that come up in data engineering coding interviews."
 inventoryId: "TECH-09"
 technology: ["python"]
 topic: ["data-structures", "complexity"]
 difficulty: "Beginner"
-related: ["interview-questions:python/list-tuple-set", "interview-questions:python/shallow-vs-deep-copy", "interview-questions:python/dict-set-complexity"]
+learningObjectives:
+  - "State the average and worst-case cost of the common operations on list, tuple, set, dict, deque and heapq"
+  - "Pick the structure that turns a quadratic record-processing loop into a linear one"
+  - "Solve dedupe, lookup, top-N and sliding-window tasks with the standard library"
+  - "Recognise the interview traps: aliasing, unhashable keys, defaultdict side effects and heap tie-breaks"
+prerequisites: ["articles:python/functions-modules-reusable-code"]
+related: ["interview-questions:python/list-tuple-set", "interview-questions:python/shallow-vs-deep-copy", "interview-questions:python/dict-set-complexity", "articles:python/python-interview-questions", "articles:dsa/arrays-and-hashing"]
 previous: "articles:python/functions-modules-reusable-code"
 next: "articles:python/file-io-csv-json"
-sources: [{"label": "Python documentation: Data structures", "url": "https://docs.python.org/3/tutorial/datastructures.html"}, {"label": "Python wiki: Time complexity", "url": "https://wiki.python.org/moin/TimeComplexity"}]
-versionContext: "Examples run on Python 3.11"
+sources: [{"label": "Python documentation: Data structures", "url": "https://docs.python.org/3/tutorial/datastructures.html"}, {"label": "Python wiki: Time complexity", "url": "https://wiki.python.org/moin/TimeComplexity"}, {"label": "Python documentation: collections", "url": "https://docs.python.org/3/library/collections.html"}, {"label": "Python documentation: heapq", "url": "https://docs.python.org/3/library/heapq.html"}]
+versionContext: "Every example was run with CPython 3.11.15 (/usr/bin/python3) through scripts/verify-examples.py; the asserts pass and the printed output is copied from that run. Costs are for CPython."
 ---
 
-Choosing the right built-in structure is often the whole answer to a coding question. Know what each one is **for** and what its common operations **cost**.
+Choosing the right built-in structure is often the whole answer to a coding question. Know what each one is **for** and what its common operations **cost**. In a pipeline the same choice decides whether a job over a million records takes a second or an hour, because a lookup inside a loop is multiplied by the number of records.
 
 | Structure | Ordered | Mutable | Duplicates | Lookup by value | Typical use |
 |-----------|---------|---------|------------|-----------------|-------------|
-| `list` | Yes | Yes | Yes | O(n) scan | Ordered records, stacks |
+| `list` | Yes | Yes | Yes | O(n) scan | Ordered records, stacks, batches |
 | `tuple` | Yes | No | Yes | O(n) scan | Fixed records, dict keys |
 | `set` | No | Yes | No | O(1) average | Membership, deduplication |
 | `dict` | Insertion order | Yes | Unique keys | O(1) average by key | Lookups, grouping, counting |
 | `collections.deque` | Yes | Yes | Yes | O(n) scan | Queues: fast appends/pops at both ends |
+| `heapq` (on a list) | Heap order only | Yes | Yes | O(n) scan | Smallest item, top-N, merging sorted inputs |
+| `Counter` / `defaultdict` | Insertion order | Yes | Unique keys | O(1) average by key | Counting and grouping without key checks |
+
+## What each operation costs
+
+These are CPython costs. "Average" for sets and dicts assumes a reasonable hash function; the worst case happens when many keys collide, which is rare for built-in types such as `int`, `str` and tuples of them. "Amortised" means an occasional operation is slow (a list resize) but the average over many calls is constant.
+
+| Operation | `list` | `tuple` | `set` | `dict` | `deque` |
+|-----------|--------|---------|-------|--------|---------|
+| Index by position `s[i]` | O(1) | O(1) | not supported | not supported | O(1) at the ends, O(n) towards the middle |
+| `x in s` | O(n) | O(n) | O(1) avg, O(n) worst | O(1) avg by key, O(n) worst | O(n) |
+| Append at the end | O(1) amortised | not supported | `add` O(1) avg | `d[k] = v` O(1) avg | O(1) |
+| Insert or remove at the front | O(n) | not supported | n/a | n/a | O(1) (`appendleft`, `popleft`) |
+| Remove last item | O(1) (`pop()`) | not supported | n/a | `popitem()` O(1) | O(1) |
+| Remove by value or key | O(n) | not supported | O(1) avg | O(1) avg | O(n) |
+| Iterate all items | O(n) | O(n) | O(n) | O(n) | O(n) |
+| Sort | O(n log n) | via `sorted()` | via `sorted()` | via `sorted()` | via `sorted()` |
+| Copy | O(n) | O(n) | O(n) | O(n) | O(n) |
+
+Set algebra costs depend on both sizes: `s | t` is O(len(s) + len(t)), and `s & t` is O(min(len(s), len(t))) on average because Python iterates over the smaller set and probes the larger one. `s - t` is O(len(s)).
+
+| `heapq` and `Counter` | Cost |
+|-----------------------|------|
+| `heapq.heapify(list)` | O(n) |
+| `heapq.heappush`, `heapq.heappop` | O(log n) |
+| Peek at the smallest item, `heap[0]` | O(1) |
+| `heapq.nlargest(k, items)` / `nsmallest` | O(n log k) |
+| `heapq.merge(*sorted_inputs)` | O(n log m) for n items from m inputs, lazy |
+| `Counter(items)` | O(n) |
+| `Counter.most_common(k)` | O(n log k); without `k` it sorts everything, O(n log n) |
 
 ## Membership: use a set
 
@@ -37,7 +73,26 @@ print(102 in seen_ids, 999 in seen_ids)
 True False
 ```
 
-Checking `x in some_list` scans the list, which gets slow inside a loop over a large input. Converting to a set first turns repeated membership checks from O(n) into O(1) on average.
+Checking `x in some_list` scans the list, which gets slow inside a loop over a large input. Converting to a set first turns repeated membership checks from O(n) into O(1) on average. You can check the difference yourself rather than take it on trust:
+
+```python
+import timeit
+
+ids_list = list(range(20_000))
+ids_set = set(ids_list)
+probes = list(range(19_000, 21_000))          # half hit, half miss, mostly near the end of the list
+
+t_list = timeit.timeit(lambda: [p in ids_list for p in probes], number=3)
+t_set = timeit.timeit(lambda: [p in ids_set for p in probes], number=3)
+assert t_set * 20 < t_list, (t_list, t_set)   # the set wins by far more than 20x on any machine
+print("set is faster:", t_set < t_list)
+```
+
+```text
+set is faster: True
+```
+
+The exact timings depend on the machine, so the example asserts a wide margin rather than printing numbers. On 2,000 probes against 20,000 ids the list does up to 40 million comparisons; the set does about 2,000 hash lookups.
 
 ## Deduplicate while keeping order
 
@@ -51,6 +106,68 @@ print(list(dict.fromkeys(events)))
 ```
 
 Dicts preserve insertion order (guaranteed since Python 3.7), so `dict.fromkeys` keeps the first occurrence of each value. `list(set(events))` also deduplicates but loses order.
+
+Real records are dicts, which are not hashable, so you deduplicate on a **key** instead. Two variants come up constantly: keep the first record per key, or keep the latest version per key (the in-memory version of a CDC merge).
+
+```python
+rows = [
+    {"order_id": 1, "status": "created", "updated_at": "2026-10-01T09:00"},
+    {"order_id": 2, "status": "created", "updated_at": "2026-10-01T09:05"},
+    {"order_id": 1, "status": "shipped", "updated_at": "2026-10-02T14:00"},
+    {"order_id": 1, "status": "created", "updated_at": "2026-10-01T09:00"},   # replayed duplicate
+]
+
+# Keep the first row per key: a set of keys already emitted.
+seen, first = set(), []
+for r in rows:
+    if r["order_id"] not in seen:
+        seen.add(r["order_id"])
+        first.append(r)
+
+# Keep the latest row per key: compare a timestamp, not arrival order.
+latest = {}
+for r in rows:
+    current = latest.get(r["order_id"])
+    if current is None or r["updated_at"] > current["updated_at"]:
+        latest[r["order_id"]] = r
+
+assert [r["status"] for r in first] == ["created", "created"]
+assert latest[1]["status"] == "shipped"          # the late replay did not overwrite the newer row
+print(sorted((k, v["status"]) for k, v in latest.items()))
+```
+
+```text
+[(1, 'shipped'), (2, 'created')]
+```
+
+Comparing `updated_at` instead of "last one wins" matters: the replayed duplicate arrives last, and a plain `latest[key] = r` would roll order 1 back to `created`. ISO-8601 strings in the same format and time zone sort correctly as text; mixed formats must be parsed first.
+
+## Lookups: a dict is an in-memory hash join
+
+Enriching records against a small reference table is a join. Build a dict once (O(m)), then each lookup is O(1), so the whole job is O(n + m) instead of O(n × m) for a nested loop.
+
+```python
+customers = [("c1", "IN"), ("c2", "GB")]            # small dimension table
+orders = [("o1", "c1", 500), ("o2", "c2", 120), ("o3", "c9", 75)]
+
+country_by_id = dict(customers)                     # build once
+enriched, unmatched = [], []
+for order_id, customer_id, amount in orders:
+    country = country_by_id.get(customer_id)        # .get: a missing key is data, not a crash
+    if country is None:
+        unmatched.append(order_id)
+    else:
+        enriched.append((order_id, country, amount))
+
+assert unmatched == ["o3"]
+print(enriched)
+```
+
+```text
+[('o1', 'IN', 500), ('o2', 'GB', 120)]
+```
+
+Collect unmatched keys instead of dropping them: an order for an unknown customer usually means the dimension load is late, and someone should know. Spark's broadcast join is the same idea at cluster scale.
 
 ## Grouping and counting
 
@@ -72,7 +189,66 @@ print(Counter(customer for customer, _ in orders).most_common(1))
 [('asha', 2)]
 ```
 
-These are the in-memory equivalents of `GROUP BY` with `SUM` and `COUNT`.
+These are the in-memory equivalents of `GROUP BY` with `SUM` and `COUNT`. `defaultdict(list)` collects the rows themselves per key, which is how you group before writing one file per partition:
+
+```python
+from collections import defaultdict
+
+events = [("2026-10-01", "a"), ("2026-10-02", "b"), ("2026-10-01", "c")]
+by_day = defaultdict(list)
+for day, event_id in events:
+    by_day[day].append(event_id)
+
+assert by_day == {"2026-10-01": ["a", "c"], "2026-10-02": ["b"]}
+print(dict(by_day))
+```
+
+```text
+{'2026-10-01': ['a', 'c'], '2026-10-02': ['b']}
+```
+
+Unlike `itertools.groupby`, this does not need the input sorted by key; it does need every group to fit in memory.
+
+## Top-N without sorting everything
+
+Sorting a million rows to keep ten is O(n log n). `heapq.nlargest` keeps a heap of size k and is O(n log k), and it works on any iterable, including a generator over a file.
+
+```python
+import heapq
+
+sales = [("north", 150), ("south", 230), ("east", 90), ("west", 410), ("central", 230)]
+top3 = heapq.nlargest(3, sales, key=lambda r: r[1])
+assert top3 == [("west", 410), ("south", 230), ("central", 230)]   # ties keep input order
+print(top3)
+```
+
+```text
+[('west', 410), ('south', 230), ('central', 230)]
+```
+
+When the data arrives as a stream, keep a bounded min-heap yourself. The smallest of the current top k sits at `heap[0]`; a new value replaces it only if it is larger.
+
+```python
+import heapq
+
+def top_k_stream(values, k):
+    heap = []
+    for v in values:
+        if len(heap) < k:
+            heapq.heappush(heap, v)
+        elif v > heap[0]:
+            heapq.heapreplace(heap, v)        # pop the smallest and push v in one O(log k) step
+    return sorted(heap, reverse=True)
+
+assert top_k_stream(iter([5, 1, 9, 3, 7, 9, 2]), 3) == [9, 9, 7]
+print(top_k_stream(range(1_000_000), 3))
+```
+
+```text
+[999999, 999998, 999997]
+```
+
+Memory is O(k) however long the stream is. For "top N per group", keep one heap per key in a dict. `heapq.merge` is the related tool for combining already-sorted files (for example sorted daily extracts) lazily, without loading them.
 
 ## Queues and sliding windows
 
@@ -89,7 +265,33 @@ print(list(window), sum(window) / len(window))
 [3, 4, 5] 4.0
 ```
 
-`deque(maxlen=n)` drops old items automatically, which is handy for moving averages over a stream.
+`deque(maxlen=n)` drops old items automatically, which is handy for moving averages over the last n events. Pipelines more often need a **time** window ("requests in the last 60 seconds"), where the number of items varies. Append on the right, evict expired items from the left, and keep a running total so each step is O(1) amortised instead of re-summing the window:
+
+```python
+from collections import deque
+
+def rolling_sum(events, window_seconds):
+    """events: (epoch_seconds, value) in time order. Yields (ts, sum over (ts - window, ts])."""
+    window, total = deque(), 0
+    for ts, value in events:
+        window.append((ts, value))
+        total += value
+        while window[0][0] <= ts - window_seconds:   # evict from the left: O(1) per item
+            _, old = window.popleft()
+            total -= old
+        yield ts, total
+
+events = [(0, 5), (10, 3), (59, 2), (60, 4), (75, 1)]
+result = list(rolling_sum(events, 60))
+assert result == [(0, 5), (10, 8), (59, 10), (60, 9), (75, 7)]
+print(result)
+```
+
+```text
+[(0, 5), (10, 8), (59, 10), (60, 9), (75, 7)]
+```
+
+At `ts=60` the event from `ts=0` falls out (the window is the half-open interval from 0 to 60, excluding 0); at `ts=75` the one from `ts=10` goes too. Each event is appended once and popped once, so the whole stream is O(n). Using a list with `pop(0)` would make every eviction O(window size).
 
 ## Tuples as composite keys
 
@@ -104,17 +306,97 @@ print(daily[("2026-10-01", "south")])
 230
 ```
 
+This is how you deduplicate or aggregate on a multi-column natural key such as `(order_id, line_no)` or `(day, region)`. A tuple that contains a list is not hashable: `hash((1, [2]))` raises `TypeError`.
+
+## Interview traps
+
+Each of these is a short snippet interviewers like to show and ask "what does this print?".
+
+```python
+from collections import Counter, defaultdict
+import heapq
+
+# 1. [[]] * 3 repeats one inner list three times.
+grid = [[]] * 3
+grid[0].append("x")
+assert grid == [["x"], ["x"], ["x"]]
+grid = [[] for _ in range(3)]               # three separate lists
+grid[0].append("x")
+assert grid == [["x"], [], []]
+
+# 2. Reading a missing key from a defaultdict inserts it.
+counts = defaultdict(int)
+_ = counts["typo"]
+assert "typo" in counts                     # use counts.get("typo", 0) to read without inserting
+
+# 3. Counter arithmetic drops zero and negative counts; subtract() keeps them.
+stock = Counter(apples=2, pears=1)
+assert stock - Counter(apples=3) == Counter(pears=1)
+stock.subtract(Counter(apples=3))
+assert stock["apples"] == -1
+
+# 4. Changing a dict's size while iterating over it raises.
+d = {"a": 1, "b": 2}
+try:
+    for k in d:
+        if d[k] == 1:
+            del d[k]
+except RuntimeError as exc:
+    print("RuntimeError:", exc)
+d = {k: v for k, v in {"a": 1, "b": 2}.items() if v != 1}   # build a new dict instead
+assert d == {"b": 2}
+
+# 5. heapq is a min-heap, and equal priorities fall back to comparing the next tuple field.
+heap = []
+heapq.heappush(heap, (1, {"job": "a"}))
+try:
+    heapq.heappush(heap, (1, {"job": "b"}))     # compares the two dicts: TypeError
+except TypeError as exc:
+    print("TypeError:", exc)
+heap = []
+for seq, (prio, job) in enumerate([(1, {"job": "a"}), (1, {"job": "b"})]):
+    heapq.heappush(heap, (prio, seq, job))     # a unique sequence number breaks ties
+assert heapq.heappop(heap)[2] == {"job": "a"}
+
+# 6. list.sort() sorts in place and returns None.
+nums = [3, 1, 2]
+assert nums.sort() is None and nums == [1, 2, 3]
+
+# 7. A one-element tuple needs a comma.
+assert type((5)) is int and type((5,)) is tuple
+```
+
+```text
+RuntimeError: dictionary changed size during iteration
+TypeError: '<' not supported between instances of 'dict' and 'dict'
+```
+
+Two more that are about concepts rather than syntax:
+
+- **"Dict lookups are O(1)"** is the average case. Say "O(1) on average, O(n) in the worst case when keys collide", and know that string hashing is randomised per process (`PYTHONHASHSEED`), which is why set iteration order of strings can change between runs. See [why dict and set lookups are O(1)](/interview/python/dict-set-complexity/).
+- **Copying.** `list(rows)` or `rows.copy()` copies the outer list but shares the inner dicts, so changing a field in the "copy" changes the original. See [shallow vs deep copy](/interview/python/shallow-vs-deep-copy/).
+
 ## Common mistakes
 
 1. Membership checks against a list inside a loop (quadratic time).
 2. Using a list as a queue with `pop(0)`, which shifts every element. Use `deque.popleft()`.
-3. Trying to use a list as a dict key (lists are not hashable).
-4. Assuming sets keep order.
+3. Trying to use a list or dict as a dict key or set member (they are not hashable). Use a tuple of the key fields.
+4. Assuming sets keep order, or that string set order is the same on the next run.
+5. Deduplicating "latest wins" by arrival order when replays and late events exist. Compare a version or timestamp.
+6. Sorting everything to get a top 10. Use `heapq.nlargest` or a bounded heap.
+7. Re-summing a sliding window on every event (O(window) per step) instead of keeping a running total.
+8. Using `itertools.groupby` on unsorted input and getting the same key in several groups; use a `defaultdict(list)` or sort first.
 
-## Interview relevance
+## In an interview
 
-Many "process these records" questions reduce to: group with a dict, deduplicate with a set or `dict.fromkeys`, count with `Counter`, and stream with a deque. State the time complexity of your choice, including average versus worst case for dicts and sets: see [why dict and set lookups are O(1)](/interview/python/dict-set-complexity/).
+Many "process these records" questions reduce to: group with a dict, deduplicate with a set or `dict.fromkeys`, count with `Counter`, take the top N with `heapq`, and stream with a deque. A good answer has three parts:
+
+1. **Name the structure and why**: "a dict keyed by `customer_id`, because I need constant-time lookups while I stream the orders".
+2. **State the cost**, average and worst case, for time and memory: "O(n + m) time, O(m) memory for the dimension dict".
+3. **Say what breaks at scale**: when the dict no longer fits in memory you sort and merge, push the join into the database, or use Spark.
+
+Practise with [list vs tuple vs set](/interview/python/list-tuple-set/), [dict and set complexity](/interview/python/dict-set-complexity/), [shallow vs deep copy](/interview/python/shallow-vs-deep-copy/) and the data-structure questions in the [top 50 Python interview questions](/python/python-interview-questions/). For classic hashing problems, see [arrays and hashing](/dsa/arrays-and-hashing/).
 
 ## Key takeaway
 
-Pick the structure by the operation you do most: sets for membership, dicts for lookup and grouping, deques for queues, tuples for fixed records and keys.
+Pick the structure by the operation you do most: sets for membership, dicts for lookup and grouping, `heapq` for top-N, deques for queues and windows, tuples for fixed records and keys. Then say its cost out loud, including the worst case.

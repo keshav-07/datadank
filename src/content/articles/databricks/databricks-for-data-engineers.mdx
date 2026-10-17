@@ -1,7 +1,7 @@
 ---
 publishedDate: "2026-10-04"
-updatedDate: "2026-10-04"
-reviewedDate: "2026-10-04"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
 title: "Databricks for Data Engineers"
 seoTitle: "Databricks for Data Engineers: Complete Guide"
 description: "Databricks for Data Engineers: Spark and Delta Lake underneath, workspaces, compute, jobs, medallion pipelines, Unity Catalog and cost control."
@@ -11,50 +11,178 @@ topic: ["fundamentals"]
 difficulty: "Intermediate"
 pillar: true
 featured: false
-related: ["articles:databricks/workspace-jobs-lakehouse", "articles:databricks/unity-catalog-governance", "cheat-sheets:databricks", "articles:snowflake/snowflake-vs-databricks"]
-sources: []
-versionContext: "Describes Databricks as documented in 2026; product names change frequently"
+next: "articles:databricks/workspace-jobs-lakehouse"
+related: ["articles:databricks/workspace-jobs-lakehouse", "articles:databricks/unity-catalog-governance", "articles:databricks/auto-loader-declarative-pipelines", "articles:databricks/databricks-interview-questions", "cheat-sheets:databricks", "articles:snowflake/snowflake-vs-databricks", "articles:delta-lake/data-lakes-lakehouse-delta"]
+sources:
+  - {"label": "Databricks documentation", "url": "https://docs.databricks.com/"}
+  - {"label": "Databricks documentation: Compute", "url": "https://docs.databricks.com/aws/en/compute/"}
+  - {"label": "Databricks documentation: Medallion architecture", "url": "https://docs.databricks.com/aws/en/lakehouse/medallion"}
+  - {"label": "Databricks documentation: Lakeflow Spark Declarative Pipelines", "url": "https://docs.databricks.com/aws/en/ldp/"}
+  - {"label": "Databricks documentation: What is Unity Catalog?", "url": "https://docs.databricks.com/aws/en/data-governance/unity-catalog/"}
+  - {"label": "Delta Lake documentation", "url": "https://docs.delta.io/latest/index.html"}
+versionContext: "Describes Databricks as documented in October 2026 (Lakeflow Jobs, Lakeflow Spark Declarative Pipelines, standard and dedicated access modes, Declarative Automation Bundles). Product names change often; check current documentation. The Databricks SQL block needs a workspace and was checked against the documentation, not executed. The local example runs on PySpark 4.2.0 with delta-spark 4.4.0."
 ---
 
-Databricks is a managed lakehouse platform. Most of what you do there is Spark and SQL on Delta tables, so the fundamentals transfer directly; the platform adds managed compute, jobs, governance and collaboration.
+Databricks is a managed **lakehouse** platform. Your tables are files in your own cloud object storage (S3, ADLS or GCS), stored in the open **Delta Lake** format; **Apache Spark** and Databricks SQL compute read and write them; and **Unity Catalog** decides who may touch which table, column or file. Most of what a data engineer does on Databricks is therefore ordinary Spark and SQL. What the platform adds is managed compute, a job scheduler, declarative pipelines, governance and lineage, and the operational features (serverless, Photon, predictive optimization) that make that stack cheaper to run.
 
-## 1. What runs underneath
+This page is the course map. It explains where Databricks fits, the handful of concepts every other lesson builds on, a small worked example you can run on a laptop, how Databricks compares with Snowflake, and what interviewers ask.
 
-- **Spark** executes your PySpark and SQL: [Spark architecture](/spark/apache-spark-architecture/), [PySpark fundamentals](/pyspark/pyspark-fundamentals/).
-- **Delta Lake** stores tables with transactions, schema enforcement and time travel: [Delta Lake guide](/delta-lake/transactions-schema-evolution/).
+## Where Databricks fits in a data platform
 
-## 2. Workspace and code
+A typical batch-plus-streaming platform has five layers. Databricks covers the middle three and integrates with the rest:
 
-Notebooks for exploration, Git folders for version-controlled production code, and code review before anything runs on a schedule.
+| Layer | Typical tools | Databricks piece |
+|---|---|---|
+| Sources | OLTP databases, SaaS APIs, Kafka, files | Lakeflow Connect (managed connectors), Kafka readers, Auto Loader |
+| Storage | Object storage | Delta tables (and Iceberg reads/writes) in **your** bucket, governed by Unity Catalog |
+| Processing | Spark, SQL, dbt | Spark on job or serverless compute, Lakeflow Spark Declarative Pipelines, SQL warehouses running dbt |
+| Orchestration | Airflow, Dagster, Lakeflow Jobs | Lakeflow Jobs (formerly Workflows); Airflow can also trigger Databricks jobs |
+| Serving | BI tools, ML, reverse ETL | SQL warehouses for BI, Delta Sharing, model serving |
 
-Read: [Workspace, jobs and lakehouse concepts](/databricks/workspace-jobs-lakehouse/)
+Two facts explain a lot of behaviour you will see. First, the **control plane** (UI, notebooks, scheduler, APIs) is run by Databricks, while the **compute plane** runs either in your cloud account (classic clusters) or in Databricks-managed capacity (serverless). Classic clusters take minutes to start because virtual machines are provisioned; serverless starts in seconds. Second, the data never lives "inside Databricks": dropping the workspace does not delete files in an external location, and other engines can read the same Delta tables.
 
-## 3. Compute
+## Core concepts
 
-Interactive compute for development, job compute or serverless for production, SQL warehouses for BI. Production pipelines should never depend on a shared interactive cluster.
+These are the terms the rest of the course assumes.
 
-## 4. Jobs and pipelines
+- **Workspace.** Where notebooks, files, queries, dashboards and Git folders live. Production code belongs in Git, deployed as code with **Declarative Automation Bundles** (formerly Databricks Asset Bundles).
+- **Compute.** All-purpose clusters for development; **jobs compute** or **serverless** for scheduled pipelines; **SQL warehouses** for BI and dbt. Billing is in Databricks Units (DBUs) per hour at a rate that depends on the compute type, plus cloud VM cost for classic compute.
+- **Databricks Runtime (DBR).** A versioned bundle of Spark, Delta Lake, Python and libraries. Pin a long-term support (LTS) version for production jobs.
+- **Delta Lake.** Parquet data files plus a transaction log (`_delta_log`) that gives ACID commits, schema enforcement, `MERGE`, time travel and table maintenance (`OPTIMIZE`, `VACUUM`, liquid clustering). Delta is the default table format on Databricks.
+- **Medallion layers.** **Bronze** holds raw data as ingested, **silver** holds cleaned, deduplicated, conformed tables, and **gold** holds business-level aggregates and dimensional models. Each layer should be rebuildable from the one before.
+- **Lakeflow Jobs.** A job is a graph of tasks (notebook, Python, SQL, dbt, pipeline, control-flow tasks) with triggers, parameters, retries, alerts and **repair runs** that re-execute only failed tasks.
+- **Lakeflow Spark Declarative Pipelines** (formerly Delta Live Tables, DLT). You declare streaming tables and materialized views with data-quality **expectations**, and the platform handles dependency order, checkpoints and retries.
+- **Auto Loader.** The `cloudFiles` streaming source that picks up new files in cloud storage exactly once, with schema inference and evolution.
+- **Unity Catalog.** One governance layer for the account: a `catalog.schema.table` namespace, SQL `GRANT`s to groups and service principals, row filters and column masks, lineage and audit logs in system tables.
 
-Jobs run tasks on schedules with dependencies, parameters, retries and alerts. Make each task idempotent and parameterised by the processing date.
+<Callout tone="info" title="Old names you will still hear">
 
-Read: [Idempotency in pipelines](/etl-elt/idempotency-in-data-pipelines/)
+Workflows is now **Lakeflow Jobs**; Delta Live Tables is now **Lakeflow Spark Declarative Pipelines**; Databricks Asset Bundles are now **Declarative Automation Bundles**; the *shared* and *single user* access modes are now **standard** and **dedicated**. Interviewers accept either name.
 
-## 5. Medallion architecture
+</Callout>
 
-Bronze, silver and gold Delta tables, each rebuildable from the previous layer, with quality checks before gold.
+## A worked example: an idempotent daily load
 
-## 6. Governance with Unity Catalog
+The pattern behind most Databricks pipelines is "land raw data, then upsert it into a clean Delta table so that re-running the same day changes nothing". In a Databricks notebook or SQL warehouse it looks like this (Unity Catalog three-part names; `prod.sales.orders_bronze` is assumed to exist):
 
-Three-level names, SQL grants to groups, row filters and column masks, lineage and audit logs. Production jobs run as service principals.
+{/* noexec */}
+```sql
+CREATE TABLE IF NOT EXISTS prod.sales.orders (
+  order_id STRING, customer_id STRING, amount DECIMAL(10,2), order_date DATE, updated_at TIMESTAMP
+) CLUSTER BY (order_date);
 
-Read: [Unity Catalog and governance](/databricks/unity-catalog-governance/) · Practise: [What is Unity Catalog used for?](/interview/databricks/unity-catalog/)
+MERGE INTO prod.sales.orders AS t
+USING (
+  SELECT order_id, customer_id, try_cast(amount AS DECIMAL(10,2)) AS amount,
+         to_date(order_date) AS order_date, updated_at
+  FROM prod.sales.orders_bronze
+  WHERE ingest_date = :run_date
+  QUALIFY row_number() OVER (PARTITION BY order_id ORDER BY updated_at DESC) = 1
+) AS s
+ON t.order_id = s.order_id
+WHEN MATCHED AND s.updated_at > t.updated_at THEN UPDATE SET *
+WHEN NOT MATCHED THEN INSERT *;
+```
 
-## 7. Cost
+`:run_date` is a job parameter, so a backfill is just a run with a different date; `QUALIFY` keeps one row per key so the `MERGE` source has no duplicates; and the `updated_at` guard stops an older replay from overwriting newer data.
 
-Use job compute for production, auto-termination for interactive clusters, right-sized clusters, compaction for small files, and tags for chargeback.
+The same logic runs locally with open-source PySpark and delta-spark, which is a good way to learn it without a workspace. Running the load twice leaves the table unchanged, and the Delta history shows each commit:
 
-## Choosing a platform
+```python
+import tempfile
+from pyspark.sql import SparkSession, functions as F
+from delta import configure_spark_with_delta_pip
+from delta.tables import DeltaTable
 
-If you are comparing platforms, use a workload-based framework: [Snowflake vs Databricks](/snowflake/snowflake-vs-databricks/).
+builder = (SparkSession.builder.master("local[2]").appName("databricks-pillar")
+           .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
+           .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+           .config("spark.sql.shuffle.partitions", "4"))
+spark = configure_spark_with_delta_pip(builder).getOrCreate()
+path = tempfile.mkdtemp() + "/orders"
 
-Revise with the [Databricks cheat sheet](/resources/cheat-sheets/databricks/).
+bronze = spark.createDataFrame(
+    [("o1", "c1", "120.50", "2026-10-01", "2026-10-01 09:00:00"),
+     ("o2", "c2", "80.00", "2026-10-01", "2026-10-01 09:05:00"),
+     ("o2", "c2", "85.00", "2026-10-01", "2026-10-01 10:00:00")],   # a later correction for o2
+    ["order_id", "customer_id", "amount", "order_date", "updated_at"])
+
+def daily_load(raw):
+    w = "row_number() OVER (PARTITION BY order_id ORDER BY updated_at DESC)"
+    src = (raw.select("order_id", "customer_id",
+                      F.expr("try_cast(amount AS DECIMAL(10,2))").alias("amount"),
+                      F.to_date("order_date").alias("order_date"),
+                      F.to_timestamp("updated_at").alias("updated_at"))
+              .withColumn("rn", F.expr(w)).filter("rn = 1").drop("rn"))
+    if not DeltaTable.isDeltaTable(spark, path):
+        src.limit(0).write.format("delta").save(path)
+    (DeltaTable.forPath(spark, path).alias("t")
+        .merge(src.alias("s"), "t.order_id = s.order_id")
+        .whenMatchedUpdateAll(condition="s.updated_at > t.updated_at")
+        .whenNotMatchedInsertAll()
+        .execute())
+
+daily_load(bronze)
+daily_load(bronze)          # re-run the same day: no changes
+rows = spark.read.format("delta").load(path).orderBy("order_id").collect()
+print([(r.order_id, str(r.amount)) for r in rows])
+assert [(r.order_id, str(r.amount)) for r in rows] == [("o1", "120.50"), ("o2", "85.00")]
+
+history = DeltaTable.forPath(spark, path).history().select("version", "operation").orderBy("version")
+print([(r.version, r.operation) for r in history.collect()])
+spark.stop()
+```
+
+The history shows a `WRITE` (table creation) and two `MERGE` commits; the second one updated nothing. On Databricks you would run `daily_load` as a job task, parameterised by date, on jobs or serverless compute.
+
+## Databricks vs Snowflake (the comparison interviewers ask about)
+
+Both platforms now run SQL warehouses, Python, streaming-style ingestion and governed open tables, so "which is better" has no general answer. The useful differences are in the defaults:
+
+| | Databricks | Snowflake |
+|---|---|---|
+| Starting point | Spark and a lakehouse on open files in your storage | A managed SQL warehouse on Snowflake-managed storage |
+| Default table format | Delta Lake (Iceberg supported) | Snowflake native tables (Iceberg tables supported) |
+| Strongest at | Large Spark/Python transformations, streaming, ML on the same data | SQL-first analytics, low-administration warehousing, data sharing |
+| Compute model | Clusters, serverless and SQL warehouses billed in DBUs | Virtual warehouses and serverless features billed in credits |
+| Governance | Unity Catalog | Snowflake RBAC, Horizon governance features |
+
+Choose by workload, team skills and existing estate rather than benchmarks. The full comparison is in [Snowflake vs Databricks](/snowflake/snowflake-vs-databricks/).
+
+## What this course covers
+
+Work through the lessons in this order:
+
+1. **Databricks for Data Engineers** (this page): where the platform fits, core vocabulary, a worked load.
+2. [Databricks Workspace, Jobs and Lakehouse Concepts](/databricks/workspace-jobs-lakehouse/): control and compute planes, Git folders and bundles, compute types and access modes, Photon, Lakeflow Jobs triggers and parameters, and a runnable medallion pipeline.
+3. [Unity Catalog and Data Governance Fundamentals](/databricks/unity-catalog-governance/): the three-level namespace, securables and privilege inheritance, storage credentials and external locations, volumes, row filters and column masks, tag-based policies, lineage and audit.
+4. [Auto Loader and Lakeflow Declarative Pipelines](/databricks/auto-loader-declarative-pipelines/): incremental file ingestion, schema evolution and rescued data, streaming tables, materialized views and expectations.
+
+The storage layer has its own course. Read [Data lakes, lakehouses and Delta Lake](/delta-lake/data-lakes-lakehouse-delta/), then [Delta transactions and schema evolution](/delta-lake/transactions-schema-evolution/), [MERGE and Change Data Feed](/delta-lake/merge-upserts-change-data-feed/) and [OPTIMIZE, Z-ORDER, VACUUM and liquid clustering](/delta-lake/optimize-zorder-vacuum-liquid-clustering/). Spark itself is covered in [Spark architecture](/spark/apache-spark-architecture/) and [PySpark fundamentals](/pyspark/pyspark-fundamentals/). Revise with the [Databricks cheat sheet](/resources/cheat-sheets/databricks/).
+
+## Common beginner mistakes
+
+1. **Running production jobs on an all-purpose cluster.** It costs more per DBU, someone can restart it mid-run, and libraries drift. Use jobs compute or serverless and pin the runtime.
+2. **Treating notebooks as the deployment unit.** Hand-edited production notebooks have no review or rollback. Keep logic in Git, test it, and deploy jobs with bundles.
+3. **Non-idempotent writes.** `mode("append")` in a retried task duplicates data. Use `MERGE`, `replaceWhere` or overwrite of a bounded partition, keyed by the run date.
+4. **Partitioning everything by a high-cardinality column.** It creates millions of tiny files. Small tables need no layout tuning; larger ones usually do better with liquid clustering than with hand-picked partitions.
+5. **Granting access to individuals and running jobs as people.** Grant to groups and run production jobs as service principals, so access survives staff changes.
+6. **Assuming code that works on a dedicated cluster works on serverless.** Serverless and standard access mode use Spark Connect, so `sparkContext`, RDDs and some JVM tricks fail there.
+7. **Forgetting table maintenance.** Streaming and frequent small writes leave small files; enable predictive optimization or schedule `OPTIMIZE`, and understand what `VACUUM` removes before shortening retention.
+
+## What interviewers ask
+
+Databricks rounds mix platform knowledge with Spark and Delta internals. Expect:
+
+- "Explain the control plane and compute plane, and when you would use serverless." ([Q1 in the Top 50](/databricks/databricks-interview-questions/#1-databricks-architecture-control-plane-vs-compute-plane-classic-and-serverless))
+- "All-purpose vs job compute vs SQL warehouse: which for what?" ([Q9](/databricks/databricks-interview-questions/#9-all-purpose-vs-job-compute-vs-sql-warehouse-vs-serverless), and the deep dive [How do you choose Databricks compute?](/interview/databricks/choose-databricks-compute/))
+- "What does Unity Catalog give you, and how do you hide a PII column?" ([What is Unity Catalog used for?](/interview/databricks/unity-catalog/), [Q43](/databricks/databricks-interview-questions/#43-row-filters-and-column-masks-in-unity-catalog))
+- "Auto Loader or `COPY INTO`?" ([Auto Loader vs COPY INTO](/interview/databricks/auto-loader-vs-copy-into/))
+- "How does Delta give ACID on object storage, and what are the risks of `VACUUM`?" ([What problem does Delta Lake solve?](/interview/delta-lake/what-delta-lake-solves/), [VACUUM retention risks](/interview/delta-lake/vacuum-retention-risks/))
+- "A job got slow. Walk me through debugging it." ([Q50](/databricks/databricks-interview-questions/#50-troubleshooting-a-slow-databricks-job-end-to-end))
+
+All 50 are in [Top 50 Databricks Interview Questions and Answers](/databricks/databricks-interview-questions/). Strong answers name the trade-off (cost, latency, operational load) and the failure mode, not just the feature.
+
+## Key takeaway
+
+Databricks is Spark and SQL on Delta tables in your own storage, plus managed compute, jobs, pipelines and Unity Catalog. Learn the vocabulary here, then the workspace and jobs, governance, and ingestion lessons in order; write every task so it can be re-run safely, run production on jobs or serverless compute as a service principal, and choose platforms by workload.

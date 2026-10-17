@@ -28,7 +28,7 @@ You have two integer arrays `a` and `b` of the same length n, and a count `k` (a
 
 ```text
 a = [4, 1],     b = [3, 5],     k = 2   ->  [9, 7]    (4+5, 4+3)
-a = [1, 4, 2],  b = [2, 5, 1],  k = 3   ->  [9, 7, 6] (4+5, 2+5, 4+2 or 1+5)
+a = [6, 2, 3],  b = [1, 7, 4],  k = 3   ->  [13, 10, 10] (6+7, 6+4, 3+7)
 a = [3, 3],     b = [3, 3],     k = 4   ->  [6, 6, 6, 6]
 ```
 
@@ -81,7 +81,7 @@ import random
 
 for f in (top_sums, top_sums_brute):
     assert f([4, 1], [3, 5], 2) == [9, 7]
-    assert f([1, 4, 2], [2, 5, 1], 3) == [9, 7, 6]
+    assert f([6, 2, 3], [1, 7, 4], 3) == [13, 10, 10]
     assert f([3, 3], [3, 3], 4) == [6, 6, 6, 6]       # duplicate sums count separately
     assert f([-1, -5], [-2, -3], 3) == [-3, -4, -7]   # negatives
     assert f([7], [8], 1) == [15]

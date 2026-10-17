@@ -12,8 +12,8 @@ shortAnswer: "Put the head of each non-empty list in a min-heap keyed by value (
 followUps: ["Why is merging the lists one at a time into an accumulator O(N k)?", "How does an external merge sort use this idea on files that do not fit in memory?", "What does heapq.merge do, and is it lazy?", "How would you merge k sorted streams that never end?"]
 versionContext: "Python 3 solutions verified with assert-based tests"
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-09"
+reviewedDate: "2026-10-09"
 practice: {"platform": "LeetCode", "number": 23, "title": "Merge k Sorted Lists", "url": "https://leetcode.com/problems/merge-k-sorted-lists/"}
 previous: "interview-questions:dsa/design-twitter"
 next: "interview-questions:dsa/smallest-range-covering-elements-from-k-lists"
@@ -25,7 +25,7 @@ You receive a Python list containing `k` linked lists, each sorted in non-decrea
 
 This is widely known as LeetCode 23 (Merge k Sorted Lists). It generalises merging two sorted lists and is a classic heap question.
 
-Constraints for this version: `0 <= k <= 10,000`, up to 10,000 nodes in total, integer values.
+The outer list may be empty, individual lists may be empty, and `k` can be in the thousands, which is when O(N k) sequential merging starts to hurt.
 
 ## Examples
 
@@ -123,7 +123,7 @@ def merge_k_divide_conquer(lists):
     return lists[0]
 ```
 
-**Complexity.** O(N log k) time, O(1) extra space (the merge is iterative and reuses nodes).
+**Complexity.** O(N log k) time. The merges are iterative and reuse the nodes, so the only extra memory is the filtered list of k heads, O(k) (O(1) if you compact the input list in place).
 
 ## Tests
 

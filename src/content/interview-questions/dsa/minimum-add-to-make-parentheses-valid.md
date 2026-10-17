@@ -27,8 +27,8 @@ You get a string made only of `(` and `)`. In one move you may insert a single b
 ## Examples
 
 ```text
-"(()"     ->  1   (add one ')' at the end)
-")))"     ->  3
+"(()(("   ->  3   (three ')' at the end)
+"))"      ->  2
 ")("      ->  2   (one '(' at the front, one ')' at the end)
 "()()"    ->  0
 ""        ->  0
@@ -100,8 +100,8 @@ def min_add_bfs(s):
                     queue.append((u, d + 1))
 
 for f in (min_add, min_add_stack, min_add_bfs):
-    assert f("(()") == 1
-    assert f(")))") == 3
+    assert f("(()((") == 3
+    assert f("))") == 2
     assert f(")(") == 2
     assert f("()()") == 0
     assert f("") == 0

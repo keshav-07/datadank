@@ -6,8 +6,8 @@ technology: ["kafka"]
 topic: ["kafka-streams", "stream-processing", "windowing", "state-stores"]
 difficulty: "Advanced"
 publishedDate: "2026-10-09"
-updatedDate: "2026-10-09"
-reviewedDate: "2026-10-09"
+updatedDate: "2026-10-17"
+reviewedDate: "2026-10-17"
 learningObjectives:
   - "Explain what Kafka Streams is and how an application scales and recovers"
   - "Tell KStream, KTable and GlobalKTable apart and pick the right one for a topic"
@@ -23,7 +23,7 @@ sources:
   - { label: "Apache Kafka documentation: Streams core concepts", url: "https://kafka.apache.org/documentation/streams/core-concepts" }
   - { label: "Apache Kafka documentation: Streams DSL developer guide", url: "https://kafka.apache.org/documentation/streams/developer-guide/dsl-api.html" }
   - { label: "Apache Kafka documentation: Streams architecture", url: "https://kafka.apache.org/documentation/streams/architecture" }
-versionContext: "Written against the Apache Kafka 4.x Streams documentation (October 2026). The Java topology examples need a broker and are marked noexec; they use the current DSL (TimeWindows.ofSizeAndGrace, JoinWindows.ofTimeDifferenceWithNoGrace) and were checked against the API documentation, not run here. The windowing and stream-table simulations are plain Python 3.11 and were run."
+versionContext: "Written against the Apache Kafka 4.3 Streams documentation (October 2026). The Java topology examples need a broker and are marked noexec; they use the current DSL (TimeWindows.ofSizeAndGrace, JoinWindows.ofTimeDifferenceWithNoGrace) and were checked against the API documentation, not run here. The windowing and stream-table simulations are plain Python 3.11 and were run."
 ---
 
 Kafka Streams is a Java library for building stream-processing applications whose inputs and outputs are Kafka topics. There is no separate cluster to run: your application is an ordinary JVM process, and you scale it by starting more copies. Kafka itself provides the parallelism (partitions), the fault tolerance (consumer groups and changelog topics) and the exactly-once guarantees (transactions). This lesson covers the model, the main operations, windows, joins, state and the settings that matter in production and in interviews.
@@ -63,7 +63,7 @@ Runtime.getRuntime().addShutdownHook(new Thread(streams::close));
 streams.start();
 ```
 
-Kafka 4.x also ships a dedicated Streams rebalance protocol (KIP-1071, `group.protocol=streams`), which moves task assignment to the broker in the same way KIP-848 did for consumers. Applications use the classic protocol unless configured otherwise; check your version's documentation before switching.
+Kafka 4.x also ships a dedicated Streams rebalance protocol (KIP-1071, `group.protocol=streams`), which moves task assignment to the broker in the same way KIP-848 did for consumers. It has been production-ready for its core feature set since Kafka 4.2 (use 4.2.1 or later to migrate an existing classic group), but applications keep using the classic protocol unless you set `group.protocol=streams`; check the Streams developer guide for the features it does not cover yet before switching.
 
 ## KStream, KTable and GlobalKTable
 
@@ -236,6 +236,7 @@ Stateful operations keep their state in **state stores**, local to each task, by
 - **Unbounded state.** Aggregations over high-cardinality keys without windows, or windows with long retention, grow RocksDB without limit. Bound state with windows and retention, and watch disk.
 - **Changing the topology of a running application.** Renaming or reordering operators changes generated internal topic and store names, so state is not found. Name stores and processors explicitly (`Materialized.as`, `Named.as`), and use a new `application.id` for incompatible changes.
 - **Long restores after failure.** Large state without standby replicas means minutes or hours of catch-up. Add standbys and keep state small.
+- **One bad record stopping the application.** By default a record that cannot be deserialised, or that throws in your processing code, fails the stream thread. Configure `deserialization.exception.handler` and `processing.exception.handler` (log-and-continue handlers ship with the library), and since Kafka 4.2 (KIP-1034) the built-in handlers can also copy the failing record to a dead-letter topic named by `errors.dead.letter.queue.topic.name`. Skipped records still need a metric and an alert.
 - **Treating the default `at_least_once` as exactly-once.** Choose `exactly_once_v2` when duplicates in outputs are not acceptable.
 
 ## Practice questions

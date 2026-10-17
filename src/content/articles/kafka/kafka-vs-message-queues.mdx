@@ -1,7 +1,7 @@
 ---
 publishedDate: "2026-10-04"
-updatedDate: "2026-10-09"
-reviewedDate: "2026-10-09"
+updatedDate: "2026-10-17"
+reviewedDate: "2026-10-17"
 title: "Kafka vs Queue-Based Messaging for Data Pipelines"
 seoTitle: "Kafka vs Message Queues for Data Pipelines"
 description: "Kafka vs message queues: when a distributed log fits and when a queue does, compared on retention, replay, ordering, fan-out, acknowledgement and Kinesis."
@@ -18,7 +18,7 @@ sources:
   - { label: "Amazon Kinesis Data Streams developer guide: Quotas and limits", url: "https://docs.aws.amazon.com/streams/latest/dev/service-sizes-and-limits.html" }
   - { label: "Amazon SQS developer guide: Visibility timeout", url: "https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-visibility-timeout.html" }
   - { label: "RabbitMQ documentation: Streams", url: "https://www.rabbitmq.com/docs/streams" }
-versionContext: "Kafka behaviour is described for Apache Kafka 4.2 and later, where share groups (KIP-932) are production-ready. Queue and cloud-service behaviour (SQS, RabbitMQ, Kinesis Data Streams, Pub/Sub) follows each vendor's documentation as of October 2026; limits change, so check them before sizing. The delivery simulation runs on plain Python 3.11."
+versionContext: "Kafka behaviour is described for Apache Kafka 4.2 and later, where share groups (KIP-932) are production-ready. Queue and cloud-service behaviour (SQS, RabbitMQ, Kinesis Data Streams, Pub/Sub) follows each vendor's documentation as of October 2026; limits change, so check them before sizing. The delivery simulation runs on plain Python 3.11. The share-group example (KafkaShareConsumer, kafka-console-share-consumer.sh, kafka-share-groups.sh) was run on a single-node Apache Kafka 4.3.1 KRaft broker with kafka-clients 4.3.1 on Java 21; it needs a broker, so the Java block is marked noexec."
 ---
 
 Both a distributed log and a message queue move messages from producers to consumers. They are built around different ideas of what happens to a message after it is read, and that decides which one fits a data pipeline. This lesson compares the two models, shows the difference on a small simulation, places Kafka's share groups and cloud services such as Kinesis on the same map, and ends with a decision guide.
@@ -111,6 +111,54 @@ What this changes:
 - You can scale workers beyond the partition count for queue-style work.
 - Per-record retry no longer blocks a whole partition.
 - The data is still a Kafka topic, so ordinary consumer groups can read and replay the same records.
+
+### Worked example: a share group on Kafka 4.3.1
+
+A share consumer is a separate client class, `KafkaShareConsumer`. In explicit acknowledgement mode the worker decides per record: `ACCEPT` (done), `RELEASE` (give it back for another attempt), `REJECT` (never redeliver), or `RENEW` (keep the lock while a long job continues, added in 4.2). The worker below fails `task-2` once with a transient error and finds `task-3` unprocessable:
+
+{/* noexec */}
+```java
+Properties props = new Properties();
+props.put("bootstrap.servers", "localhost:9092");
+props.put("group.id", "resizers");                       // a share group, not a consumer group
+props.put("key.deserializer", StringDeserializer.class.getName());
+props.put("value.deserializer", StringDeserializer.class.getName());
+props.put("share.acknowledgement.mode", "explicit");     // acknowledge each record yourself
+
+try (KafkaShareConsumer<String, String> consumer = new KafkaShareConsumer<>(props)) {
+    consumer.subscribe(List.of("tasks"));
+    while (running) {
+        for (ConsumerRecord<String, String> r : consumer.poll(Duration.ofMillis(500))) {
+            try {
+                resize(r.value());
+                consumer.acknowledge(r, AcknowledgeType.ACCEPT);
+            } catch (IOException transientError) {
+                consumer.acknowledge(r, AcknowledgeType.RELEASE);   // redeliver, counts an attempt
+            } catch (Exception badRecord) {
+                consumer.acknowledge(r, AcknowledgeType.REJECT);    // archive it, no redelivery
+            }
+        }
+        consumer.commitSync();                                       // send the acknowledgements
+    }
+}
+```
+
+Run against a single-partition `tasks` topic holding `task-1` to `task-3` (printing `deliveryCount()` with each decision):
+
+```text
+task-1 delivery 1: ACCEPT
+task-2 delivery 1: RELEASE (storage timeout)
+task-3 delivery 1: REJECT (corrupt image)
+task-2 delivery 2: ACCEPT
+```
+
+`task-2` came back on its second delivery while `task-3` was dropped for good, which is the redelivery behaviour of SQS or RabbitMQ, on an ordinary topic. Things the experiment made visible:
+
+- **New share groups start at the latest offset.** The group config `share.auto.offset.reset` defaults to `latest`, like `auto.offset.reset` for consumer groups; set it with `kafka-configs.sh --entity-type groups --entity-name resizers --add-config share.auto.offset.reset=earliest` before the first run if existing records should be processed.
+- **Redelivery is capped.** With `share.delivery.count.limit=2`, `kafka-console-share-consumer.sh --release` (which releases everything it reads) received each of three records exactly twice, then the broker archived them. The default limit is 5.
+- **Locks expire.** A record that is neither acknowledged nor renewed within `share.record.lock.duration.ms` (30 seconds by default) is released automatically and counts as a delivery attempt, so a crashed worker's records go to another worker.
+- **Records are acquired in batches.** Two console share consumers on the same one-partition topic did not alternate record by record: the first to fetch acquired all 40 waiting records. Sharing evens out over time with real processing work, but do not expect round-robin.
+- **Inspect with `kafka-share-groups.sh --describe --group resizers`**, which shows the start offset and lag per partition; `rejected` and over-limit records count as done.
 
 What it does not give you: ordering. Share groups are meant for records processed one at a time, not ordered streams. The internal `__share_group_state` topic needs three brokers by default. For pipelines that need ordering, replay and offsets, ordinary consumer groups remain the tool.
 

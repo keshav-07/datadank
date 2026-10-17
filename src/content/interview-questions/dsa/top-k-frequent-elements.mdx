@@ -9,8 +9,8 @@ questionType: ["coding"]
 estimatedMinutes: 12
 interviewRelevance: "High"
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-09"
+reviewedDate: "2026-10-09"
 shortAnswer: "Count occurrences with a hash map. Then either keep a min-heap of size k over the (count, value) pairs for O(n log k), or bucket the values by count (a count can be at most n) and read buckets from the highest count down until you have k values, for O(n) time. Both use O(n) extra space."
 followUps: ["When would you prefer the heap over bucket sort?", "How would you find the top k items in a stream that never ends?", "How would you break ties deterministically?"]
 versionContext: "Python 3 solutions verified with assert-based tests"
@@ -28,7 +28,7 @@ Given a list of integers `nums` and an integer `k`, return the `k` values that o
 ## Examples
 
 ```text
-nums = [4, 4, 4, 7, 7, 1],  k = 2   ->  [4, 7]
+nums = [9, 2, 9, 6, 2, 9, 5],  k = 2   ->  [9, 2]
 nums = [-2],                k = 1   ->  [-2]
 nums = [5, 3, 5, 3, 5, 9],  k = 1   ->  [5]
 ```
@@ -51,11 +51,11 @@ def top_k_sort(nums, k):
 
 **Key insight:** a frequency is an integer between 1 and n, so you can index values by their count instead of sorting.
 
-Walkthrough on `[4, 4, 4, 7, 7, 1]`, `k = 2`:
+Walkthrough on `[9, 2, 9, 6, 2, 9, 5]`, `k = 2`:
 
-1. Counts: `{4: 3, 7: 2, 1: 1}`.
-2. Buckets (index = count): `[[], [1], [7], [4], [], [], []]`.
-3. Read from index 6 down: index 3 gives `4`, index 2 gives `7`. That is two values, stop.
+1. Counts: `{9: 3, 2: 2, 6: 1, 5: 1}`.
+2. Buckets (index = count): `[[], [6, 5], [2], [9], [], [], [], []]`.
+3. Read from index 7 down: index 3 gives `9`, index 2 gives `2`. That is two values, stop.
 
 ```python
 def top_k_frequent(nums, k):
@@ -101,7 +101,7 @@ def top_k_heap(nums, k):
 import random
 
 for f in (top_k_frequent, top_k_heap, top_k_sort):
-    assert sorted(f([4, 4, 4, 7, 7, 1], 2)) == [4, 7]
+    assert sorted(f([9, 2, 9, 6, 2, 9, 5], 2)) == [2, 9]
     assert f([-2], 1) == [-2]                              # single element
     assert f([5, 3, 5, 3, 5, 9], 1) == [5]
     assert sorted(f([1, 2, 3], 3)) == [1, 2, 3]            # k equals distinct count

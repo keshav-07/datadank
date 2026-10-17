@@ -27,7 +27,7 @@ most once, whose sum is exactly the target.
 
 This is GeeksforGeeks: Subset Sum Problem. It is the decision version of the 0/1 knapsack, and
 [Partition Equal Subset Sum](/interview/dsa/partition-equal-subset-sum/) is the special case where the target is
-half the total. Assume up to about 200 numbers and a target up to about 10,000.
+half the total. Inputs are a few hundred small numbers and a target in the thousands, so a table indexed by total is affordable.
 
 ## Examples
 

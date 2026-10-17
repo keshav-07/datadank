@@ -12,8 +12,8 @@ shortAnswer: "The simple answer runs a same-tree comparison from every node of t
 followUps: ["Why are null markers essential in the serialisation?", "How would Merkle-style hashing of subtrees solve it, and what about collisions?", "How would you count how many times the pattern tree occurs?"]
 versionContext: "Python 3 solutions verified with assert-based tests"
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-09"
+reviewedDate: "2026-10-09"
 practice: {"platform": "LeetCode", "number": 572, "title": "Subtree of Another Tree", "url": "https://leetcode.com/problems/subtree-of-another-tree/"}
 previous: "interview-questions:dsa/same-tree"
 next: "interview-questions:dsa/count-good-nodes-in-binary-tree"
@@ -25,15 +25,15 @@ You are given two binary trees, a large one `root` and a smaller one `sub`. Retu
 
 This is widely known as LeetCode 572 (Subtree of Another Tree).
 
-Constraints for this version: `root` has 1 to 2,000 nodes, `sub` has 1 to 1,000 nodes, values are integers.
+Both trees are non-empty, `sub` is no larger than `root` in practice, and values can repeat, which is what makes the brute force slow in the worst case.
 
 ## Examples
 
 | `root` (level order) | `sub` | Result | Why |
 |---|---|---|---|
-| `[5, 8, 2, 1, 6]` | `[8, 1, 6]` | `True` | node 8 and its children match exactly |
-| `[5, 8, 2, 1, 6, None, None, None, None, 0]` | `[8, 1, 6]` | `False` | node 8's subtree also contains 0 under 6 |
-| `[5, 8, 2]` | `[5, 8, 2]` | `True` | the whole tree |
+| `[9, 4, 7, None, 3, 5, 8]` | `[7, 5, 8]` | `True` | node 7 and its children match exactly |
+| `[9, 4, 7, None, 3, 5, 8, None, None, 1]` | `[7, 5, 8]` | `False` | node 7's subtree also contains 1 under 5 |
+| `[9, 4, 7]` | `[9, 4, 7]` | `True` | the whole tree |
 | `[3, 3]` | `[3]` | `True` | the leaf 3 matches |
 
 ## Approach 1: brute force
@@ -70,13 +70,13 @@ Worst case O(m * n) for `m` nodes in `root` and `n` in `sub`, for example when e
 
 The markers are what make this sound. Without them, a tree with only a left child and a tree with only a right child serialise the same way.
 
-**Walkthrough** for `root = [5, 8, 2, 1, 6]` and `sub = [8, 1, 6]`:
+**Walkthrough** for `root = [9, 4, 7, None, 3, 5, 8]` and `sub = [7, 5, 8]`:
 
-- `root` tokens: `5 8 1 # # 6 # # 2 # #`
-- `sub` tokens: `8 1 # # 6 # #`
-- The `sub` sequence appears starting at position 1, so the answer is `True`.
+- `root` tokens: `9 4 # 3 # # 7 5 # # 8 # #`
+- `sub` tokens: `7 5 # # 8 # #`
+- The `sub` sequence appears starting at position 6 (counting from 0), so the answer is `True`.
 
-For the second example, `root` tokens contain `8 1 # # 6 0 # # #`, which differs from `sub`'s tokens at the 0, so no match.
+For the second example, `root` tokens contain `7 5 1 # # # 8 # #`, which differs from `sub`'s tokens at the 1, so no match.
 
 ```python
 def preorder_tokens(root):
@@ -143,9 +143,9 @@ def build_tree(values):
     return root
 
 cases = [
-    ([5, 8, 2, 1, 6], [8, 1, 6], True),
-    ([5, 8, 2, 1, 6, None, None, None, None, 0], [8, 1, 6], False),
-    ([5, 8, 2], [5, 8, 2], True),
+    ([9, 4, 7, None, 3, 5, 8], [7, 5, 8], True),
+    ([9, 4, 7, None, 3, 5, 8, None, None, 1], [7, 5, 8], False),
+    ([9, 4, 7], [9, 4, 7], True),
     ([3, 3], [3], True),
     ([12], [2], False),                        # string-prefix trap
     ([1, 2], [1, None, 2], False),             # same values, different shape

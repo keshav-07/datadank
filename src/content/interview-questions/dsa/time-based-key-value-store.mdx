@@ -28,7 +28,7 @@ Build a class that stores several versions of each key. It has two operations:
 
 For every key, `set` is called with strictly increasing timestamps. This is widely known as LeetCode 981 (Time Based Key-Value Store). It is a design question with a binary search at its core, and it is popular in data engineering interviews because it is a tiny version of an "as of" lookup.
 
-Constraints for this version: keys and values are short strings; timestamps are positive integers up to 10,000,000; up to 200,000 total calls.
+Keys and values are short strings, timestamps are positive integers, and there can be hundreds of thousands of calls, so `get` must not scan every version.
 
 ## Examples
 

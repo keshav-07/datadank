@@ -5,8 +5,8 @@ technology: ["aws", "sql"]
 topic: ["athena", "serverless-sql", "data-lake"]
 difficulty: "Intermediate"
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
 learningObjectives:
   - "Explain how Athena runs SQL on S3 through the Glue Data Catalog and where results go"
   - "Create external tables and use CTAS, INSERT INTO and UNLOAD to write optimised data"
@@ -14,7 +14,7 @@ learningObjectives:
   - "Tune queries and layouts to scan less data, and control spend with workgroups"
   - "Describe federated queries and the billing dimensions of Athena"
 prerequisites: ["articles:aws/glue-catalog-crawlers-etl", "articles:sql/query-optimization-fundamentals"]
-related: ["articles:data-warehousing/partitioning-clustering-data-layout", "articles:delta-lake/parquet-vs-avro-vs-orc"]
+related: ["articles:data-warehousing/partitioning-clustering-data-layout", "articles:delta-lake/parquet-vs-avro-vs-orc", "interview-questions:aws/athena-cost-performance-tuning", "interview-questions:aws/s3-data-lake-layout"]
 previous: "articles:aws/glue-catalog-crawlers-etl"
 next: "articles:aws/redshift"
 versionContext: "Athena behaviour checked against the Athena documentation for engine version 3 in October 2026. Athena DDL and queries need an AWS account, so they were written from the Athena documentation and not executed. The PostgreSQL 16 analogues (declarative partition pruning and CREATE TABLE AS) and the Python projection and billing models were run locally; PostgreSQL is not Athena's engine, and the analogues show the concept only."
@@ -23,6 +23,7 @@ sources:
   - { label: "Amazon Athena: Set up partition projection", url: "https://docs.aws.amazon.com/athena/latest/ug/partition-projection-setting-up.html" }
   - { label: "Amazon Athena: Per-query and per-workgroup data usage controls", url: "https://docs.aws.amazon.com/athena/latest/ug/workgroups-setting-control-limits-cloudwatch.html" }
   - { label: "Amazon Athena pricing", url: "https://aws.amazon.com/athena/pricing/" }
+  - { label: "Amazon Athena: Manage query processing capacity (capacity reservations)", url: "https://docs.aws.amazon.com/athena/latest/ug/capacity-management.html" }
   - { label: "AWS Whitepaper: Amazon Athena (Big Data Analytics Options)", url: "https://docs.aws.amazon.com/whitepapers/latest/big-data-analytics-options/amazon-athena.html" }
 ---
 
@@ -291,7 +292,7 @@ s3://example-lake/curated/sales/dt=2026-10-03/region=eu/
 | Partition on common filter columns, filter on them directly | Skips whole prefixes |
 | File sizes of roughly 128 MB or more; compact small files | Fewer S3 requests and less per-file overhead |
 | Select only needed columns, never `SELECT *` on wide tables | Less data scanned |
-| Put the larger table on the left of a join, the smaller on the right | The right side is built into memory in the distributed hash join |
+| Put the larger table on the left of a join, the smaller on the right | The right side is built into memory in the distributed hash join; with Glue column statistics the cost-based optimizer can reorder joins for you |
 | `approx_distinct` and other approximate functions where exactness is not needed | Much less memory than exact `COUNT(DISTINCT)` |
 | `ORDER BY` with `LIMIT` | Avoids a full global sort |
 | Iceberg tables with `OPTIMIZE` and sort order | Compaction and clustering for frequently updated data |
@@ -321,7 +322,7 @@ aws athena create-work-group --name analytics \
   --tags Key=team,Value=analytics
 ```
 
-IAM policies can restrict users to their workgroup (`athena:StartQueryExecution` on the workgroup ARN), and tags on workgroups feed cost allocation. Workgroups are also where you attach **provisioned capacity** reservations.
+IAM policies can restrict users to their workgroup (`athena:StartQueryExecution` on the workgroup ARN), and tags on workgroups feed cost allocation. Workgroups are also what you assign to **capacity reservations** (up to 20 workgroups per reservation).
 
 **Pitfalls.**
 
@@ -355,7 +356,7 @@ WHERE o.dt = '2026-10-03';
 
 ## Cost per query
 
-**What it is.** With the default pay-per-query model, Athena charges for the bytes each SQL query scans, per terabyte. With **provisioned capacity**, you reserve DPUs (a DPU is 4 vCPUs and 16 GB) for a workgroup and pay for the reservation instead of for data scanned.
+**What it is.** With the default pay-per-query model, Athena charges for the bytes each SQL query scans, per terabyte. With **capacity reservations** (the feature earlier called provisioned capacity), you reserve DPUs (a DPU is 4 vCPUs and 16 GB) for one or more workgroups and pay DPU-hours for the reservation instead of for data scanned. Each DML query uses between 4 and 124 DPUs depending on its complexity, and each DDL query 4.
 
 **How it works.** For pay-per-query, scanned bytes are rounded up to the next megabyte, with a 10 MB minimum per query. You are not charged for failed queries or for DDL statements such as `CREATE TABLE` and partition management, but a cancelled query is charged for what it scanned before cancellation. Separate charges apply for S3 storage and requests, Glue catalogue requests beyond the free allowance, federated connector Lambda invocations, and query results stored in S3. The rounding rule in code:
 
@@ -380,7 +381,7 @@ scanned 3,200,000,000 bytes -> billed as    3,052 MB
 
 The minimum means thousands of tiny queries (from a dashboard that polls every few seconds) each pay for 10 MB. Check the pricing page for the current per-TB and per-DPU rates in your Region.
 
-**Choosing a model.** Pay-per-query suits spiky, unpredictable use. Provisioned capacity suits steady, heavy use where predictable spend and guaranteed concurrency matter more; reservations can now be short and small, so it is worth modelling both.
+**Choosing a model.** Pay-per-query suits spiky, unpredictable use. Capacity reservations suit steady, heavy use where predictable spend and guaranteed concurrency matter more: queries on a reservation do not count against the account's query quotas, and when it is busy new queries queue instead of failing. A reservation needs at least 4 DPUs, adding capacity can take up to 30 minutes, and you pay while it exists, so model both with your query history.
 
 **In interviews.** State the billing dimension (data scanned, rounded up per MB with a 10 MB minimum) and immediately connect it to design: Parquet, partitions and column pruning reduce the bill in direct proportion to bytes not read.
 
@@ -408,7 +409,7 @@ Convert the data to partitioned, compressed Parquet with CTAS (in batches of at 
 </details>
 
 <details>
-<summary>When would you choose Athena provisioned capacity over pay-per-query?</summary>
+<summary>When would you choose Athena capacity reservations over pay-per-query?</summary>
 
 When usage is steady and heavy enough that reserved DPUs cost less than per-TB scanning, when you need guaranteed concurrency for a production workload, or when finance wants predictable spend. Model both with your actual query history before deciding.
 
@@ -435,4 +436,4 @@ Athena's engine (Trino-based) builds an in-memory hash table from the right side
 - Partition projection removes partition registration for predictable keys, but only Athena uses it.
 - Performance and cost both come from scanning less: Parquet, partitions, column pruning, larger files.
 - Workgroups give per-query and per-workgroup scan limits, enforced result settings and cost separation.
-- Pay-per-query bills data scanned (rounded per MB, 10 MB minimum); provisioned capacity bills reserved DPUs.
+- Pay-per-query bills data scanned (rounded per MB, 10 MB minimum); capacity reservations bill reserved DPU-hours.

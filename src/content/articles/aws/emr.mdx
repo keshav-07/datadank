@@ -6,8 +6,8 @@ technology: ["aws", "spark", "pyspark"]
 topic: ["emr", "spark", "big-data"]
 difficulty: "Advanced"
 publishedDate: "2026-10-05"
-updatedDate: "2026-10-05"
-reviewedDate: "2026-10-05"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
 learningObjectives:
   - "Explain EMR's primary, core and task nodes and the cluster lifecycle"
   - "Submit and size Spark jobs on EMR, including executor sizing"
@@ -15,13 +15,14 @@ learningObjectives:
   - "Choose between EMR on EC2, EMR on EKS and EMR Serverless for a workload"
   - "Apply the main cost levers for EMR"
 prerequisites: ["articles:aws/glue-catalog-crawlers-etl", "articles:spark/apache-spark-architecture"]
-related: ["articles:spark/partitions-shuffles-skew", "articles:spark/adaptive-query-execution", "articles:spark/execution-model-jobs-stages-tasks", "system-designs:scalable-batch-pipeline"]
+related: ["articles:spark/partitions-shuffles-skew", "articles:spark/adaptive-query-execution", "articles:spark/execution-model-jobs-stages-tasks", "system-designs:scalable-batch-pipeline", "interview-questions:aws/glue-vs-emr-vs-emr-serverless"]
 previous: "articles:aws/redshift"
 next: "articles:aws/kinesis"
-versionContext: "EMR releases checked against the Amazon EMR Release Guide in October 2026 (EMR 7.x ships Spark 3.5; the emr-spark-8.x runtime ships Spark 4.0). The executor-sizing and fleet-allocation models run locally on Python 3.11 with illustrative inputs. AWS CLI commands, bootstrap scripts and JSON configurations were written from the EMR documentation and not executed; JSON documents were checked to parse."
+versionContext: "EMR releases checked against the Amazon EMR Release Guide and EMR Serverless User Guide on 16 October 2026 (emr-7.14.0 ships Spark 3.5.8; emr-spark-8.0.0 ships Spark 4.0.2 and emr-spark-8.1.0 ships Spark 4.1.1). The executor-sizing and fleet-allocation models run locally on Python 3.11 with illustrative inputs. AWS CLI commands, bootstrap scripts and JSON configurations were written from the EMR documentation and not executed; JSON documents were checked to parse."
 sources:
   - { label: "Amazon EMR Release Guide: Apache Spark", url: "https://docs.aws.amazon.com/emr/latest/ReleaseGuide/emr-spark.html" }
-  - { label: "Amazon EMR Release Guide: Amazon EMR release 7.13.0", url: "https://docs.aws.amazon.com/emr/latest/ReleaseGuide/emr-7130-release.html" }
+  - { label: "Amazon EMR Release Guide: Amazon EMR release 7.14.0", url: "https://docs.aws.amazon.com/emr/latest/ReleaseGuide/emr-7140-release.html" }
+  - { label: "Amazon EMR Serverless: AWS runtime for Apache Spark (emr-spark-8.1.0)", url: "https://docs.aws.amazon.com/emr/latest/EMR-Serverless-UserGuide/release-version-emr-spark-8.1.0.html" }
   - { label: "Amazon EMR Serverless: AWS runtime for Apache Spark (emr-spark-8.0.0)", url: "https://docs.aws.amazon.com/emr/latest/EMR-Serverless-UserGuide/release-version-emr-spark-8.0.0.html" }
   - { label: "AWS Big Data Blog: General availability of Apache Spark 4.0 on Amazon EMR", url: "https://aws.amazon.com/blogs/big-data/announcing-general-availability-of-apache-spark-4-0-on-amazon-emr/" }
   - { label: "Amazon EMR on EKS: emr-7.13.0 release", url: "https://docs.aws.amazon.com/emr/latest/EMR-on-EKS-DevelopmentGuide/emr-eks-7.13.0-20260410.html" }
@@ -35,7 +36,7 @@ The Python examples are small calculators for decisions you make on EMR (executo
 
 ## EMR clusters
 
-**What it is.** An EMR cluster on EC2 is a set of instances with a chosen **release label** (for example `emr-7.13.0`), which fixes the versions of Spark, Hadoop, Hive and the other applications.
+**What it is.** An EMR cluster on EC2 is a set of instances with a chosen **release label** (for example `emr-7.14.0`), which fixes the versions of Spark, Hadoop, Hive and the other applications.
 
 **How it works.** Nodes have three roles:
 
@@ -50,7 +51,7 @@ Clusters are either **long-running** (shared, interactive, always on) or **trans
 {/* noexec */}
 ```bash
 aws emr create-cluster --name nightly-orders \
-  --release-label emr-7.13.0 \
+  --release-label emr-7.14.0 \
   --applications Name=Spark \
   --instance-groups InstanceGroupType=MASTER,InstanceCount=1,InstanceType=m6g.xlarge \
                     InstanceGroupType=CORE,InstanceCount=2,InstanceType=r6g.2xlarge \
@@ -74,7 +75,7 @@ EMR uses two IAM roles: the **service role** that EMR uses to manage EC2, and th
 
 **What it is.** EMR's Spark is an Amazon-optimised build of Apache Spark running on YARN, with the EMRFS connector reading and writing S3 through `s3://` paths and the Glue Data Catalog available as the Hive metastore.
 
-**How it works.** Submit work as an **EMR step** (`spark-submit` run by EMR), through `spark-submit` on the primary node, from a notebook in EMR Studio, or from an orchestrator (Step Functions has a direct EMR integration; Airflow has EMR operators). EMR 7.x releases ship Spark 3.5; the `emr-spark-8.x` "AWS runtime for Apache Spark" releases bring Spark 4.0 to EMR on EC2, EMR on EKS and EMR Serverless.
+**How it works.** Submit work as an **EMR step** (`spark-submit` run by EMR), through `spark-submit` on the primary node, from a notebook in EMR Studio, or from an orchestrator (Step Functions has a direct EMR integration; Airflow has EMR operators). EMR 7.x releases ship Spark 3.5 (Spark 3.5.8 in `emr-7.14.0`); the separate `emr-spark-8.x` "AWS runtime for Apache Spark" releases bring Spark 4 to EMR on EC2, EMR on EKS and EMR Serverless: `emr-spark-8.0.0` ships Spark 4.0.2 and `emr-spark-8.1.0` ships Spark 4.1.1 with Iceberg 1.11 and Delta Lake 4.2.
 
 Executor sizing is the classic tuning task. A common rule: leave one core per node for the OS and daemons, use about four or five cores per executor, and split the memory YARN offers between executors, keeping about 10% for overhead. The inputs below are illustrative; read the real YARN memory per node from the cluster:
 
@@ -268,7 +269,7 @@ aws emr-containers start-job-run \
 {/* noexec */}
 ```bash
 aws emr-serverless create-application --name orders-spark --type SPARK \
-  --release-label emr-7.13.0 \
+  --release-label emr-7.14.0 \
   --maximum-capacity '{"cpu": "200 vCPU", "memory": "800 GB"}' \
   --auto-stop-configuration '{"enabled": true, "idleTimeoutMinutes": 15}'
 
@@ -359,4 +360,4 @@ Transient clusters that auto-terminate, Spot task fleets with diversified instan
 - Instance fleets with several instance types make Spot capacity reliable; keep Spot to task nodes.
 - Bootstrap actions run on every node before applications; pin and minimise them.
 - EMR on EKS runs EMR Spark on your Kubernetes; EMR Serverless removes clusters entirely.
-- EMR 7.x runs Spark 3.5, and the emr-spark-8.x runtime brings Spark 4.0 to all three options.
+- EMR 7.x runs Spark 3.5, and the emr-spark-8.x runtime brings Spark 4 (4.0.2 in 8.0.0, 4.1.1 in 8.1.0) to all three options.

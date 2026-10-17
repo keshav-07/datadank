@@ -6,8 +6,8 @@ technology: ["kafka"]
 topic: ["schema-registry", "schema-evolution", "avro", "data-contracts"]
 difficulty: "Intermediate"
 publishedDate: "2026-10-09"
-updatedDate: "2026-10-09"
-reviewedDate: "2026-10-09"
+updatedDate: "2026-10-17"
+reviewedDate: "2026-10-17"
 learningObjectives:
   - "Explain why Kafka needs a schema registry and what the serialiser writes into each record"
   - "Choose a subject naming strategy for a topic"
@@ -163,6 +163,7 @@ Why the rollout order follows from the mode:
 - **BACKWARD**: new readers can read old data, but old readers may fail on new data. Deploy consumers with the new schema first, then producers. It is also the mode that lets a new consumer **replay the topic from the beginning**, which is why it is the default.
 - **FORWARD**: old readers can read new data. Deploy producers first; consumers can follow at their own pace. Useful when you do not control all consumers.
 - **FULL**: any order, at the price of the strictest rules.
+- **Kafka Streams applications** need backward compatibility whatever else you choose: after an upgrade they read new-schema records from the input topic but must still read old-schema records from their state stores and changelogs. Confluent therefore supports BACKWARD (or the stronger BACKWARD_TRANSITIVE, FULL and FULL_TRANSITIVE) for Streams, not FORWARD; upgrade the Streams app before the upstream producer.
 
 **Transitive** matters because the default check is only against the latest version. A field can be removed in version 2 and re-added with a different type in version 3; each step passes against its predecessor, but version 3 cannot read version 1 data still sitting in the topic. Use a transitive mode for topics with long retention, compacted topics and anything replayed from the start.
 

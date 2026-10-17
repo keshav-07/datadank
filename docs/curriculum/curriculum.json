@@ -7891,7 +7891,7 @@
     "topic": "Number of Occurrence",
     "category": "Binary Search",
     "pattern": "Classic Binary Search",
-    "difficulty": "Medium",
+    "difficulty": "Easy",
     "lesson": "articles:dsa/binary-search",
     "question": "interview-questions:dsa/number-of-occurrence"
    },

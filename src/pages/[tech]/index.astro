@@ -9,7 +9,7 @@ import Tile from "../../components/content/Tile.astro";
 import Button from "../../components/content/Button.astro";
 import AdSlot from "../../components/content/AdSlot.astro";
 import { breadcrumbsFor } from "../../utils/breadcrumbs";
-import { breadcrumbSchema } from "../../utils/seo";
+import { breadcrumbSchema, courseSchema } from "../../utils/seo";
 import { TECH_GROUP_LABELS } from "../../data/site";
 import PracticeList from "../../components/interview/PracticeList.astro";
 import { practiceGroups } from "../../utils/curriculum";
@@ -58,7 +58,17 @@ const tabs = [
   title={d.shortName}
   seoTitle={`${d.shortName} for Data Engineers: Course and Practice`}
   description={d.description}
-  schema={[breadcrumbSchema(crumbs, Astro.url.pathname, Astro.site)]}
+  schema={[
+    breadcrumbSchema(crumbs, Astro.url.pathname, Astro.site),
+    courseSchema({
+      name: `${d.shortName} for Data Engineers`,
+      description: d.description,
+      path: Astro.url.pathname,
+      site: Astro.site,
+      hours,
+      lessons: course.lessons.map((l) => ({ title: l.title, url: l.url })),
+    }),
+  ]}
   indexable
 >
   <IndexMeta type="Technology hub" technology={tech} />

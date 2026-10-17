@@ -85,6 +85,44 @@ export function articleSchema(opts: {
   };
 }
 
+/**
+ * A free, self-paced online course (Google's course info fields: provider, offers, hasCourseInstance).
+ * Only facts shown on the course page: its name, description, lessons and estimated study time.
+ */
+export function courseSchema(opts: {
+  name: string;
+  description: string;
+  path: string;
+  site: URL | string | undefined;
+  hours: number;
+  lessons: { title: string; url: string }[];
+}) {
+  return {
+    "@context": "https://schema.org",
+    "@type": "Course",
+    name: opts.name,
+    description: opts.description,
+    url: absoluteUrl(opts.path, opts.site),
+    inLanguage: SITE.locale,
+    isAccessibleForFree: true,
+    provider: {
+      "@type": "Organization",
+      "@id": orgId(opts.site),
+      name: SITE.name,
+      sameAs: absoluteUrl("/", opts.site),
+    },
+    offers: [{ "@type": "Offer", category: "Free", price: 0, priceCurrency: "USD" }],
+    hasCourseInstance: [
+      { "@type": "CourseInstance", courseMode: "Online", courseWorkload: `PT${opts.hours}H` },
+    ],
+    hasPart: opts.lessons.map((l) => ({
+      "@type": "LearningResource",
+      name: l.title,
+      url: absoluteUrl(l.url, opts.site),
+    })),
+  };
+}
+
 /** FAQ structured data is only emitted when a visible, genuine FAQ section exists on the page. */
 export function faqSchema(faq: { q: string; a: string }[] | undefined) {
   if (!faq || faq.length < 2) return null;

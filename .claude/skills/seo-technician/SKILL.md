@@ -40,19 +40,19 @@ Owner: **U** = user, **C** = Claude.
 
 ### P1 technical (Claude)
 - [x] C6. Lighthouse on key pages (17 Oct 2026, local build, mobile): see "Audit results".
-- [ ] C6a. Fix accessibility findings: planner checkbox 22px → 24px target; code-comment colour #6A737D on
+- [x] C6a. (17 Oct) Fixed accessibility findings: planner checkbox 22px → 24px target; code-comment colour #6A737D on
       #161616 (3.75:1) in the Shiki theme; phase-card number #ff6a00 on #f8f5ef (2.63:1, decorative).
 - [ ] C6b. Home page TBT 260 ms: the day card parses JSON for all 90 days on load; defer or slim it.
 - [x] C7a. Structured data audit: BreadcrumbList on 699 pages, Article on 644, WebSite + Organization on home.
-- [ ] C7b. Add `Course` schema (provider, offers Free, hasCourseInstance online with workload) to the 15
+- [x] C7b. (17 Oct) Added `Course` schema (provider, offers Free, hasCourseInstance online with workload) to the 15
       course hubs (`src/pages/[tech]/index.astro`).
 - [ ] C7c. Article author is the Organization "DataDank Editorial"; a named person with a bio page would
       help E-E-A-T. Ask the user for an author name before changing.
 - [x] C10. Titles and descriptions: no duplicates, no title over 60 characters; 2 descriptions over 165
       (`/delta-lake/schema-evolution-patterns/` 167, `/interview/sql/index-not-used-explain/` 169).
-- [ ] C10a. Shorten those 2 descriptions.
-- [ ] C8. Pages reachable only via listings: `interview-questions:delta-lake/parquet-internals`,
-      `roadmaps:switching-to-data-engineering`; add a contextual link to each.
+- [x] C10a. (17 Oct) Shortened both to 158/157 characters.
+- [x] C8. (17 Oct) Linked every page that was reachable only via listings (Parquet internals, switching
+      roadmap, Kafka and Airflow Top-N articles, two Databricks answers). Build now has 0 content warnings.
 - [ ] C9. Broken-link and redirect audit across all pages (internal + external).
 - [ ] C11. Sitemap lastmod only changes with real content changes (check `astro.config.mjs` serialize).
 - [ ] C12. Per-page share images: every page uses `/og/default.png`. Generate per-course (or per-article)

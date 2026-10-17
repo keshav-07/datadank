@@ -56,6 +56,10 @@
     padding: 0.1em 0.35em;
     font-size: 0.86em;
   }
+  /* github-dark's comment grey (#6A737D) is 3.75:1 on the code surface; lift it to 6:1. */
+  .prose pre span[style*="#6A737D" i] {
+    color: #959da5 !important;
+  }
   .prose pre {
     background: var(--c-code-bg);
     color: var(--c-code-text);

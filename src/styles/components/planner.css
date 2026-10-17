@@ -588,8 +588,8 @@
     position: absolute;
     top: 9px;
     right: 9px;
-    width: 20px;
-    height: 20px;
+    width: 21px; /* 24px target with the border */
+    height: 21px;
     margin: 0;
     appearance: none;
     border: 1.5px solid rgba(255, 255, 255, 0.28);
@@ -778,7 +778,7 @@
     font-size: 2.6rem;
     line-height: 1;
     font-weight: 700;
-    color: var(--c-brand);
+    color: var(--c-primary);
   }
   .phase-card__days {
     font-size: var(--fs-xs);

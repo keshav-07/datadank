@@ -4,7 +4,7 @@ updatedDate: "2026-10-09"
 reviewedDate: "2026-10-09"
 title: "What caches does Snowflake use, and when does each one help?"
 seoTitle: "Snowflake Caching Layers: Interview Answer"
-description: "Interview answer: the result cache returns repeated results without a warehouse, the warehouse cache keeps read data on local SSD until suspend, and metadata answers some queries."
+description: "Interview answer: the result cache skips the warehouse for repeat queries, the warehouse cache keeps data on local SSD until suspend, and metadata answers some."
 technology: ["snowflake"]
 topic: ["caching", "performance", "virtual-warehouses"]
 difficulty: "Easy"

@@ -26,7 +26,7 @@ Packages sit on a conveyor belt in a fixed order, with positive integer weights.
 
 This is LeetCode 1011, Capacity To Ship Packages Within D Days. It is binary search on the answer with a greedy simulation as the feasibility check.
 
-Assume up to 50,000 packages, each weighing up to 500, and `1 <= days <= len(weights)`.
+Expect tens of thousands of packages with modest weights. The deadline is at least one day and never more than the number of packages.
 
 ## Examples
 

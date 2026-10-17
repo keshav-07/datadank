@@ -27,7 +27,7 @@ You are given n meetings, each with a start time and an end time (some versions 
 ## Examples
 
 ```text
-[[0, 30], [5, 10], [15, 20]]   ->  2   ([5, 10] and [15, 20] share a room)
+[[2, 12], [3, 6], [8, 11]]     ->  2   ([3, 6] and [8, 11] share a room)
 [[1, 4], [4, 6], [6, 9]]       ->  1   (back to back)
 [[1, 5], [2, 6], [3, 7]]       ->  3   (all three overlap at time 3)
 []                             ->  0
@@ -97,7 +97,7 @@ def rooms_sweep(meetings):
 import random
 
 cases = [
-    ([[0, 30], [5, 10], [15, 20]], 2),
+    ([[2, 12], [3, 6], [8, 11]], 2),
     ([[1, 4], [4, 6], [6, 9]], 1),
     ([[1, 5], [2, 6], [3, 7]], 3),
     ([], 0),

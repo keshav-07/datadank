@@ -31,9 +31,9 @@ Assume up to 100,000 stalls with positions up to a billion.
 ## Examples
 
 ```text
-stalls = [1, 2, 4, 8, 9],    k = 3  ->  3    (cows at 1, 4, 8: gaps 3 and 4)
-stalls = [10, 1, 2, 7, 5],   k = 3  ->  4    (cows at 1, 5, 10)
-stalls = [2, 12, 11, 3, 26, 7], k = 5 -> 1
+stalls = [3, 14, 6, 21, 9],  k = 3  ->  7    (cows at 3, 14, 21: gaps 11 and 7)
+stalls = [11, 2, 7, 5, 18],  k = 4  ->  4    (cows at 2, 7, 11, 18)
+stalls = [4, 5, 6, 7, 8, 30], k = 5 -> 1    (five cows must share the tight cluster)
 stalls = [0, 100],           k = 2  ->  100
 ```
 
@@ -89,7 +89,7 @@ def max_min_gap(stalls, k):
     return lo
 ```
 
-Walkthrough for `[1, 2, 4, 8, 9]`, `k = 3`, range `[1, 8]`: `mid = 5` places cows at 1 and 8 only, so `hi = 4`; `mid = 3` places 1, 4, 8, so `lo = 3`; `mid = 4` places 1 and 8 only (9 is just 1 past 8), so `hi = 3`; the answer is 3.
+Walkthrough for `[3, 14, 6, 21, 9]` (sorted `[3, 6, 9, 14, 21]`), `k = 3`, range `[1, 18]`: `mid = 10` places cows at 3 and 14 only, so `hi = 9`; `mid = 5` places 3, 9, 14, so `lo = 5`; `mid = 7` places 3, 14, 21, so `lo = 7`; `mid = 8` places 3 and 14 only (21 is just 7 past 14), so `hi = 7`; the answer is 7.
 
 **Why it is correct.** The invariant is that `lo` is always feasible and every value above `hi` is not. Rounding up guarantees `mid > lo`, so each step shrinks the range. With `k >= 2`, gap 1 is always feasible, so the starting `lo` is valid.
 
@@ -106,9 +106,9 @@ def max_min_gap_exhaustive(stalls, k):
     return max(min(b - a for a, b in zip(c, c[1:])) for c in combinations(s, k))
 
 def check(fn):
-    assert fn([1, 2, 4, 8, 9], 3) == 3
-    assert fn([10, 1, 2, 7, 5], 3) == 4
-    assert fn([2, 12, 11, 3, 26, 7], 5) == 1
+    assert fn([3, 14, 6, 21, 9], 3) == 7
+    assert fn([11, 2, 7, 5, 18], 4) == 4
+    assert fn([4, 5, 6, 7, 8, 30], 5) == 1
     assert fn([0, 100], 2) == 100
     assert fn([5, 1, 3], 3) == 2
     assert fn([1, 2, 3, 4, 5], 2) == 4

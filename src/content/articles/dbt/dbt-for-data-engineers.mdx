@@ -1,0 +1,297 @@
+---
+publishedDate: "2026-10-16"
+updatedDate: "2026-10-16"
+reviewedDate: "2026-10-16"
+title: "dbt for Data Engineers: What It Is, How a Project Works and the DAG"
+seoTitle: "dbt for Data Engineers: A Practical Guide"
+description: "dbt for data engineers: what dbt does and does not do, Core vs the dbt platform vs v2, project anatomy, ref and source, and the DAG, run on a real project."
+technology: ["dbt", "etl-elt", "sql"]
+topic: ["fundamentals", "elt"]
+difficulty: "Beginner"
+pillar: true
+learningObjectives:
+  - "Explain where dbt sits in an ELT pipeline and what it leaves to other tools"
+  - "Tell dbt Core v1, the v2 engine and the dbt platform apart"
+  - "Read a dbt project: dbt_project.yml, profiles.yml, models, sources, seeds, tests and snapshots"
+  - "Explain how ref() and source() build the DAG and why build order follows from them"
+  - "Run the core commands (seed, run, test, snapshot, build) and read their output"
+prerequisites: ["articles:etl-elt/etl-vs-elt"]
+related: ["articles:etl-elt/modern-data-pipelines", "system-designs:elt-pipeline-with-dbt", "cheat-sheets:dbt", "articles:data-warehousing/star-schema"]
+versionContext: "Every command and output on this page was run on dbt Core 1.12.6 with dbt-duckdb 1.11.0 (DuckDB 1.5.6, Python 3.11) on 16 October 2026. Output is trimmed and timestamps are removed."
+sources:
+  - { label: "dbt documentation: What is dbt?", url: "https://docs.getdbt.com/docs/introduction" }
+  - { label: "dbt documentation: Install dbt", url: "https://docs.getdbt.com/docs/local/install-dbt" }
+  - { label: "dbt documentation: About dbt projects", url: "https://docs.getdbt.com/docs/build/projects" }
+  - { label: "dbt documentation: ref", url: "https://docs.getdbt.com/reference/dbt-jinja-functions/ref" }
+  - { label: "dbt documentation: About dbt build command", url: "https://docs.getdbt.com/reference/commands/build" }
+---
+
+dbt is the **T in ELT**. By the time dbt runs, an extract-and-load tool (Fivetran, Airbyte, a Python job, a CDC stream) has already landed raw tables in the warehouse. dbt turns those raw tables into clean, tested, documented models using SQL `select` statements. You write the `select`; dbt wraps it in the right `create view` or `create table` statement, runs the models in dependency order, and runs the tests you declared next to them.
+
+This course builds one small online-shop project and runs every command for real. This first lesson explains what dbt is, what a project looks like, and how the DAG drives everything else.
+
+## What dbt does, and what it does not do
+
+dbt does four jobs:
+
+1. **Compiles** model files. A model is a `.sql` file holding one `select` statement, plus Jinja (`{{ ref('...') }}`, macros, loops). dbt renders the Jinja into plain SQL for your warehouse.
+2. **Materializes** each model. A configuration decides whether the `select` becomes a view, a table, an incremental table or an inlined CTE. dbt generates the DDL and DML for you.
+3. **Orders** the work. Every `ref()` and `source()` call is an edge in a dependency graph (the DAG), so dbt knows that `stg_shop__orders` must exist before `fct_orders`.
+4. **Tests and documents**. Tests, descriptions, column types and owners live in YAML beside the models, and `dbt docs generate` builds a lineage site from them.
+
+dbt does **not** move data between systems, schedule itself, or provide compute. All SQL runs inside your warehouse (Snowflake, BigQuery, Databricks, Redshift, Postgres, DuckDB and others, through an adapter). Loading is done by an EL tool; scheduling is done by the dbt platform, Airflow, Dagster, cron or a CI system. In an interview, saying "dbt is an orchestrator" or "dbt loads the data" is a red flag; dbt orchestrates the order of SQL **inside one transformation step**.
+
+## dbt Core, the v2 engine and the dbt platform
+
+The names have changed a lot, so be precise:
+
+| Name | What it is |
+|---|---|
+| **dbt Core (v1)** | The original Python CLI, installed with `pip install dbt-core` plus an adapter such as `dbt-duckdb` or `dbt-snowflake`. Open source and still maintained. This course runs on it. |
+| **dbt v2** | The current Rust-based engine (first released as the "dbt Fusion engine"). The dbt docs now call it the default for new installations (`python -m pip install dbt`). It parses SQL itself, so it can catch errors and offer editor features before anything reaches the warehouse. |
+| **dbt platform** | The hosted product (many teams still call it dbt Cloud): a browser IDE, job scheduling, CI jobs, hosted docs and alerting. It runs either engine. |
+
+The CLI itself says this when you install dbt Core today:
+
+```text
+$ dbt --version
+Core:
+  - installed: 1.12.6
+  - latest:    1.12.6 - Up to date!
+
+Plugins:
+  - duckdb: 1.11.0 - Up to date!
+
+dbt v2 is available, and is the default for new installations. This is dbt Core v1.
+```
+
+The project format (models, YAML, Jinja, `ref`, tests, snapshots) is shared between the engines, which is why the concepts in this course carry over. Behaviour differs at the edges, so check the v2 availability and upgrade pages before you move a v1 project, and confirm your warehouse's adapter is supported.
+
+## Anatomy of a dbt project
+
+This is the project the course uses. It models a small shop with customers, orders, payments and web events, on a local DuckDB file:
+
+```text
+shop/
+├── dbt_project.yml          # project name, paths, folder-level configs, vars
+├── profiles.yml             # connection targets: dev, ci, prod
+├── packages.yml             # dbt_utils
+├── selectors.yml            # named selections for jobs
+├── seeds/
+│   └── payment_methods.csv  # small static lookup, loaded by dbt seed
+├── models/
+│   ├── staging/             # one view per raw table: rename, cast, clean
+│   │   ├── _shop__sources.yml
+│   │   ├── _shop__models.yml
+│   │   ├── stg_shop__customers.sql
+│   │   ├── stg_shop__orders.sql
+│   │   └── stg_shop__payments.sql
+│   ├── intermediate/        # reusable building blocks
+│   │   └── int_order_payments.sql
+│   ├── marts/               # facts and dimensions people query
+│   │   ├── fct_orders.sql   # incremental
+│   │   ├── fct_events.sql   # incremental, microbatch
+│   │   ├── dim_customers.sql
+│   │   └── _marts.yml
+│   └── exposures.yml
+├── snapshots/snapshots.yml  # SCD Type 2 history
+├── macros/                  # reusable Jinja
+└── tests/                   # singular and custom generic tests
+```
+
+Two files tell dbt where it is and where to write.
+
+`dbt_project.yml` names the project, says which profile to use, and sets configuration by folder, so every staging model becomes a view without each file saying so:
+
+```yaml
+name: shop
+version: "1.0.0"
+profile: shop
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+snapshot-paths: ["snapshots"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+
+vars:
+  order_lookback_days: 3
+
+models:
+  shop:
+    staging:
+      +materialized: view
+    intermediate:
+      +materialized: ephemeral
+    marts:
+      +materialized: table
+```
+
+`profiles.yml` holds connection details, one **target** per environment. Here all three share one DuckDB file and differ by schema; on Snowflake they would usually differ by database, role and warehouse, and secrets would come from `env_var()` rather than being written in the file:
+
+```yaml
+shop:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: shop.duckdb
+      schema: dbt_dev
+      threads: 1
+    ci:
+      type: duckdb
+      path: shop.duckdb
+      schema: dbt_ci
+      threads: 1
+    prod:
+      type: duckdb
+      path: shop.duckdb
+      schema: analytics
+      threads: 4
+```
+
+## ref, source and the DAG
+
+A staging model reads a raw table through `source()`:
+
+{/* noexec */}
+```sql
+with source as (
+    select * from {{ source('shop', 'orders') }}
+),
+
+renamed as (
+    select
+        id          as order_id,
+        customer_id,
+        order_date,
+        status,
+        updated_at,
+        _loaded_at  as loaded_at
+    from source
+)
+
+select * from renamed
+```
+
+The source itself is declared once in YAML, which is where its schema, freshness rules and descriptions live:
+
+```yaml
+sources:
+  - name: shop
+    description: Raw tables landed by the EL tool. dbt reads them but never writes to them.
+    schema: raw
+    tables:
+      - name: customers
+      - name: orders
+        config:
+          loaded_at_field: _loaded_at
+          freshness:
+            warn_after: {count: 12, period: hour}
+            error_after: {count: 24, period: hour}
+      - name: payments
+      - name: events
+        config:
+          event_time: event_at
+```
+
+Everything downstream reads other models through `ref()`. When dbt compiles, `{{ ref('stg_shop__orders') }}` becomes the fully qualified name **for the current target**: `"shop"."dbt_dev"."stg_shop__orders"` in dev and `"shop"."analytics"."stg_shop__orders"` in prod. That one indirection is what lets the same code run in every environment, and it is also how dbt learns the edges of the DAG. A hard-coded `from analytics.stg_shop__orders` works once, breaks in dev, and is invisible to lineage, selection and deferral.
+
+For this project, the DAG is (arrows point from parent to child):
+
+```text
+source shop.customers  ─► stg_shop__customers ─────────────────────────► dim_customers ─► exposure
+source shop.orders     ─► stg_shop__orders    ─► fct_orders ─────────────► dim_customers
+source shop.payments   ─► stg_shop__payments  ─► int_order_payments ─► fct_orders
+seed   payment_methods ─► int_order_payments
+source shop.events     ─► fct_events ─► agg_daily_events
+source shop.customers  ─► snapshot customers_snapshot
+source shop.orders     ─► snapshot orders_status_snapshot
+```
+
+You never tell dbt the order. `dbt ls` shows what a selector resolves to, here everything upstream of `dim_customers`:
+
+```text
+$ dbt ls --select "+dim_customers" --resource-type model --output name
+dim_customers.v1
+dim_customers.v2
+fct_orders
+int_order_payments
+stg_shop__customers
+stg_shop__orders
+stg_shop__payments
+```
+
+(`dim_customers` has two versions; lesson 8 explains model versions.)
+
+## The commands you will use every day
+
+| Command | What it does |
+|---|---|
+| `dbt deps` | Installs packages from `packages.yml` |
+| `dbt seed` | Loads CSV files from `seeds/` as tables |
+| `dbt run` | Builds models (views, tables, incrementals) in DAG order |
+| `dbt test` | Runs data tests and unit tests |
+| `dbt snapshot` | Runs snapshots (SCD Type 2 history) |
+| `dbt build` | Seeds, models, snapshots and tests together, in DAG order, testing each node before its children run |
+| `dbt compile` / `dbt show` | Render the SQL without building it, or preview query results |
+| `dbt source freshness` | Checks how recently each source was loaded |
+| `dbt docs generate` | Writes the catalog and lineage site into `target/` |
+
+A first `dbt run` against the day-one data builds the whole graph:
+
+```text
+$ dbt run
+Found 9 models, 19 data tests, 1 seed, 2 snapshots, 4 sources, 1 exposure, 619 macros, 1 group, 2 unit tests
+Concurrency: 1 threads (target='dev')
+
+1 of 8 OK created sql microbatch model dbt_dev.fct_events ...................... [SUCCESS in 0.26s]
+2 of 8 OK created sql view model dbt_dev.stg_shop__customers ................... [OK in 0.08s]
+3 of 8 OK created sql view model dbt_dev.stg_shop__orders ...................... [OK in 0.03s]
+4 of 8 OK created sql view model dbt_dev.stg_shop__payments .................... [OK in 0.03s]
+5 of 8 OK created sql table model dbt_dev.agg_daily_events ..................... [OK in 0.05s]
+6 of 8 OK created sql incremental model dbt_dev.fct_orders ..................... [OK in 0.03s]
+7 of 8 OK created sql table model dbt_dev.dim_customers_v1 ..................... [OK in 0.09s]
+8 of 8 OK created sql table model dbt_dev.dim_customers_v2 ..................... [OK in 0.05s]
+
+Done. PASS=8 WARN=0 ERROR=0 SKIP=0 NO-OP=0 REUSED=0 TOTAL=8
+```
+
+`dbt build` is what production jobs normally run, because it adds the safety net: a test failure on a model stops that model's children from running. The dbt docs describe this as tests on upstream resources blocking downstream resources. On day two of our data, a `relationships` test failed (an order pointed at a customer who had been deleted from the source), and dbt refused to rebuild the customer dimension on top of it:
+
+```text
+12 of 28 FAIL 1 relationships_stg_shop__orders_customer_id__customer_id__ref_stg_shop__customers_  [FAIL 1 in 0.04s]
+...
+24 of 28 SKIP relation dbt_dev.dim_customers ................................... [SKIP]
+25 of 28 SKIP exposure weekly_revenue_dashboard ................................ [SKIP]
+...
+Done. PASS=20 WARN=1 ERROR=1 SKIP=6 NO-OP=0 REUSED=0 TOTAL=28
+```
+
+That is the behaviour you want: yesterday's correct table stays in place instead of being replaced with a wrong one. Lesson 5 shows how to tune which failures block and which only warn.
+
+## Where to look when something goes wrong
+
+dbt writes everything it does into `target/`:
+
+- `target/compiled/` holds the rendered `select` for each model and test. Read it first when Jinja surprises you.
+- `target/run/` holds the full statement dbt executed (the `create table as`, the `merge`).
+- `manifest.json` describes the whole project (every node, config and edge). CI uses it for state comparison.
+- `run_results.json` records each node's status and timing for the last command.
+- `logs/dbt.log` has the debug log.
+
+## Common mistakes
+
+- **Hard-coding table names** instead of `ref()` or `source()`. Lineage, environment switching, selection and deferral all stop working.
+- **Treating dbt as the scheduler or loader.** dbt needs an EL tool upstream and something to trigger it.
+- **Putting business logic in one giant model.** Small staging models and named intermediate steps are easier to test and reuse.
+- **Running `dbt run` in production and `dbt test` "later".** Use `dbt build` so a failed test stops bad data from flowing downstream.
+- **Committing credentials in `profiles.yml`.** Read secrets with `env_var()` and keep the file out of the repository when it holds anything sensitive.
+
+## In an interview
+
+Expect "What is dbt and where does it fit?" Answer in one breath: dbt is the transformation layer of ELT; you write `select` statements, it compiles Jinja, materializes models in the warehouse in DAG order, and runs tests and docs; it does not load data or provide compute. Then show you know the mechanics: `ref()` resolves per target and creates DAG edges, `source()` marks the raw boundary, `dbt build` tests each node before its children. Follow-ups are usually about materializations, incremental models and testing, which are the next lessons.
+
+## Key takeaway
+
+A dbt project is a set of `select` statements connected by `ref()` and `source()`. Those calls give dbt the DAG, and the DAG gives you correct build order, environment-aware table names, lineage, selection and safe deployments. Learn to read the compiled SQL in `target/` early; it removes most of the mystery.
